@@ -1,6 +1,10 @@
 package types
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 const (
 	// StateIdle 表示实例已创建但尚未运行。
@@ -10,6 +14,26 @@ const (
 	// StateStopped 表示实例已停止且不可继续复用。
 	StateStopped = "stopped"
 )
+
+const (
+	// EventTypeStateChanged 表示生命周期状态变化。
+	EventTypeStateChanged = "state_changed"
+)
+
+var (
+	// ErrInvalidConfig 表示配置不满足基础约束。
+	ErrInvalidConfig = errors.New("invalid config")
+	// ErrUnsupportedMode 表示当前运行模式尚未实现。
+	ErrUnsupportedMode = errors.New("unsupported mode")
+)
+
+// Event 描述基础阶段可向上层暴露的状态变化。
+type Event struct {
+	Type      string
+	State     string
+	Message   string
+	Timestamp time.Time
+}
 
 // Stats 描述基础阶段可观测的最小统计信息。
 type Stats struct {

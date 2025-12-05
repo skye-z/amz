@@ -1,10 +1,11 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/skye-z/amz/types"
 )
 
 const (
@@ -31,8 +32,6 @@ const (
 	// ModeHTTP 表示通过 HTTP 代理暴露隧道。
 	ModeHTTP = "http"
 )
-
-var errInvalidConfig = errors.New("invalid kernel config")
 
 // KernelConfig 描述内核启动所需的最小参数集合。
 type KernelConfig struct {
@@ -69,24 +68,24 @@ func (c *KernelConfig) FillDefaults() {
 // Validate 检查配置是否满足最小骨架约束。
 func (c KernelConfig) Validate() error {
 	if strings.TrimSpace(c.Endpoint) == "" {
-		return fmt.Errorf("%w: endpoint is required", errInvalidConfig)
+		return fmt.Errorf("%w: endpoint is required", types.ErrInvalidConfig)
 	}
 	if strings.TrimSpace(c.SNI) == "" {
-		return fmt.Errorf("%w: sni is required", errInvalidConfig)
+		return fmt.Errorf("%w: sni is required", types.ErrInvalidConfig)
 	}
 	if c.MTU < 1280 || c.MTU > 65535 {
-		return fmt.Errorf("%w: mtu out of range", errInvalidConfig)
+		return fmt.Errorf("%w: mtu out of range", types.ErrInvalidConfig)
 	}
 	if c.Keepalive < 0 {
-		return fmt.Errorf("%w: keepalive must be positive", errInvalidConfig)
+		return fmt.Errorf("%w: keepalive must be positive", types.ErrInvalidConfig)
 	}
 	if c.ConnectTimeout <= 0 {
-		return fmt.Errorf("%w: connect timeout must be positive", errInvalidConfig)
+		return fmt.Errorf("%w: connect timeout must be positive", types.ErrInvalidConfig)
 	}
 	switch c.Mode {
 	case ModeTUN, ModeSOCKS, ModeHTTP:
 		return nil
 	default:
-		return fmt.Errorf("%w: unsupported mode %q", errInvalidConfig, c.Mode)
+		return fmt.Errorf("%w: %q", types.ErrUnsupportedMode, c.Mode)
 	}
 }
