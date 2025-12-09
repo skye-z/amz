@@ -35,6 +35,9 @@ type Event struct {
 	Timestamp time.Time
 }
 
+// EventHandler 用于向上层分发基础生命周期事件。
+type EventHandler func(Event)
+
 // Stats 描述基础阶段可观测的最小统计信息。
 type Stats struct {
 	StartCount int

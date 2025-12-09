@@ -93,6 +93,9 @@ func TestKernelConfigValidate(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		Keepalive:      config.DefaultKeepalive,
 		ConnectTimeout: config.DefaultConnectTimeout,
+		SOCKS: config.SOCKSConfig{
+			ListenAddress: config.DefaultSOCKSListenAddress,
+		},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
