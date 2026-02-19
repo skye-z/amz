@@ -25,6 +25,16 @@ type ConnectIPSnapshot struct {
 	State    string
 	Protocol string
 	Endpoint string
+	IPv4     string
+	IPv6     string
+	Routes   []string
+}
+
+// SessionInfo 描述会话建立后分配的地址与路由信息。
+type SessionInfo struct {
+	IPv4   string
+	IPv6   string
+	Routes []string
 }
 
 // ConnectIPSessionManager 管理 CONNECT-IP 会话建立阶段的最小状态。
@@ -33,6 +43,7 @@ type ConnectIPSessionManager struct {
 	options ConnectIPOptions
 	quic    QUICOptions
 	h3      HTTP3Options
+	info    SessionInfo
 }
 
 // BuildConnectIPOptions 基于 HTTP/3 参数生成 CONNECT-IP 会话参数。
@@ -65,5 +76,17 @@ func (m *ConnectIPSessionManager) Snapshot() ConnectIPSnapshot {
 		State:    m.state,
 		Protocol: m.options.Protocol,
 		Endpoint: m.quic.Endpoint,
+		IPv4:     m.info.IPv4,
+		IPv6:     m.info.IPv6,
+		Routes:   append([]string(nil), m.info.Routes...),
+	}
+}
+
+// UpdateSessionInfo 更新 CONNECT-IP 会话分配的地址与路由。
+func (m *ConnectIPSessionManager) UpdateSessionInfo(info SessionInfo) {
+	m.info = SessionInfo{
+		IPv4:   info.IPv4,
+		IPv6:   info.IPv6,
+		Routes: append([]string(nil), info.Routes...),
 	}
 }
