@@ -25,6 +25,10 @@ var (
 	ErrInvalidConfig = errors.New("invalid config")
 	// ErrUnsupportedMode 表示当前运行模式尚未实现。
 	ErrUnsupportedMode = errors.New("unsupported mode")
+	// ErrCloudflareCompat 表示 Cloudflare 兼容层处理失败。
+	ErrCloudflareCompat = errors.New("cloudflare compatibility error")
+	// ErrAuthenticationFailed 表示鉴权或授权阶段被远端拒绝。
+	ErrAuthenticationFailed = errors.New("authentication failed")
 )
 
 // Event 描述基础阶段可向上层暴露的状态变化。
