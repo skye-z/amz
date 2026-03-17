@@ -20,6 +20,13 @@ type SOCKSManager struct {
 	listen string
 }
 
+// SOCKSSnapshot 描述 SOCKS5 管理器的最小配置快照。
+type SOCKSSnapshot struct {
+	ListenAddress string
+	Username      string
+	EnableUDP     bool
+}
+
 // HTTPProxyManager 管理 HTTP 代理模式的最小监听骨架。
 type HTTPProxyManager struct {
 	mu     sync.Mutex
@@ -27,6 +34,12 @@ type HTTPProxyManager struct {
 	state  string
 	stats  types.Stats
 	listen string
+}
+
+// HTTPSnapshot 描述 HTTP 代理管理器的最小配置快照。
+type HTTPSnapshot struct {
+	ListenAddress        string
+	ReuseTunnelLifecycle bool
 }
 
 // NewSOCKSManager 创建 SOCKS5 模式的最小管理器。
@@ -105,6 +118,17 @@ func (m *SOCKSManager) Stats() types.Stats {
 	return m.stats
 }
 
+// Snapshot 返回 SOCKS5 管理器的配置快照。
+func (m *SOCKSManager) Snapshot() SOCKSSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return SOCKSSnapshot{
+		ListenAddress: m.listen,
+		Username:      m.cfg.SOCKS.Username,
+		EnableUDP:     m.cfg.SOCKS.EnableUDP,
+	}
+}
+
 // ListenAddress 返回 HTTP 代理管理器的监听地址快照。
 func (m *HTTPProxyManager) ListenAddress() string {
 	m.mu.Lock()
@@ -153,6 +177,16 @@ func (m *HTTPProxyManager) Stats() types.Stats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.stats
+}
+
+// Snapshot 返回 HTTP 代理管理器的配置快照。
+func (m *HTTPProxyManager) Snapshot() HTTPSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return HTTPSnapshot{
+		ListenAddress:        m.listen,
+		ReuseTunnelLifecycle: true,
+	}
 }
 
 // 归一化代理模式配置并按需补齐默认值。

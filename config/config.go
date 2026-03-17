@@ -39,6 +39,9 @@ type TUNConfig struct {
 // SOCKSConfig 描述 SOCKS 模式的最小参数。
 type SOCKSConfig struct {
 	ListenAddress string
+	Username      string
+	Password      string
+	EnableUDP     bool
 }
 
 // HTTPConfig 描述 HTTP 模式的最小参数。
