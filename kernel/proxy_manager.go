@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
@@ -82,6 +83,9 @@ func (m *SOCKSManager) Start(context.Context) error {
 	if m.state == types.StateStopped {
 		return errProxyAlreadyStopped
 	}
+	if m.state == types.StateRunning {
+		return nil
+	}
 	m.logf("socks manager start: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
 	m.state = types.StateRunning
 	m.stats.StartCount++
@@ -131,6 +135,40 @@ func (m *SOCKSManager) Snapshot() SOCKSSnapshot {
 	}
 }
 
+// 记录最近一次握手时延，便于轻量模式暴露最小资源快照。
+func (m *SOCKSManager) RecordHandshakeLatency(latency time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.HandshakeLatency = latency
+}
+
+// 累加上行字节数，忽略非正数输入。
+func (m *SOCKSManager) AddTxBytes(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.TxBytes += n
+}
+
+// 累加下行字节数，忽略非正数输入。
+func (m *SOCKSManager) AddRxBytes(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.RxBytes += n
+}
+
+// 累加重连次数，便于上层观测轻量模式稳定性。
+func (m *SOCKSManager) AddReconnect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.ReconnectCount++
+}
+
 // 返回 HTTP 代理管理器的监听地址快照。
 func (m *HTTPProxyManager) ListenAddress() string {
 	m.mu.Lock()
@@ -144,6 +182,9 @@ func (m *HTTPProxyManager) Start(context.Context) error {
 	defer m.mu.Unlock()
 	if m.state == types.StateStopped {
 		return errProxyAlreadyStopped
+	}
+	if m.state == types.StateRunning {
+		return nil
 	}
 	m.logf("http proxy start: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
 	m.state = types.StateRunning
@@ -191,6 +232,40 @@ func (m *HTTPProxyManager) Snapshot() HTTPSnapshot {
 		ListenAddress:        m.listen,
 		ReuseTunnelLifecycle: true,
 	}
+}
+
+// 记录最近一次握手时延，便于轻量模式暴露最小资源快照。
+func (m *HTTPProxyManager) RecordHandshakeLatency(latency time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.HandshakeLatency = latency
+}
+
+// 累加上行字节数，忽略非正数输入。
+func (m *HTTPProxyManager) AddTxBytes(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.TxBytes += n
+}
+
+// 累加下行字节数，忽略非正数输入。
+func (m *HTTPProxyManager) AddRxBytes(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.RxBytes += n
+}
+
+// 累加重连次数，便于上层观测轻量模式稳定性。
+func (m *HTTPProxyManager) AddReconnect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stats.ReconnectCount++
 }
 
 // 输出 SOCKS5 生命周期相关的最小日志，未注入时保持静默。
