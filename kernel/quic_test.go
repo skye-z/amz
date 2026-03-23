@@ -35,6 +35,26 @@ func TestBuildQUICOptions(t *testing.T) {
 	}
 }
 
+// 验证 QUIC 参数构造会补齐默认值并保持最小传输开关。
+func TestBuildQUICOptionsAppliesDefaults(t *testing.T) {
+	options, err := kernel.BuildQUICOptions(config.KernelConfig{})
+	if err != nil {
+		t.Fatalf("expected quic options with defaults, got %v", err)
+	}
+	if options.Endpoint != config.DefaultEndpoint {
+		t.Fatalf("expected endpoint %q, got %q", config.DefaultEndpoint, options.Endpoint)
+	}
+	if options.ServerName != config.DefaultSNI {
+		t.Fatalf("expected server name %q, got %q", config.DefaultSNI, options.ServerName)
+	}
+	if options.Keepalive != config.DefaultKeepalive.String() {
+		t.Fatalf("expected keepalive %q, got %q", config.DefaultKeepalive.String(), options.Keepalive)
+	}
+	if !options.EnableDatagrams {
+		t.Fatal("expected datagrams enabled")
+	}
+}
+
 // 验证 HTTP/3 连接参数会复用 QUIC 连接信息。
 func TestBuildHTTP3Options(t *testing.T) {
 	http3Options := kernel.BuildHTTP3Options(kernel.QUICOptions{
@@ -77,6 +97,36 @@ func TestBuildQUICOptionsWithExtensions(t *testing.T) {
 	}
 	if got := options.ConnectionParameters["max_streams"]; got != "16" {
 		t.Fatalf("expected connection parameter %q, got %q", "16", got)
+	}
+}
+
+// 验证 QUIC 参数会复制配置中的连接参数，避免后续变更污染传输层快照。
+func TestBuildQUICOptionsCopiesConfigConnectionParameters(t *testing.T) {
+	cfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS: config.SOCKSConfig{
+			ListenAddress: config.DefaultSOCKSListenAddress,
+		},
+		QUIC: config.QUICConfig{
+			ConnectionParameters: map[string]string{
+				"masque_version": "draft-08",
+			},
+		},
+	}
+
+	options, err := kernel.BuildQUICOptions(cfg)
+	if err != nil {
+		t.Fatalf("expected quic options, got %v", err)
+	}
+
+	cfg.QUIC.ConnectionParameters["masque_version"] = "mutated"
+	if got := options.ConnectionParameters["masque_version"]; got != "draft-08" {
+		t.Fatalf("expected copied connection parameter %q, got %q", "draft-08", got)
 	}
 }
 

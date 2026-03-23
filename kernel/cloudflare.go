@@ -1,6 +1,11 @@
 package kernel
 
-import "github.com/skye-z/amz/config"
+import (
+	"fmt"
+
+	"github.com/skye-z/amz/config"
+	"github.com/skye-z/amz/types"
+)
 
 const (
 	// 表示 Cloudflare 使用的 cf-connect-ip 协议变体。
@@ -39,13 +44,15 @@ func DefaultCloudflareQuirks() CloudflareQuirks {
 
 // 创建复用基础配置校验的最小兼容层。
 func NewCloudflareCompatLayer(cfg config.KernelConfig) (*CloudflareCompatLayer, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	clone := cfg
+	clone.FillDefaults()
+	if err := clone.Validate(); err != nil {
+		return nil, fmt.Errorf("validate cloudflare config: %w", err)
 	}
 	return &CloudflareCompatLayer{
 		snapshot: CloudflareSnapshot{
 			Protocol: ProtocolCFConnectIP,
-			Endpoint: cfg.Endpoint,
+			Endpoint: clone.Endpoint,
 			Quirks:   DefaultCloudflareQuirks(),
 		},
 	}, nil
@@ -54,4 +61,16 @@ func NewCloudflareCompatLayer(cfg config.KernelConfig) (*CloudflareCompatLayer, 
 // 返回兼容层的只读快照。
 func (l *CloudflareCompatLayer) Snapshot() CloudflareSnapshot {
 	return l.snapshot
+}
+
+// 为 Cloudflare 兼容分支补充错误上下文，并处理常见未授权映射。
+func (l *CloudflareCompatLayer) WrapResponseError(operation string, statusCode int, cause error) error {
+	if statusCode == 401 && l.snapshot.Quirks.MapUnauthorizedToAuthError {
+		cause = types.ErrAuthenticationFailed
+	}
+	quirk := "response_error"
+	if statusCode == 401 {
+		quirk = "unauthorized"
+	}
+	return types.WrapCloudflareError(operation, quirk, cause)
 }

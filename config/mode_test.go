@@ -6,6 +6,46 @@ import (
 	"github.com/skye-z/amz/config"
 )
 
+// 验证默认值填充会将仅包含空白的模式字段视为缺失值处理。
+func TestKernelConfigFillDefaultsTrimWhitespaceMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      config.KernelConfig
+		wantMode string
+		wantName string
+	}{
+		{
+			name: "whitespace mode falls back to tun",
+			cfg: config.KernelConfig{
+				Mode: " \t\n ",
+			},
+			wantMode: config.ModeTUN,
+			wantName: "igara0",
+		},
+		{
+			name: "explicit socks mode stays unchanged",
+			cfg: config.KernelConfig{
+				Mode: config.ModeSOCKS,
+			},
+			wantMode: config.ModeSOCKS,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			cfg.FillDefaults()
+
+			if cfg.Mode != tt.wantMode {
+				t.Fatalf("expected mode %q, got %q", tt.wantMode, cfg.Mode)
+			}
+			if tt.wantName != "" && cfg.TUN.Name != tt.wantName {
+				t.Fatalf("expected tun name %q, got %q", tt.wantName, cfg.TUN.Name)
+			}
+		})
+	}
+}
+
 // 验证模式化配置字段会按运行模式参与校验。
 func TestKernelConfigValidateByMode(t *testing.T) {
 	tests := []struct {

@@ -4,11 +4,69 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/skye-z/amz/internal/tun"
 	"github.com/skye-z/amz/types"
 )
+
+// 验证地址校验会以表驱动方式覆盖协议前缀解析与错误分支。
+func TestAddressValidateTableDriven(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		addr        tun.Address
+		wantErr     bool
+		wantMessage string
+	}{
+		{
+			name: "trim ipv4 cidr before parse",
+			addr: tun.Address{CIDR: " 172.16.0.2/32\t"},
+		},
+		{
+			name: "trim ipv6 cidr before parse",
+			addr: tun.Address{CIDR: "\n2606:4700:110:8d36::2/128 "},
+		},
+		{
+			name:        "reject blank cidr",
+			addr:        tun.Address{CIDR: "  \n "},
+			wantErr:     true,
+			wantMessage: "address cidr is required",
+		},
+		{
+			name:        "reject malformed cidr",
+			addr:        tun.Address{CIDR: "172.16.0.2"},
+			wantErr:     true,
+			wantMessage: "invalid address cidr",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.addr.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if !errors.Is(err, types.ErrInvalidConfig) {
+					t.Fatalf("expected ErrInvalidConfig, got %v", err)
+				}
+				if !strings.Contains(err.Error(), tt.wantMessage) {
+					t.Fatalf("expected error to contain %q, got %q", tt.wantMessage, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
 
 // 验证平台 provider 选择入口会返回对应平台的占位实现。
 func TestSelectProviderByPlatform(t *testing.T) {

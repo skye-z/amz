@@ -95,7 +95,7 @@ func (c *KernelConfig) FillDefaults() {
 	if c.MTU == 0 {
 		c.MTU = DefaultMTU
 	}
-	if c.Mode == "" {
+	if strings.TrimSpace(c.Mode) == "" {
 		c.Mode = ModeTUN
 	}
 	if c.Keepalive == 0 {

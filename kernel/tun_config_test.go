@@ -2,9 +2,11 @@ package kernel_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/skye-z/amz/kernel"
+	"github.com/skye-z/amz/types"
 )
 
 // 验证假 TUN 设备可以按队列顺序读取注入的数据包并拷贝写入数据。
@@ -125,6 +127,47 @@ func TestTUNConfigurationValidate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := tt.cfg.Validate(); err == nil {
 				t.Fatalf("expected validation error")
+			}
+		})
+	}
+}
+
+// 验证地址前缀校验会处理协议前缀解析与错误分支。
+func TestTUNAddressValidateTableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    kernel.TUNAddress
+		wantErr bool
+	}{
+		{
+			name: "trim ipv4 cidr",
+			addr: kernel.TUNAddress{CIDR: " 172.16.0.2/32\t"},
+		},
+		{
+			name: "trim ipv6 cidr",
+			addr: kernel.TUNAddress{CIDR: "\n2606:4700:110:8d36::2/128 "},
+		},
+		{
+			name:    "reject malformed cidr",
+			addr:    kernel.TUNAddress{CIDR: "172.16.0.2"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.addr.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if !errors.Is(err, types.ErrInvalidConfig) {
+					t.Fatalf("expected ErrInvalidConfig, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
 			}
 		})
 	}

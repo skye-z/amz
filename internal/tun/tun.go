@@ -37,10 +37,11 @@ type Address struct {
 
 // 检查地址前缀是否为可解析的 CIDR。
 func (a Address) Validate() error {
-	if strings.TrimSpace(a.CIDR) == "" {
+	cidr := strings.TrimSpace(a.CIDR)
+	if cidr == "" {
 		return fmt.Errorf("%w: address cidr is required", types.ErrInvalidConfig)
 	}
-	if _, err := netip.ParsePrefix(a.CIDR); err != nil {
+	if _, err := netip.ParsePrefix(cidr); err != nil {
 		return fmt.Errorf("%w: invalid address cidr: %v", types.ErrInvalidConfig, err)
 	}
 	return nil
