@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -14,11 +15,17 @@ var errProxyAlreadyStopped = errors.New("proxy manager already stopped")
 
 // 管理 SOCKS5 模式的最小监听骨架。
 type SOCKSManager struct {
-	mu     sync.Mutex
-	cfg    config.KernelConfig
-	state  string
-	stats  types.Stats
-	listen string
+	mu            sync.Mutex
+	cfg           config.KernelConfig
+	state         string
+	stats         types.Stats
+	listen        string
+	listener      net.Listener
+	udpPacketConn net.PacketConn
+	runCancel     context.CancelFunc
+	runWG         sync.WaitGroup
+	udpRelay      UDPAssociateRelay
+	associations  map[string]*udpAssociation
 }
 
 // 描述 SOCKS5 管理器的最小配置快照。
@@ -74,35 +81,6 @@ func (m *SOCKSManager) ListenAddress() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.listen
-}
-
-// 记录启动次数并切换到运行态。
-func (m *SOCKSManager) Start(context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.state == types.StateStopped {
-		return errProxyAlreadyStopped
-	}
-	if m.state == types.StateRunning {
-		return nil
-	}
-	m.logf("socks manager start: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
-	m.state = types.StateRunning
-	m.stats.StartCount++
-	return nil
-}
-
-// 记录停止次数并切换到停止态。
-func (m *SOCKSManager) Stop(context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.state == types.StateStopped {
-		return nil
-	}
-	m.logf("socks manager stop: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
-	m.state = types.StateStopped
-	m.stats.StopCount++
-	return nil
 }
 
 // 复用停止流程，便于上层统一回收。

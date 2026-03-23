@@ -39,18 +39,21 @@ func TestSOCKSManagerStartStopAndStats(t *testing.T) {
 		MTU:      config.DefaultMTU,
 		Mode:     config.ModeSOCKS,
 		SOCKS: config.SOCKSConfig{
-			ListenAddress: "127.0.0.1:2080",
+			ListenAddress: "127.0.0.1:0",
 		},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if mgr.ListenAddress() != "127.0.0.1:2080" {
+	if mgr.ListenAddress() != "127.0.0.1:0" {
 		t.Fatalf("expected explicit listen address, got %q", mgr.ListenAddress())
 	}
 
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatalf("expected start to succeed, got %v", err)
+	}
+	if mgr.ListenAddress() == "127.0.0.1:0" {
+		t.Fatalf("expected runtime listener address to be updated, got %q", mgr.ListenAddress())
 	}
 	if mgr.State() != types.StateRunning {
 		t.Fatalf("expected running state, got %q", mgr.State())

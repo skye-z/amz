@@ -21,7 +21,7 @@ func TestSOCKSManagerConcurrentStartStopCountsOnce(t *testing.T) {
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
 		SOCKS: config.SOCKSConfig{
-			ListenAddress: config.DefaultSOCKSListenAddress,
+			ListenAddress: "127.0.0.1:0",
 		},
 	})
 	if err != nil {
