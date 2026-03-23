@@ -19,13 +19,13 @@ func TestNewHTTPProxyManager(t *testing.T) {
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
 		HTTP: config.HTTPConfig{
-			ListenAddress: "127.0.0.1:18080",
+			ListenAddress: "127.0.0.1:0",
 		},
 	})
 	if err != nil {
 		t.Fatalf("expected manager creation success, got %v", err)
 	}
-	if manager.ListenAddress() != "127.0.0.1:18080" {
+	if manager.ListenAddress() != "127.0.0.1:0" {
 		t.Fatalf("expected listen address to match config, got %q", manager.ListenAddress())
 	}
 	if manager.State() != types.StateIdle {
@@ -47,7 +47,7 @@ func TestHTTPProxyManagerStartStop(t *testing.T) {
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
 		HTTP: config.HTTPConfig{
-			ListenAddress: config.DefaultHTTPListenAddress,
+			ListenAddress: "127.0.0.1:0",
 		},
 	})
 	if err != nil {
@@ -56,6 +56,9 @@ func TestHTTPProxyManagerStartStop(t *testing.T) {
 
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("expected start success, got %v", err)
+	}
+	if manager.ListenAddress() == "127.0.0.1:0" {
+		t.Fatalf("expected runtime listener address to be updated, got %q", manager.ListenAddress())
 	}
 	if manager.State() != types.StateRunning {
 		t.Fatalf("expected running state, got %q", manager.State())

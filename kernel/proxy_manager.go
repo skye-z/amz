@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,11 +38,16 @@ type SOCKSSnapshot struct {
 
 // 管理 HTTP 代理模式的最小监听骨架。
 type HTTPProxyManager struct {
-	mu     sync.Mutex
-	cfg    config.KernelConfig
-	state  string
-	stats  types.Stats
-	listen string
+	mu        sync.Mutex
+	cfg       config.KernelConfig
+	state     string
+	stats     types.Stats
+	listen    string
+	listener  net.Listener
+	server    *http.Server
+	runWG     sync.WaitGroup
+	dialer    HTTPStreamDialer
+	transport http.RoundTripper
 }
 
 // 描述 HTTP 代理管理器的最小配置快照。
@@ -152,35 +158,6 @@ func (m *HTTPProxyManager) ListenAddress() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.listen
-}
-
-// 记录启动次数并切换到运行态。
-func (m *HTTPProxyManager) Start(context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.state == types.StateStopped {
-		return errProxyAlreadyStopped
-	}
-	if m.state == types.StateRunning {
-		return nil
-	}
-	m.logf("http proxy start: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
-	m.state = types.StateRunning
-	m.stats.StartCount++
-	return nil
-}
-
-// 记录停止次数并切换到停止态。
-func (m *HTTPProxyManager) Stop(context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.state == types.StateStopped {
-		return nil
-	}
-	m.logf("http proxy stop: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
-	m.state = types.StateStopped
-	m.stats.StopCount++
-	return nil
 }
 
 // 复用停止流程，便于上层统一回收。

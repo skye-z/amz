@@ -49,7 +49,7 @@ func TestHTTPProxyManagerConcurrentStartStopCountsOnce(t *testing.T) {
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
 		HTTP: config.HTTPConfig{
-			ListenAddress: config.DefaultHTTPListenAddress,
+			ListenAddress: "127.0.0.1:0",
 		},
 	})
 	if err != nil {
