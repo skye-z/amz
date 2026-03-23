@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -345,6 +346,7 @@ type Adapter interface {
 	ApplyRoutes(context.Context, Device, RoutePlan) error
 	Reset(context.Context) error
 	Snapshot() Snapshot
+	PlaceholderError() error
 }
 
 // 提供仅用于测试与骨架联调的内存假设备。
@@ -500,6 +502,14 @@ type FakeAdapter struct {
 // 创建一个只记录快照、不触发真实系统调用的假 adapter。
 func NewFakeAdapter() *FakeAdapter {
 	return &FakeAdapter{}
+}
+
+// 返回当前 adapter 仍为占位实现的结构化错误。
+func (a *FakeAdapter) PlaceholderError() error {
+	return &PlaceholderError{
+		Platform:  runtime.GOOS,
+		Component: "adapter",
+	}
 }
 
 // 记录一次配置应用，不执行真实平台调用。

@@ -15,4 +15,7 @@ func TestCommonErrors(t *testing.T) {
 	if !errors.Is(types.ErrUnsupportedMode, types.ErrUnsupportedMode) {
 		t.Fatal("expected ErrUnsupportedMode to match itself")
 	}
+	if !errors.Is(types.ErrNotImplemented, types.ErrNotImplemented) {
+		t.Fatal("expected ErrNotImplemented to match itself")
+	}
 }

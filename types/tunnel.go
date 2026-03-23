@@ -25,6 +25,8 @@ var (
 	ErrInvalidConfig = errors.New("invalid config")
 	// 表示当前运行模式尚未实现。
 	ErrUnsupportedMode = errors.New("unsupported mode")
+	// 表示当前能力仅有占位骨架，尚未接入真实实现。
+	ErrNotImplemented = errors.New("not implemented")
 	// 表示 Cloudflare 兼容层处理失败。
 	ErrCloudflareCompat = errors.New("cloudflare compatibility error")
 	// 表示鉴权或授权阶段被远端拒绝。

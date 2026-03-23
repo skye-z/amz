@@ -2,10 +2,12 @@ package tun_test
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 
 	"github.com/skye-z/amz/internal/tun"
+	"github.com/skye-z/amz/types"
 )
 
 // 验证平台 provider 选择入口会返回对应平台的占位实现。
@@ -284,6 +286,73 @@ func TestAssembleValidation(t *testing.T) {
 	}
 	if assembled.Platform != runtime.GOOS {
 		t.Fatalf("expected runtime platform %q, got %q", runtime.GOOS, assembled.Platform)
+	}
+	if err := assembled.Close(); err != nil {
+		t.Fatalf("expected close success, got %v", err)
+	}
+}
+
+// 验证占位 provider、adapter 与装配结果都会暴露明确的未实现信号。
+func TestPlaceholderSignalsNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	provider, err := tun.NewProviderForOS("linux")
+	if err != nil {
+		t.Fatalf("expected provider creation success, got %v", err)
+	}
+
+	providerErr := provider.PlaceholderError()
+	if providerErr == nil {
+		t.Fatal("expected provider placeholder error")
+	}
+	if !errors.Is(providerErr, types.ErrNotImplemented) {
+		t.Fatalf("expected provider placeholder to wrap ErrNotImplemented, got %v", providerErr)
+	}
+	var typedErr *tun.PlaceholderError
+	if !errors.As(providerErr, &typedErr) {
+		t.Fatalf("expected typed placeholder error, got %T", providerErr)
+	}
+	if typedErr.Platform != "linux" || typedErr.Component != "provider" {
+		t.Fatalf("unexpected provider placeholder error: %+v", typedErr)
+	}
+
+	adapter := tun.NewFakeAdapter()
+	adapterErr := adapter.PlaceholderError()
+	if adapterErr == nil {
+		t.Fatal("expected adapter placeholder error")
+	}
+	if !errors.Is(adapterErr, types.ErrNotImplemented) {
+		t.Fatalf("expected adapter placeholder to wrap ErrNotImplemented, got %v", adapterErr)
+	}
+	if !errors.As(adapterErr, &typedErr) {
+		t.Fatalf("expected typed adapter placeholder error, got %T", adapterErr)
+	}
+	if typedErr.Platform != runtime.GOOS || typedErr.Component != "adapter" {
+		t.Fatalf("unexpected adapter placeholder error: %+v", typedErr)
+	}
+
+	assembled, err := tun.Assemble(tun.AssembleOptions{
+		Platform: "linux",
+		Device: tun.DeviceConfig{
+			Name: "amz0",
+			MTU:  1400,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected assemble success, got %v", err)
+	}
+	assemblyErr := assembled.PlaceholderError()
+	if assemblyErr == nil {
+		t.Fatal("expected assembly placeholder error")
+	}
+	if !errors.Is(assemblyErr, types.ErrNotImplemented) {
+		t.Fatalf("expected assembly placeholder to wrap ErrNotImplemented, got %v", assemblyErr)
+	}
+	if !errors.As(assemblyErr, &typedErr) {
+		t.Fatalf("expected typed assembly placeholder error, got %T", assemblyErr)
+	}
+	if typedErr.Platform != "linux" || typedErr.Component != "assembly" {
+		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
 	}
 	if err := assembled.Close(); err != nil {
 		t.Fatalf("expected close success, got %v", err)

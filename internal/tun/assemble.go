@@ -36,6 +36,18 @@ type Assembly struct {
 	Adapter  *FakeAdapter
 }
 
+// 返回当前装配结果仍仅包含占位实现的结构化错误。
+func (a *Assembly) PlaceholderError() error {
+	platform := runtime.GOOS
+	if a != nil && a.Platform != "" {
+		platform = a.Platform
+	}
+	return &PlaceholderError{
+		Platform:  platform,
+		Component: "assembly",
+	}
+}
+
 // 关闭装配结果持有的设备与 provider。
 func (a *Assembly) Close() error {
 	if a == nil {
