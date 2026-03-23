@@ -61,6 +61,12 @@ func TestSanitizeTextRedactsNestedSensitiveValues(t *testing.T) {
 			secret: "tok_live_123456",
 			marker: "endpoint=token=<redacted>",
 		},
+		{
+			name:   "json style credentials",
+			input:  `register failed: payload={"token":"tok_live_123456","private_key":"priv_key_abcdef","device_credentials":"cred_payload_xyz"}`,
+			secret: "tok_live_123456",
+			marker: `"token":"<redacted>"`,
+		},
 	}
 
 	for _, tt := range tests {

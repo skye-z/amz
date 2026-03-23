@@ -114,6 +114,10 @@ func sanitizeArgs(args []any) []any {
 			masked[i] = types.SanitizeText(text)
 			continue
 		}
+		if err, ok := arg.(error); ok {
+			masked[i] = types.SanitizeError(err)
+			continue
+		}
 		masked[i] = arg
 	}
 	return masked
