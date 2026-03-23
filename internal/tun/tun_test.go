@@ -247,3 +247,149 @@ func TestValidatePlatformNeutralModels(t *testing.T) {
 		t.Fatal("expected custom route mode invalid")
 	}
 }
+
+// 验证高权限需求、安全警告与失败回滚骨架会产出稳定快照。
+func TestProtectionPlanSnapshotIsolation(t *testing.T) {
+	t.Parallel()
+
+	plan := tun.ProtectionPlan{
+		Requirement: tun.PrivilegeRequirement{
+			Level:      tun.PrivilegeLevelElevated,
+			Reason:     "configure tun routes",
+			Operations: []string{"create-device", "apply-routes"},
+		},
+		Warnings: []tun.SecurityWarning{
+			{
+				Code:       "route-change",
+				Summary:    "default route will change",
+				Mitigation: "confirm physical uplink remains reachable",
+			},
+		},
+		Rollback: []tun.RollbackStep{
+			{
+				Stage:  "routes",
+				Action: "restore previous routes snapshot",
+			},
+		},
+	}
+
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("expected valid protection plan, got %v", err)
+	}
+
+	snapshot := plan.Clone()
+	if snapshot.Requirement.Level != tun.PrivilegeLevelElevated {
+		t.Fatalf("expected elevated requirement, got %q", snapshot.Requirement.Level)
+	}
+	if len(snapshot.Requirement.Operations) != 2 {
+		t.Fatalf("expected two operations, got %d", len(snapshot.Requirement.Operations))
+	}
+	if len(snapshot.Warnings) != 1 || snapshot.Warnings[0].Code != "route-change" {
+		t.Fatalf("unexpected warning snapshot: %+v", snapshot.Warnings)
+	}
+	if len(snapshot.Rollback) != 1 || snapshot.Rollback[0].Action != "restore previous routes snapshot" {
+		t.Fatalf("unexpected rollback snapshot: %+v", snapshot.Rollback)
+	}
+
+	cloned := snapshot
+	plan.Requirement.Operations[0] = "mutated"
+	plan.Warnings[0].Code = "mutated"
+	plan.Rollback[0].Action = "mutated"
+	if cloned.Requirement.Operations[0] != "create-device" {
+		t.Fatalf("expected requirement isolation, got %+v", cloned.Requirement.Operations)
+	}
+	if cloned.Warnings[0].Code != "route-change" {
+		t.Fatalf("expected warning isolation, got %+v", cloned.Warnings)
+	}
+	if cloned.Rollback[0].Action != "restore previous routes snapshot" {
+		t.Fatalf("expected rollback isolation, got %+v", cloned.Rollback)
+	}
+}
+
+// 验证失败恢复入口只生成恢复建议，不执行真实系统调用。
+func TestRecoverFailureReturnsGuidance(t *testing.T) {
+	t.Parallel()
+
+	recovery := tun.NewFailureRecovery(tun.ProtectionPlan{
+		Requirement: tun.PrivilegeRequirement{
+			Level:      tun.PrivilegeLevelElevated,
+			Reason:     "configure tun routes",
+			Operations: []string{"create-device", "apply-routes"},
+		},
+		Warnings: []tun.SecurityWarning{
+			{
+				Code:       "admin-needed",
+				Summary:    "privileged operations may fail without elevation",
+				Mitigation: "rerun with appropriate privileges after confirmation",
+			},
+		},
+		Rollback: []tun.RollbackStep{
+			{
+				Stage:  "device",
+				Action: "close placeholder device handle",
+			},
+			{
+				Stage:  "routes",
+				Action: "restore previous routes snapshot",
+			},
+		},
+	})
+
+	result, err := recovery.Recover(tun.FailureEvent{
+		Stage: "apply-routes",
+		Err:   context.DeadlineExceeded,
+	})
+	if err != nil {
+		t.Fatalf("expected recover success, got %v", err)
+	}
+	if result.Stage != "apply-routes" {
+		t.Fatalf("expected stage apply-routes, got %q", result.Stage)
+	}
+	if result.Cause != context.DeadlineExceeded.Error() {
+		t.Fatalf("expected cause %q, got %q", context.DeadlineExceeded.Error(), result.Cause)
+	}
+	if !result.RollbackRequired {
+		t.Fatal("expected rollback required")
+	}
+	if len(result.Rollback) != 2 {
+		t.Fatalf("expected two rollback steps, got %d", len(result.Rollback))
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Code != "admin-needed" {
+		t.Fatalf("unexpected warnings: %+v", result.Warnings)
+	}
+	if result.UserHint == "" {
+		t.Fatal("expected non-empty user hint")
+	}
+
+	result.Rollback[0].Action = "mutated"
+	result.Warnings[0].Code = "mutated"
+	second, err := recovery.Recover(tun.FailureEvent{Stage: "apply-routes", Err: context.Canceled})
+	if err != nil {
+		t.Fatalf("expected second recover success, got %v", err)
+	}
+	if second.Rollback[0].Action != "close placeholder device handle" {
+		t.Fatalf("expected rollback isolation, got %+v", second.Rollback)
+	}
+	if second.Warnings[0].Code != "admin-needed" {
+		t.Fatalf("expected warning isolation, got %+v", second.Warnings)
+	}
+
+	if _, err := recovery.Recover(tun.FailureEvent{}); err == nil {
+		t.Fatal("expected invalid failure event")
+	}
+	if _, err := tun.NewFailureRecovery(tun.ProtectionPlan{}).Recover(tun.FailureEvent{Stage: "x", Err: context.Canceled}); err == nil {
+		t.Fatal("expected invalid protection plan")
+	}
+	if err := (tun.PrivilegeRequirement{}).Validate(); err == nil {
+		t.Fatal("expected invalid privilege requirement")
+	}
+	if err := (tun.SecurityWarning{}).Validate(); err == nil {
+		t.Fatal("expected invalid security warning")
+	}
+	if err := (tun.RollbackStep{}).Validate(); err == nil {
+		t.Fatal("expected invalid rollback step")
+	}
+	if err := (tun.ProtectionPlan{}).Validate(); err == nil {
+		t.Fatal("expected invalid protection plan")
+	}
+}

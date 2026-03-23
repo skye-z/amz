@@ -127,6 +127,203 @@ func (p RoutePlan) Validate() error {
 	return nil
 }
 
+// 表示 TUN 相关操作所需的最小权限级别。
+type PrivilegeLevel string
+
+const (
+	// 表示无需额外高权限的占位级别。
+	PrivilegeLevelUnprivileged PrivilegeLevel = "unprivileged"
+	// 表示需要管理员或 root 权限的占位级别。
+	PrivilegeLevelElevated PrivilegeLevel = "elevated"
+)
+
+// 检查权限级别是否属于当前支持的最小集合。
+func (l PrivilegeLevel) Valid() bool {
+	switch l {
+	case PrivilegeLevelUnprivileged, PrivilegeLevelElevated:
+		return true
+	default:
+		return false
+	}
+}
+
+// 描述执行 TUN 相关步骤前需要声明的权限要求。
+type PrivilegeRequirement struct {
+	Level      PrivilegeLevel
+	Reason     string
+	Operations []string
+}
+
+// 返回权限要求副本，避免外部切片修改污染内部状态。
+func (r PrivilegeRequirement) Clone() PrivilegeRequirement {
+	return PrivilegeRequirement{
+		Level:      r.Level,
+		Reason:     r.Reason,
+		Operations: append([]string(nil), r.Operations...),
+	}
+}
+
+// 检查权限要求是否具备最小描述信息。
+func (r PrivilegeRequirement) Validate() error {
+	if !r.Level.Valid() {
+		return fmt.Errorf("%w: privilege level is required", types.ErrInvalidConfig)
+	}
+	if strings.TrimSpace(r.Reason) == "" {
+		return fmt.Errorf("%w: privilege reason is required", types.ErrInvalidConfig)
+	}
+	if len(r.Operations) == 0 {
+		return fmt.Errorf("%w: privilege operations are required", types.ErrInvalidConfig)
+	}
+	for _, operation := range r.Operations {
+		if strings.TrimSpace(operation) == "" {
+			return fmt.Errorf("%w: privilege operation is required", types.ErrInvalidConfig)
+		}
+	}
+	return nil
+}
+
+// 描述需要暴露给上层的安全提示。
+type SecurityWarning struct {
+	Code       string
+	Summary    string
+	Mitigation string
+}
+
+// 检查安全提示是否具备最小展示信息。
+func (w SecurityWarning) Validate() error {
+	if strings.TrimSpace(w.Code) == "" {
+		return fmt.Errorf("%w: warning code is required", types.ErrInvalidConfig)
+	}
+	if strings.TrimSpace(w.Summary) == "" {
+		return fmt.Errorf("%w: warning summary is required", types.ErrInvalidConfig)
+	}
+	if strings.TrimSpace(w.Mitigation) == "" {
+		return fmt.Errorf("%w: warning mitigation is required", types.ErrInvalidConfig)
+	}
+	return nil
+}
+
+// 描述失败后建议执行的单个回滚动作。
+type RollbackStep struct {
+	Stage  string
+	Action string
+}
+
+// 检查回滚动作是否具备最小描述信息。
+func (s RollbackStep) Validate() error {
+	if strings.TrimSpace(s.Stage) == "" {
+		return fmt.Errorf("%w: rollback stage is required", types.ErrInvalidConfig)
+	}
+	if strings.TrimSpace(s.Action) == "" {
+		return fmt.Errorf("%w: rollback action is required", types.ErrInvalidConfig)
+	}
+	return nil
+}
+
+// 描述 TUN 高权限、安全警告与回滚建议的骨架计划。
+type ProtectionPlan struct {
+	Requirement PrivilegeRequirement
+	Warnings    []SecurityWarning
+	Rollback    []RollbackStep
+}
+
+// 返回保护计划副本，避免外部切片修改污染内部状态。
+func (p ProtectionPlan) Clone() ProtectionPlan {
+	warnings := make([]SecurityWarning, len(p.Warnings))
+	copy(warnings, p.Warnings)
+	rollback := make([]RollbackStep, len(p.Rollback))
+	copy(rollback, p.Rollback)
+	return ProtectionPlan{
+		Requirement: p.Requirement.Clone(),
+		Warnings:    warnings,
+		Rollback:    rollback,
+	}
+}
+
+// 检查保护计划是否具备权限说明、警告与回滚步骤。
+func (p ProtectionPlan) Validate() error {
+	if err := p.Requirement.Validate(); err != nil {
+		return err
+	}
+	if len(p.Warnings) == 0 {
+		return fmt.Errorf("%w: security warnings are required", types.ErrInvalidConfig)
+	}
+	for _, warning := range p.Warnings {
+		if err := warning.Validate(); err != nil {
+			return err
+		}
+	}
+	if len(p.Rollback) == 0 {
+		return fmt.Errorf("%w: rollback steps are required", types.ErrInvalidConfig)
+	}
+	for _, step := range p.Rollback {
+		if err := step.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// 描述一次失败恢复入口收到的最小失败信息。
+type FailureEvent struct {
+	Stage string
+	Err   error
+}
+
+// 检查失败信息是否具备最小上下文。
+func (e FailureEvent) Validate() error {
+	if strings.TrimSpace(e.Stage) == "" {
+		return fmt.Errorf("%w: failure stage is required", types.ErrInvalidConfig)
+	}
+	if e.Err == nil {
+		return fmt.Errorf("%w: failure error is required", types.ErrInvalidConfig)
+	}
+	return nil
+}
+
+// 描述失败恢复入口返回给上层的只读建议结果。
+type RecoveryResult struct {
+	Stage            string
+	Cause            string
+	Rollback         []RollbackStep
+	Warnings         []SecurityWarning
+	RollbackRequired bool
+	UserHint         string
+}
+
+// 负责根据静态保护计划生成失败恢复建议。
+type FailureRecovery struct {
+	plan ProtectionPlan
+}
+
+// 创建一个仅生成恢复建议、不执行真实系统调用的恢复器。
+func NewFailureRecovery(plan ProtectionPlan) *FailureRecovery {
+	return &FailureRecovery{plan: plan.Clone()}
+}
+
+// 根据失败事件返回回滚建议与安全提示。
+func (r *FailureRecovery) Recover(event FailureEvent) (RecoveryResult, error) {
+	if err := r.plan.Validate(); err != nil {
+		return RecoveryResult{}, err
+	}
+	if err := event.Validate(); err != nil {
+		return RecoveryResult{}, err
+	}
+	plan := r.plan.Clone()
+	warnings := make([]SecurityWarning, len(plan.Warnings))
+	copy(warnings, plan.Warnings)
+	rollback := make([]RollbackStep, len(plan.Rollback))
+	copy(rollback, plan.Rollback)
+	return RecoveryResult{
+		Stage:            event.Stage,
+		Cause:            event.Err.Error(),
+		Rollback:         rollback,
+		Warnings:         warnings,
+		RollbackRequired: len(rollback) > 0,
+		UserHint:         fmt.Sprintf("stage %s failed; review warnings and apply rollback guidance before retrying with %s privileges", event.Stage, plan.Requirement.Level),
+	}, nil
+}
+
 // 约定平台无关的最小设备收发接口。
 type Device interface {
 	Name() string
