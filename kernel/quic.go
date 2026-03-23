@@ -2,7 +2,10 @@ package kernel
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"sync"
@@ -31,6 +34,9 @@ type QUICOptions struct {
 	Keepalive            string
 	CongestionControl    string
 	ConnectionParameters map[string]string
+	ClientPrivateKey     string
+	ClientCertificate    string
+	PeerPublicKey        string
 }
 
 // 描述建立 HTTP/3 客户端连接所需的最小参数。
@@ -134,7 +140,11 @@ func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3O
 }
 
 func buildTLSConfig(opts QUICOptions) *tls.Config {
-	return &tls.Config{ServerName: opts.ServerName, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true}
+	cfg := &tls.Config{ServerName: opts.ServerName, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true}
+	if cert, err := buildClientCertificate(opts); err == nil && cert != nil {
+		cfg.Certificates = []tls.Certificate{*cert}
+	}
+	return cfg
 }
 
 func buildQUICConfig(opts QUICOptions) *quic.Config {
@@ -227,6 +237,9 @@ func BuildQUICOptions(cfg config.KernelConfig) (QUICOptions, error) {
 		Keepalive:            clone.Keepalive.String(),
 		CongestionControl:    clone.QUIC.CongestionControl,
 		ConnectionParameters: cloneConnectionParameters(clone.QUIC.ConnectionParameters),
+		ClientPrivateKey:     clone.TLS.ClientPrivateKey,
+		ClientCertificate:    clone.TLS.ClientCertificate,
+		PeerPublicKey:        clone.TLS.PeerPublicKey,
 	}, nil
 }
 
@@ -249,6 +262,32 @@ func cloneConnectionParameters(src map[string]string) map[string]string {
 		dst[key] = value
 	}
 	return dst
+}
+
+func buildClientCertificate(opts QUICOptions) (*tls.Certificate, error) {
+	if opts.ClientPrivateKey == "" || opts.ClientCertificate == "" {
+		return nil, nil
+	}
+	priv, err := parseECDSAPrivateKey(opts.ClientPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	der, err := base64.StdEncoding.DecodeString(opts.ClientCertificate)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  priv,
+	}, nil
+}
+
+func parseECDSAPrivateKey(encoded string) (*ecdsa.PrivateKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	return x509.ParseECPrivateKey(raw)
 }
 
 // 创建最小连接管理器骨架。

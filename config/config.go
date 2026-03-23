@@ -60,6 +60,15 @@ type QUICConfig struct {
 	ConnectionParameters map[string]string
 }
 
+type TLSConfig struct {
+	ClientPrivateKey  string
+	ClientCertificate string
+	PeerPublicKey     string
+	EndpointV4        string
+	EndpointV6        string
+	ClientID          string
+}
+
 const (
 	// 表示通过系统 TUN 暴露隧道。
 	ModeTUN = "tun"
@@ -78,6 +87,7 @@ type KernelConfig struct {
 	Keepalive      time.Duration
 	ConnectTimeout time.Duration
 	QUIC           QUICConfig
+	TLS            TLSConfig
 	Logger         Logger
 	TUN            TUNConfig
 	SOCKS          SOCKSConfig
