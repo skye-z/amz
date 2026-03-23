@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"time"
 
 	"github.com/skye-z/amz/types"
@@ -80,4 +81,20 @@ func (m *KeepaliveManager) Events() []ConnectionEvent {
 // 返回保活与重连阶段统计快照。
 func (m *KeepaliveManager) Stats() types.Stats {
 	return m.stats.Snapshot()
+}
+
+// 按重试策略执行一次同步重连流程。
+func (m *KeepaliveManager) Reconnect(ctx context.Context, reason string, fn func(context.Context, int) error) error {
+	m.MarkDisconnected(reason)
+	var lastErr error
+	for attempt := 1; m.policy.Allow(attempt); attempt++ {
+		if err := fn(ctx, attempt); err != nil {
+			m.RecordReconnect(reason, attempt)
+			lastErr = err
+			continue
+		}
+		m.MarkConnected()
+		return nil
+	}
+	return lastErr
 }

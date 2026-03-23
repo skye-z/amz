@@ -1,7 +1,9 @@
 package kernel
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/skye-z/amz/config"
@@ -13,6 +15,8 @@ const (
 	ProtocolConnectIP = "connect-ip"
 	// 表示会话管理器尚未建立 CONNECT-IP 会话。
 	SessionStateIdle = "idle"
+	// 表示会话管理器已完成最小会话协商。
+	SessionStateReady = "ready"
 )
 
 // 描述建立 CONNECT-IP 会话所需的最小参数。
@@ -41,12 +45,24 @@ type SessionInfo struct {
 
 // 管理 CONNECT-IP 会话建立阶段的最小状态。
 type ConnectIPSessionManager struct {
+	mu      sync.Mutex
 	state   string
 	options ConnectIPOptions
 	quic    QUICOptions
 	h3      HTTP3Options
 	info    SessionInfo
 	stats   connectionStats
+	dialer  connectIPDialer
+	session connectIPSession
+}
+
+type connectIPSession interface {
+	Close() error
+	SessionInfo() SessionInfo
+}
+
+type connectIPDialer interface {
+	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error)
 }
 
 // 基于 HTTP/3 参数生成 CONNECT-IP 会话参数。
@@ -87,6 +103,8 @@ func (m *ConnectIPSessionManager) Snapshot() ConnectIPSnapshot {
 
 // 更新 CONNECT-IP 会话分配的地址与路由。
 func (m *ConnectIPSessionManager) UpdateSessionInfo(info SessionInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.info = SessionInfo{
 		IPv4:   info.IPv4,
 		IPv6:   info.IPv6,
@@ -112,4 +130,42 @@ func (m *ConnectIPSessionManager) AddRxBytes(n int) {
 // 返回会话阶段统计快照。
 func (m *ConnectIPSessionManager) Stats() types.Stats {
 	return m.stats.Snapshot()
+}
+
+// 通过最小 dialer 完成一次 CONNECT-IP 会话建立。
+func (m *ConnectIPSessionManager) Open(ctx context.Context) error {
+	m.mu.Lock()
+	dialer := m.dialer
+	quicOpts := m.quic
+	h3Opts := m.h3
+	opts := m.options
+	m.mu.Unlock()
+	if dialer == nil {
+		return fmt.Errorf("connect-ip dialer is required")
+	}
+	session, latency, err := dialer.Dial(ctx, quicOpts, h3Opts, opts)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.session = session
+	m.state = SessionStateReady
+	m.info = session.SessionInfo()
+	m.mu.Unlock()
+	m.RecordHandshakeLatency(latency)
+	return nil
+}
+
+// 关闭当前 CONNECT-IP 会话并回到空闲态。
+func (m *ConnectIPSessionManager) Close() error {
+	m.mu.Lock()
+	session := m.session
+	m.session = nil
+	m.state = SessionStateIdle
+	m.info = SessionInfo{}
+	m.mu.Unlock()
+	if session != nil {
+		return session.Close()
+	}
+	return nil
 }

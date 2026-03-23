@@ -1,9 +1,15 @@
 package kernel
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
 )
@@ -43,11 +49,116 @@ type ConnectionSnapshot struct {
 
 // 持有连接管理阶段的基础配置与状态。
 type ConnectionManager struct {
-	cfg   config.KernelConfig
-	state string
-	quic  QUICOptions
-	h3    HTTP3Options
-	stats connectionStats
+	mu     sync.Mutex
+	cfg    config.KernelConfig
+	state  string
+	quic   QUICOptions
+	h3     HTTP3Options
+	stats  connectionStats
+	dialer transportDialer
+	conn   quicConn
+	h3conn h3ClientConn
+}
+
+type quicConn interface {
+	CloseWithError(code uint64, msg string) error
+}
+
+type h3ClientConn interface {
+	Close() error
+}
+
+type transportDialer interface {
+	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error)
+}
+
+type realTransportDialer struct{}
+
+type quicConnAdapter struct{ conn *quic.Conn }
+
+func (a *quicConnAdapter) CloseWithError(code uint64, msg string) error {
+	return a.conn.CloseWithError(quic.ApplicationErrorCode(code), msg)
+}
+
+type http3ClientConnAdapter struct{}
+
+func (a *http3ClientConnAdapter) Close() error { return nil }
+
+func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+	started := time.Now()
+	addr, err := net.ResolveUDPAddr("udp", quicOpts.Endpoint)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("resolve udp endpoint: %w", err)
+	}
+	udpConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("listen udp: %w", err)
+	}
+	conn, err := quic.Dial(ctx, udpConn, addr, buildTLSConfig(quicOpts), buildQUICConfig(quicOpts))
+	if err != nil {
+		udpConn.Close()
+		return nil, nil, 0, fmt.Errorf("dial quic: %w", err)
+	}
+	transport := &http3.Transport{EnableDatagrams: h3Opts.EnableDatagrams}
+	_ = transport.NewClientConn(conn)
+	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{}, time.Since(started), nil
+}
+
+func buildTLSConfig(opts QUICOptions) *tls.Config {
+	return &tls.Config{ServerName: opts.ServerName, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true}
+}
+
+func buildQUICConfig(opts QUICOptions) *quic.Config {
+	return &quic.Config{EnableDatagrams: opts.EnableDatagrams}
+}
+
+// 发起一次最小真实 QUIC/H3 建链。
+func (m *ConnectionManager) Connect(ctx context.Context) error {
+	m.mu.Lock()
+	if m.state == ConnStateReady {
+		m.mu.Unlock()
+		return nil
+	}
+	m.state = ConnStateConnecting
+	dialer := m.dialer
+	quicOpts := m.quic
+	h3Opts := m.h3
+	m.mu.Unlock()
+	if dialer == nil {
+		dialer = realTransportDialer{}
+	}
+	conn, h3conn, latency, err := dialer.Dial(ctx, quicOpts, h3Opts)
+	if err != nil {
+		m.mu.Lock()
+		m.state = ConnStateIdle
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	m.conn = conn
+	m.h3conn = h3conn
+	m.state = ConnStateReady
+	m.mu.Unlock()
+	m.RecordHandshakeLatency(latency)
+	return nil
+}
+
+// 关闭最小连接句柄并回到空闲态。
+func (m *ConnectionManager) Close() error {
+	m.mu.Lock()
+	conn := m.conn
+	h3conn := m.h3conn
+	m.conn = nil
+	m.h3conn = nil
+	m.state = ConnStateIdle
+	m.mu.Unlock()
+	if h3conn != nil {
+		_ = h3conn.Close()
+	}
+	if conn != nil {
+		return conn.CloseWithError(0, "closed")
+	}
+	return nil
 }
 
 // 将配置映射为最小 QUIC 连接参数。
