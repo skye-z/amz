@@ -67,6 +67,18 @@ func TestSanitizeTextRedactsNestedSensitiveValues(t *testing.T) {
 			secret: "tok_live_123456",
 			marker: `"token":"<redacted>"`,
 		},
+		{
+			name:   "authorization bearer token",
+			input:  "request rejected: Authorization: Bearer tok_live_123456",
+			secret: "tok_live_123456",
+			marker: "Authorization: Bearer <redacted>",
+		},
+		{
+			name:   "camel case credentials",
+			input:  `enroll failed: payload={"privateKey":"priv_key_abcdef","deviceCredentials":"cred_payload_xyz"}`,
+			secret: "priv_key_abcdef",
+			marker: `"privateKey":"<redacted>"`,
+		},
 	}
 
 	for _, tt := range tests {

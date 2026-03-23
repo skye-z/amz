@@ -5,11 +5,14 @@ import "regexp"
 var sensitiveValuePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(endpoint\s*=\s*token\s*=\s*)([^\s,;]+)`),
 	regexp.MustCompile(`(?i)(token\s*=\s*)([^\s,;]+)`),
+	regexp.MustCompile(`(?i)(authorization\s*:\s*bearer\s+)([^\s,;]+)`),
 	regexp.MustCompile(`(?i)(private[_-]?key\s*=\s*)([^\s,;]+)`),
 	regexp.MustCompile(`(?i)(device[_-]?credentials\s*=\s*)([^\s,;]+)`),
 	regexp.MustCompile(`(?i)("token"\s*:\s*")([^"]+)(")`),
 	regexp.MustCompile(`(?i)("private[_-]?key"\s*:\s*")([^"]+)(")`),
 	regexp.MustCompile(`(?i)("device[_-]?credentials"\s*:\s*")([^"]+)(")`),
+	regexp.MustCompile(`(?i)("privatekey"\s*:\s*")([^"]+)(")`),
+	regexp.MustCompile(`(?i)("devicecredentials"\s*:\s*")([^"]+)(")`),
 }
 
 // 返回去除敏感字段值后的错误字符串。

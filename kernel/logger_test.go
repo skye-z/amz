@@ -105,3 +105,66 @@ func TestTunnelLifecycleLogRedactsSensitiveValues(t *testing.T) {
 		}
 	}
 }
+
+// 验证 SOCKS5 日志路径会隐藏 Bearer 令牌。
+func TestSOCKSManagerLogRedactsBearerToken(t *testing.T) {
+	logger := &recordLogger{}
+	mgr, err := kernel.NewSOCKSManager(&config.KernelConfig{
+		Endpoint: "Authorization: Bearer tok_live_123456",
+		SNI:      config.DefaultSNI,
+		MTU:      config.DefaultMTU,
+		Mode:     config.ModeSOCKS,
+		Logger:   logger,
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("expected start success, got %v", err)
+	}
+
+	entry := logger.entries[len(logger.entries)-1]
+	if strings.Contains(entry, "tok_live_123456") {
+		t.Fatalf("expected bearer token to be redacted, got %q", entry)
+	}
+	if !strings.Contains(entry, "endpoint=Authorization: Bearer <redacted>") {
+		t.Fatalf("expected bearer marker in %q", entry)
+	}
+}
+
+// 验证 HTTP 代理日志路径会隐藏 camelCase 设备凭据。
+func TestHTTPProxyManagerLogRedactsCamelCaseCredentials(t *testing.T) {
+	logger := &recordLogger{}
+	mgr, err := kernel.NewHTTPProxyManager(config.KernelConfig{
+		Endpoint:       `{"privateKey":"priv_key_abcdef","deviceCredentials":"cred_payload_xyz"}`,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		Logger:         logger,
+		HTTP: config.HTTPConfig{
+			ListenAddress: config.DefaultHTTPListenAddress,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("expected start success, got %v", err)
+	}
+
+	entry := logger.entries[len(logger.entries)-1]
+	for _, secret := range []string{"priv_key_abcdef", "cred_payload_xyz"} {
+		if strings.Contains(entry, secret) {
+			t.Fatalf("expected secret %q to be redacted, got %q", secret, entry)
+		}
+	}
+	for _, marker := range []string{`"privateKey":"<redacted>"`, `"deviceCredentials":"<redacted>"`} {
+		if !strings.Contains(entry, marker) {
+			t.Fatalf("expected marker %q in %q", marker, entry)
+		}
+	}
+}
