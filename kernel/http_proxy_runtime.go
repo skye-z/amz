@@ -162,6 +162,7 @@ func (h *httpProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *httpProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	dialer := h.manager.currentHTTPDialer()
 	if dialer == nil {
+		h.manager.logf("http proxy connect dialer unavailable: target=%s", r.Host)
 		http.Error(w, "proxy dialer unavailable", http.StatusBadGateway)
 		return
 	}
@@ -169,6 +170,7 @@ func (h *httpProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request)
 	started := time.Now()
 	upstream, err := dialer.DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
+		h.manager.logf("http proxy connect upstream failed: target=%s err=%v", r.Host, err)
 		http.Error(w, "connect upstream failed", http.StatusBadGateway)
 		return
 	}
@@ -182,11 +184,13 @@ func (h *httpProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request)
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
+		h.manager.logf("http proxy hijack unsupported: target=%s", r.Host)
 		http.Error(w, "proxy hijack unsupported", http.StatusInternalServerError)
 		return
 	}
 	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
+		h.manager.logf("http proxy hijack failed: target=%s err=%v", r.Host, err)
 		http.Error(w, "proxy hijack failed", http.StatusInternalServerError)
 		return
 	}
@@ -227,6 +231,7 @@ func (h *httpProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request)
 func (h *httpProxyHandler) handleForward(w http.ResponseWriter, r *http.Request) {
 	transport := h.manager.currentRoundTripper()
 	if transport == nil {
+		h.manager.logf("http proxy transport unavailable: target=%s", r.URL.String())
 		http.Error(w, "proxy transport unavailable", http.StatusBadGateway)
 		return
 	}
@@ -239,6 +244,7 @@ func (h *httpProxyHandler) handleForward(w http.ResponseWriter, r *http.Request)
 		outReq.URL.Host = r.Host
 	}
 	if strings.TrimSpace(outReq.URL.Host) == "" {
+		h.manager.logf("http proxy missing target host: url=%s", r.URL.String())
 		http.Error(w, "missing target host", http.StatusBadRequest)
 		return
 	}
@@ -254,6 +260,7 @@ func (h *httpProxyHandler) handleForward(w http.ResponseWriter, r *http.Request)
 	started := time.Now()
 	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
+		h.manager.logf("http proxy forward upstream failed: target=%s host=%s err=%v", outReq.URL.String(), outReq.URL.Host, err)
 		http.Error(w, "forward upstream failed", http.StatusBadGateway)
 		return
 	}
