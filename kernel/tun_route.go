@@ -90,22 +90,28 @@ func (p RoutePlan) Validate() error {
 
 // 描述路由管理器当前持有的最小状态快照。
 type RouteSnapshot struct {
-	Mode           RouteMode
-	DeviceName     string
-	MTU            int
-	LocalPrefixes  []string
-	Routes         []string
-	EndpointRoutes []string
-	BoundDevice    string
-	Applied        bool
+	Mode                 RouteMode
+	DeviceName           string
+	MTU                  int
+	LocalPrefixes        []string
+	Routes               []string
+	EndpointRoutes       []string
+	KeepaliveRoutes      []string
+	DefaultRoutes        []string
+	DefaultRouteInjected bool
+	BoundDevice          string
+	Applied              bool
 }
 
 // 管理平台无关的路由计划与应用入口。
 type RouteManager struct {
-	mu          sync.Mutex
-	plan        RoutePlan
-	boundDevice string
-	applied     bool
+	mu              sync.Mutex
+	plan            RoutePlan
+	keepaliveRoutes []string
+	defaultRoutes   []string
+	defaultInjected bool
+	boundDevice     string
+	applied         bool
 }
 
 // 创建仅负责保存计划与状态的最小路由管理器。
@@ -123,6 +129,9 @@ func (m *RouteManager) Apply(_ context.Context, dev TUNDevice) error {
 	if dev == nil {
 		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
 	}
+	m.keepaliveRoutes = append([]string(nil), m.plan.EndpointRoutes...)
+	m.defaultRoutes = resolveDefaultRoutes(m.plan.Mode)
+	m.defaultInjected = len(m.defaultRoutes) > 0
 	m.boundDevice = dev.Name()
 	m.applied = true
 	return nil
@@ -132,6 +141,9 @@ func (m *RouteManager) Apply(_ context.Context, dev TUNDevice) error {
 func (m *RouteManager) Reset(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.keepaliveRoutes = nil
+	m.defaultRoutes = nil
+	m.defaultInjected = false
 	m.boundDevice = ""
 	m.applied = false
 	return nil
@@ -143,13 +155,24 @@ func (m *RouteManager) Snapshot() RouteSnapshot {
 	defer m.mu.Unlock()
 	plan := m.plan.Clone()
 	return RouteSnapshot{
-		Mode:           plan.Mode,
-		DeviceName:     plan.DeviceName,
-		MTU:            plan.MTU,
-		LocalPrefixes:  plan.LocalPrefixes,
-		Routes:         plan.Routes,
-		EndpointRoutes: plan.EndpointRoutes,
-		BoundDevice:    m.boundDevice,
-		Applied:        m.applied,
+		Mode:                 plan.Mode,
+		DeviceName:           plan.DeviceName,
+		MTU:                  plan.MTU,
+		LocalPrefixes:        plan.LocalPrefixes,
+		Routes:               plan.Routes,
+		EndpointRoutes:       plan.EndpointRoutes,
+		KeepaliveRoutes:      append([]string(nil), m.keepaliveRoutes...),
+		DefaultRoutes:        append([]string(nil), m.defaultRoutes...),
+		DefaultRouteInjected: m.defaultInjected,
+		BoundDevice:          m.boundDevice,
+		Applied:              m.applied,
 	}
+}
+
+// 返回当前最小骨架需要记录的默认路由集合。
+func resolveDefaultRoutes(mode RouteMode) []string {
+	if mode != RouteModeGlobal {
+		return nil
+	}
+	return []string{"0.0.0.0/0", "::/0"}
 }

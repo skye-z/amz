@@ -2,10 +2,77 @@ package tun_test
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/skye-z/amz/internal/tun"
 )
+
+// 验证平台 provider 选择入口会返回对应平台的占位实现。
+func TestSelectProviderByPlatform(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		goos     string
+		wantName string
+		wantFake bool
+	}{
+		{name: "linux", goos: "linux", wantName: "linux", wantFake: true},
+		{name: "darwin", goos: "darwin", wantName: "darwin", wantFake: true},
+		{name: "windows", goos: "windows", wantName: "windows", wantFake: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := tun.NewProviderForOS(tt.goos)
+			if err != nil {
+				t.Fatalf("expected select success, got %v", err)
+			}
+			if provider.Platform() != tt.wantName {
+				t.Fatalf("expected platform %q, got %q", tt.wantName, provider.Platform())
+			}
+			if provider.IsFake() != tt.wantFake {
+				t.Fatalf("expected fake %v, got %v", tt.wantFake, provider.IsFake())
+			}
+
+			dev, err := provider.Open(context.Background(), tun.DeviceConfig{Name: "amz0", MTU: 1400})
+			if err != nil {
+				t.Fatalf("expected open success, got %v", err)
+			}
+			if dev.Name() != "amz0" {
+				t.Fatalf("expected device name amz0, got %q", dev.Name())
+			}
+			if dev.MTU() != 1400 {
+				t.Fatalf("expected mtu 1400, got %d", dev.MTU())
+			}
+		})
+	}
+}
+
+// 验证当前平台入口与非法平台分支都具备稳定行为。
+func TestNewProvider(t *testing.T) {
+	t.Parallel()
+
+	provider, err := tun.NewProvider()
+	if err != nil {
+		t.Fatalf("expected current platform provider, got %v", err)
+	}
+	if provider.Platform() != runtime.GOOS {
+		t.Fatalf("expected platform %q, got %q", runtime.GOOS, provider.Platform())
+	}
+	if !provider.IsFake() {
+		t.Fatal("expected current platform provider to be fake placeholder")
+	}
+
+	if _, err := tun.NewProviderForOS("plan9"); err == nil {
+		t.Fatal("expected unsupported platform error")
+	}
+	if got := tun.PlatformName("linux"); got != "linux" {
+		t.Fatalf("expected linux platform name, got %q", got)
+	}
+}
 
 // 验证假 provider 会校验输入并返回可收发的内存设备。
 func TestFakeProviderOpenDevice(t *testing.T) {

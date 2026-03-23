@@ -155,11 +155,67 @@ func TestRouteManagerApply(t *testing.T) {
 	if len(snapshot.Routes) != 1 || snapshot.Routes[0] != "100.64.0.0/10" {
 		t.Fatalf("unexpected route snapshot: %+v", snapshot.Routes)
 	}
+	if len(snapshot.KeepaliveRoutes) != 1 || snapshot.KeepaliveRoutes[0] != "162.159.198.1/32" {
+		t.Fatalf("unexpected keepalive route snapshot: %+v", snapshot.KeepaliveRoutes)
+	}
+	if snapshot.DefaultRouteInjected {
+		t.Fatal("expected split mode not to inject default routes")
+	}
+	if len(snapshot.DefaultRoutes) != 0 {
+		t.Fatalf("expected no default routes, got %+v", snapshot.DefaultRoutes)
+	}
 	if err := manager.Reset(context.Background()); err != nil {
 		t.Fatalf("expected reset success, got %v", err)
 	}
-	if manager.Snapshot().Applied {
+	reset := manager.Snapshot()
+	if reset.Applied {
 		t.Fatal("expected manager to be reset")
+	}
+	if len(reset.KeepaliveRoutes) != 0 || len(reset.DefaultRoutes) != 0 {
+		t.Fatalf("expected runtime routes to be cleared, got %+v", reset)
+	}
+}
+
+// 验证全局模式会在应用时记录默认路由注入与端点保活路由状态。
+func TestRouteManagerApplyInjectsDefaultRoutes(t *testing.T) {
+	manager, err := kernel.NewRouteManager(kernel.RoutePlan{
+		Mode:           kernel.RouteModeGlobal,
+		DeviceName:     "igara0",
+		MTU:            1280,
+		LocalPrefixes:  []string{"172.16.0.2/32", "2606:4700:110:8d36::2/128"},
+		Routes:         []string{"100.64.0.0/10"},
+		EndpointRoutes: []string{"162.159.198.1/32", "[2606:4700:d0::a29f:c001]/128"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	dev := &stubTUNDevice{name: "igara0", mtu: 1280}
+	if err := manager.Apply(context.Background(), dev); err != nil {
+		t.Fatalf("expected apply success, got %v", err)
+	}
+
+	snapshot := manager.Snapshot()
+	if !snapshot.DefaultRouteInjected {
+		t.Fatal("expected global mode to inject default routes")
+	}
+	if len(snapshot.DefaultRoutes) != 2 {
+		t.Fatalf("expected dual-stack default routes, got %+v", snapshot.DefaultRoutes)
+	}
+	if snapshot.DefaultRoutes[0] != "0.0.0.0/0" {
+		t.Fatalf("expected ipv4 default route, got %+v", snapshot.DefaultRoutes)
+	}
+	if snapshot.DefaultRoutes[1] != "::/0" {
+		t.Fatalf("expected ipv6 default route, got %+v", snapshot.DefaultRoutes)
+	}
+	if len(snapshot.KeepaliveRoutes) != 2 {
+		t.Fatalf("expected keepalive routes to be tracked, got %+v", snapshot.KeepaliveRoutes)
+	}
+	if snapshot.KeepaliveRoutes[0] != "162.159.198.1/32" {
+		t.Fatalf("expected first keepalive route, got %+v", snapshot.KeepaliveRoutes)
+	}
+	if snapshot.KeepaliveRoutes[1] != "[2606:4700:d0::a29f:c001]/128" {
+		t.Fatalf("expected second keepalive route, got %+v", snapshot.KeepaliveRoutes)
 	}
 }
 
