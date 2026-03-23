@@ -198,7 +198,7 @@ func (m *SOCKSManager) logf(format string, args ...any) {
 	if m.cfg.Logger == nil {
 		return
 	}
-	m.cfg.Logger.Printf(format, args...)
+	m.cfg.Logger.Printf(types.SanitizeText(format), sanitizeArgs(args)...)
 }
 
 // 输出 HTTP 代理生命周期相关的最小日志，未注入时保持静默。
@@ -206,7 +206,7 @@ func (m *HTTPProxyManager) logf(format string, args ...any) {
 	if m.cfg.Logger == nil {
 		return
 	}
-	m.cfg.Logger.Printf(format, args...)
+	m.cfg.Logger.Printf(types.SanitizeText(format), sanitizeArgs(args)...)
 }
 
 // 归一化代理模式配置并按需补齐默认值。

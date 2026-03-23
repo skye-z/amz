@@ -86,10 +86,10 @@ type KernelConfig struct {
 
 // 为基础阶段补齐最小可运行默认值。
 func (c *KernelConfig) FillDefaults() {
-	if c.Endpoint == "" {
+	if strings.TrimSpace(c.Endpoint) == "" {
 		c.Endpoint = DefaultEndpoint
 	}
-	if c.SNI == "" {
+	if strings.TrimSpace(c.SNI) == "" {
 		c.SNI = DefaultSNI
 	}
 	if c.MTU == 0 {
@@ -106,15 +106,15 @@ func (c *KernelConfig) FillDefaults() {
 	}
 	switch c.Mode {
 	case ModeTUN:
-		if c.TUN.Name == "" {
+		if strings.TrimSpace(c.TUN.Name) == "" {
 			c.TUN.Name = "igara0"
 		}
 	case ModeSOCKS:
-		if c.SOCKS.ListenAddress == "" {
+		if strings.TrimSpace(c.SOCKS.ListenAddress) == "" {
 			c.SOCKS.ListenAddress = DefaultSOCKSListenAddress
 		}
 	case ModeHTTP:
-		if c.HTTP.ListenAddress == "" {
+		if strings.TrimSpace(c.HTTP.ListenAddress) == "" {
 			c.HTTP.ListenAddress = DefaultHTTPListenAddress
 		}
 	}

@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/skye-z/amz/config"
@@ -92,5 +93,28 @@ func (t *Tunnel) logf(format string, args ...any) {
 	if t.cfg.Logger == nil {
 		return
 	}
+	original := fmt.Sprintf(format, args...)
+	masked := fmt.Sprintf(format, sanitizeArgs(args)...)
+	masked = types.SanitizeText(masked)
+	if masked != original {
+		t.cfg.Logger.Printf(masked)
+		return
+	}
 	t.cfg.Logger.Printf(format, args...)
+}
+
+// 复制日志参数并对其中的字符串做最小脱敏。
+func sanitizeArgs(args []any) []any {
+	if len(args) == 0 {
+		return nil
+	}
+	masked := make([]any, len(args))
+	for i, arg := range args {
+		if text, ok := arg.(string); ok {
+			masked[i] = types.SanitizeText(text)
+			continue
+		}
+		masked[i] = arg
+	}
+	return masked
 }
