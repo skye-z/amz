@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/config"
+	internaltun "github.com/skye-z/amz/internal/tun"
 )
 
 type countingTransportDialer struct {
@@ -54,6 +55,38 @@ func (d *stubHTTPStreamDialer) DialContext(ctx context.Context, network, address
 	return d.conn, nil
 }
 
+type fakePacketSession struct{}
+
+func (s *fakePacketSession) Close() error { return nil }
+func (s *fakePacketSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		IPv4: "172.16.0.2/32",
+		IPv6: "2606:4700:110:8d36::2/128",
+	}
+}
+func (s *fakePacketSession) ReadPacket(ctx context.Context, dst []byte) (int, error) {
+	<-ctx.Done()
+	return 0, context.Cause(ctx)
+}
+func (s *fakePacketSession) WritePacket(ctx context.Context, packet []byte) ([]byte, error) {
+	return nil, nil
+}
+
+type fakePlatformProvider struct {
+	platform string
+	delegate *internaltun.FakeProvider
+}
+
+func (p *fakePlatformProvider) Platform() string { return p.platform }
+func (p *fakePlatformProvider) IsFake() bool     { return true }
+func (p *fakePlatformProvider) PlaceholderError() error {
+	return &internaltun.PlaceholderError{Platform: p.platform, Component: "provider"}
+}
+func (p *fakePlatformProvider) Open(ctx context.Context, cfg internaltun.DeviceConfig) (internaltun.Device, error) {
+	return p.delegate.Open(ctx, cfg)
+}
+func (p *fakePlatformProvider) Close() error { return p.delegate.Close() }
+
 // 验证核心 dialer 会在真实拨号前建立并复用 QUIC/H3 与 CONNECT-IP 会话。
 func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	cfg := config.KernelConfig{
@@ -77,7 +110,7 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected connect-ip manager creation success, got %v", err)
 	}
-	connectDialer := &countingConnectIPDialer{session: &fakeConnectIPSession{}}
+	connectDialer := &countingConnectIPDialer{session: &fakePacketSession{}}
 	sessionManager.dialer = connectDialer
 
 	clientConn, serverConn := net.Pipe()
@@ -88,6 +121,14 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, streamDialer)
 	if err != nil {
 		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+	}
+	dialer.provider = &fakePlatformProvider{platform: "linux", delegate: internaltun.NewFakeProvider()}
+	dialer.adapter = internaltun.NewFakeAdapter()
+	relayCalls := 0
+	dialer.packetRelay = func(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
+		relayCalls++
+		<-ctx.Done()
+		return context.Cause(ctx)
 	}
 
 	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:443")
@@ -104,6 +145,13 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	if connectDialer.calls != 1 {
 		t.Fatalf("expected one connect-ip dial, got %d", connectDialer.calls)
 	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && relayCalls == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if relayCalls != 1 {
+		t.Fatalf("expected relay to start once, got %d", relayCalls)
+	}
 	if streamDialer.calls != 1 {
 		t.Fatalf("expected one downstream dial, got %d", streamDialer.calls)
 	}
@@ -119,6 +167,9 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	}
 	if streamDialer.calls != 2 {
 		t.Fatalf("expected underlying stream dialer to be called twice, got %d", streamDialer.calls)
+	}
+	if err := dialer.Close(); err != nil {
+		t.Fatalf("expected core dialer close success, got %v", err)
 	}
 }
 
@@ -150,6 +201,8 @@ func TestCoreTunnelDialerPropagatesBootstrapError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
 	}
+	dialer.provider = &fakePlatformProvider{platform: "linux", delegate: internaltun.NewFakeProvider()}
+	dialer.adapter = internaltun.NewFakeAdapter()
 
 	_, err = dialer.DialContext(context.Background(), "tcp", "example.com:443")
 	if err == nil {

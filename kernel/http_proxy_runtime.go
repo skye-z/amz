@@ -126,6 +126,7 @@ func (m *HTTPProxyManager) Stop(context.Context) error {
 	}
 	server := m.server
 	listener := m.listener
+	dialer := m.dialer
 	m.server = nil
 	m.listener = nil
 	m.state = types.StateStopped
@@ -138,6 +139,9 @@ func (m *HTTPProxyManager) Stop(context.Context) error {
 	}
 	if listener != nil {
 		_ = listener.Close()
+	}
+	if closer, ok := dialer.(interface{ Close() error }); ok {
+		_ = closer.Close()
 	}
 	m.runWG.Wait()
 	return nil
