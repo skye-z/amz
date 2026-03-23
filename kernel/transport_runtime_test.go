@@ -74,6 +74,24 @@ func (s *fakeConnectIPSession) SessionInfo() SessionInfo {
 	return s.info
 }
 
+func (s *fakeConnectIPSession) ReadPacket(ctx context.Context, dst []byte) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, context.Cause(ctx)
+	default:
+		return 0, context.Cause(ctx)
+	}
+}
+
+func (s *fakeConnectIPSession) WritePacket(ctx context.Context, packet []byte) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	default:
+		return nil, nil
+	}
+}
+
 type fakeConnectIPDialer struct {
 	err      error
 	called   bool
@@ -187,6 +205,9 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 	snapshot := mgr.Snapshot()
 	if snapshot.State != SessionStateReady {
 		t.Fatalf("expected ready state, got %q", snapshot.State)
+	}
+	if mgr.PacketEndpoint() == nil {
+		t.Fatal("expected packet endpoint after session open")
 	}
 	if snapshot.IPv4 != "172.16.0.2/32" {
 		t.Fatalf("expected ipv4 session info, got %q", snapshot.IPv4)

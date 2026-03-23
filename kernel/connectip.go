@@ -62,6 +62,8 @@ type ConnectIPSessionManager struct {
 type connectIPSession interface {
 	Close() error
 	SessionInfo() SessionInfo
+	ReadPacket(context.Context, []byte) (int, error)
+	WritePacket(context.Context, []byte) ([]byte, error)
 }
 
 type connectIPDialer interface {
@@ -75,6 +77,18 @@ type realConnectIPSession struct {
 
 func (s *realConnectIPSession) Close() error             { return s.conn.Close() }
 func (s *realConnectIPSession) SessionInfo() SessionInfo { return s.info }
+func (s *realConnectIPSession) ReadPacket(ctx context.Context, dst []byte) (int, error) {
+	if err := context.Cause(ctx); err != nil {
+		return 0, err
+	}
+	return s.conn.ReadPacket(dst)
+}
+func (s *realConnectIPSession) WritePacket(ctx context.Context, packet []byte) ([]byte, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	return s.conn.WritePacket(packet)
+}
 
 type realConnectIPDialer struct{}
 
@@ -209,6 +223,16 @@ func (m *ConnectIPSessionManager) BindHTTP3Conn(conn h3ClientConn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.h3conn = conn
+}
+
+// PacketEndpoint 返回当前已建立会话的数据面读写入口。
+func (m *ConnectIPSessionManager) PacketEndpoint() PacketRelayEndpoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.session == nil {
+		return nil
+	}
+	return m.session
 }
 
 // 关闭当前 CONNECT-IP 会话并回到空闲态。
