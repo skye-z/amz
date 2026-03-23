@@ -81,7 +81,7 @@ func (p *placeholderProvider) PlaceholderError() error {
 }
 
 // 打开一个平台占位设备，实际返回内存假设备。
-func (p *placeholderProvider) Open(ctx context.Context, cfg DeviceConfig) (*FakeDevice, error) {
+func (p *placeholderProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, error) {
 	return p.delegate.Open(ctx, cfg)
 }
 

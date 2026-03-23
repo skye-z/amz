@@ -337,7 +337,7 @@ type Device interface {
 
 // 约定平台差异隔离层的最小设备提供入口。
 type Provider interface {
-	Open(context.Context, DeviceConfig) (*FakeDevice, error)
+	Open(context.Context, DeviceConfig) (Device, error)
 	Close() error
 }
 
@@ -437,7 +437,7 @@ func (d *FakeDevice) Close() error {
 // 提供仅用于测试与骨架联调的假 provider。
 type FakeProvider struct {
 	mu        sync.Mutex
-	devices   []*FakeDevice
+	devices   []Device
 	openCount int
 	closed    bool
 }
@@ -448,7 +448,7 @@ func NewFakeProvider() *FakeProvider {
 }
 
 // 打开一个内存假设备，并记录调用次数。
-func (p *FakeProvider) Open(_ context.Context, cfg DeviceConfig) (*FakeDevice, error) {
+func (p *FakeProvider) Open(_ context.Context, cfg DeviceConfig) (Device, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -498,6 +498,90 @@ type FakeAdapter struct {
 	boundDevice   string
 	configApplied bool
 	routesApplied bool
+}
+
+// 提供接入真实 sing-tun 地址配置的最小 adapter。
+type SystemAdapter struct {
+	mu            sync.Mutex
+	config        Config
+	routes        RoutePlan
+	boundDevice   string
+	configApplied bool
+	routesApplied bool
+}
+
+// 创建真实系统配置 adapter。
+func NewSystemAdapter() *SystemAdapter {
+	return &SystemAdapter{}
+}
+
+// 真实地址配置路径已接入，不再暴露 placeholder 信号。
+func (a *SystemAdapter) PlaceholderError() error {
+	return nil
+}
+
+// 通过真实设备能力应用地址与 MTU 配置。
+func (a *SystemAdapter) ApplyConfig(_ context.Context, dev Device, cfg Config) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if dev == nil {
+		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	configurable, ok := dev.(systemConfigurableDevice)
+	if !ok {
+		return fmt.Errorf("%w: tun device does not support system config", types.ErrInvalidConfig)
+	}
+	if err := configurable.ApplyTUNConfig(cfg); err != nil {
+		return err
+	}
+	a.config = cfg.Clone()
+	a.boundDevice = dev.Name()
+	a.configApplied = true
+	return nil
+}
+
+// 当前阶段仅记录路由快照，真实系统路由修改将在后续能力中接入。
+func (a *SystemAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePlan) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if dev == nil {
+		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+	}
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	a.routes = plan.Clone()
+	a.boundDevice = dev.Name()
+	a.routesApplied = true
+	return nil
+}
+
+// 清空已记录的绑定状态与应用标记。
+func (a *SystemAdapter) Reset(_ context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config = Config{}
+	a.routes = RoutePlan{}
+	a.boundDevice = ""
+	a.configApplied = false
+	a.routesApplied = false
+	return nil
+}
+
+// 返回当前配置与路由状态的只读快照。
+func (a *SystemAdapter) Snapshot() Snapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return Snapshot{
+		Config:        a.config.Clone(),
+		Routes:        a.routes.Clone(),
+		BoundDevice:   a.boundDevice,
+		ConfigApplied: a.configApplied,
+		RoutesApplied: a.routesApplied,
+	}
 }
 
 // 创建一个只记录快照、不触发真实系统调用的假 adapter。

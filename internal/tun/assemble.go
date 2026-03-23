@@ -12,6 +12,8 @@ type AssembleOptions struct {
 	Device   DeviceConfig
 	Config   Config
 	Routes   RoutePlan
+	Provider PlatformProvider
+	Adapter  Adapter
 }
 
 // 检查装配参数是否具备最小设备信息。
@@ -32,20 +34,29 @@ func (o AssembleOptions) Validate() error {
 type Assembly struct {
 	Platform string
 	Provider PlatformProvider
-	Device   *FakeDevice
-	Adapter  *FakeAdapter
+	Device   Device
+	Adapter  Adapter
 }
 
 // 返回当前装配结果仍仅包含占位实现的结构化错误。
 func (a *Assembly) PlaceholderError() error {
-	platform := runtime.GOOS
-	if a != nil && a.Platform != "" {
-		platform = a.Platform
+	if a == nil {
+		return &PlaceholderError{
+			Platform:  runtime.GOOS,
+			Component: "assembly",
+		}
 	}
-	return &PlaceholderError{
-		Platform:  platform,
-		Component: "assembly",
+	if a.Provider != nil {
+		if err := a.Provider.PlaceholderError(); err != nil {
+			return err
+		}
 	}
+	if a.Adapter != nil {
+		if err := a.Adapter.PlaceholderError(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // 关闭装配结果持有的设备与 provider。
@@ -70,16 +81,23 @@ func Assemble(opts AssembleOptions) (*Assembly, error) {
 		platform = runtime.GOOS
 	}
 
-	provider, err := NewProviderForOS(platform)
-	if err != nil {
-		return nil, err
+	provider := opts.Provider
+	if provider == nil {
+		var err error
+		provider, err = NewProviderForOS(platform)
+		if err != nil {
+			return nil, err
+		}
 	}
 	device, err := provider.Open(context.Background(), opts.Device)
 	if err != nil {
 		return nil, err
 	}
 
-	adapter := NewFakeAdapter()
+	adapter := opts.Adapter
+	if adapter == nil {
+		adapter = NewSystemAdapter()
+	}
 	config := opts.Config
 	if config.Device.Name == "" && config.Device.MTU == 0 {
 		config = Config{Device: opts.Device}

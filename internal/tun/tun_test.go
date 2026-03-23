@@ -3,6 +3,7 @@ package tun_test
 import (
 	"context"
 	"errors"
+	"io"
 	"runtime"
 	"strings"
 	"testing"
@@ -10,6 +11,53 @@ import (
 	"github.com/skye-z/amz/internal/tun"
 	"github.com/skye-z/amz/types"
 )
+
+type fakePlatformProvider struct {
+	platform string
+	delegate *tun.FakeProvider
+}
+
+func (p *fakePlatformProvider) Platform() string { return p.platform }
+func (p *fakePlatformProvider) IsFake() bool     { return true }
+func (p *fakePlatformProvider) PlaceholderError() error {
+	return &tun.PlaceholderError{Platform: p.platform, Component: "provider"}
+}
+func (p *fakePlatformProvider) Open(ctx context.Context, cfg tun.DeviceConfig) (tun.Device, error) {
+	return p.delegate.Open(ctx, cfg)
+}
+func (p *fakePlatformProvider) Close() error { return p.delegate.Close() }
+
+type configurableDevice struct {
+	name   string
+	mtu    int
+	config tun.Config
+	closed bool
+}
+
+func (d *configurableDevice) Name() string { return d.name }
+func (d *configurableDevice) MTU() int     { return d.mtu }
+func (d *configurableDevice) ReadPacket(context.Context, []byte) (int, error) {
+	if d.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return 0, io.EOF
+}
+func (d *configurableDevice) WritePacket(context.Context, []byte) (int, error) {
+	if d.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return 0, nil
+}
+func (d *configurableDevice) Close() error {
+	d.closed = true
+	return nil
+}
+func (d *configurableDevice) ApplyTUNConfig(cfg tun.Config) error {
+	d.config = cfg.Clone()
+	d.name = cfg.Device.Name
+	d.mtu = cfg.Device.MTU
+	return nil
+}
 
 // 验证地址校验会以表驱动方式覆盖协议前缀解析与错误分支。
 func TestAddressValidateTableDriven(t *testing.T) {
@@ -68,7 +116,7 @@ func TestAddressValidateTableDriven(t *testing.T) {
 	}
 }
 
-// 验证平台 provider 选择入口会返回对应平台的占位实现。
+// 验证平台 provider 选择入口会返回对应平台的真实 sing-tun provider 元信息。
 func TestSelectProviderByPlatform(t *testing.T) {
 	t.Parallel()
 
@@ -78,9 +126,9 @@ func TestSelectProviderByPlatform(t *testing.T) {
 		wantName string
 		wantFake bool
 	}{
-		{name: "linux", goos: "linux", wantName: "linux", wantFake: true},
-		{name: "darwin", goos: "darwin", wantName: "darwin", wantFake: true},
-		{name: "windows", goos: "windows", wantName: "windows", wantFake: true},
+		{name: "linux", goos: "linux", wantName: "linux", wantFake: false},
+		{name: "darwin", goos: "darwin", wantName: "darwin", wantFake: false},
+		{name: "windows", goos: "windows", wantName: "windows", wantFake: false},
 	}
 
 	for _, tt := range tests {
@@ -96,16 +144,8 @@ func TestSelectProviderByPlatform(t *testing.T) {
 			if provider.IsFake() != tt.wantFake {
 				t.Fatalf("expected fake %v, got %v", tt.wantFake, provider.IsFake())
 			}
-
-			dev, err := provider.Open(context.Background(), tun.DeviceConfig{Name: "amz0", MTU: 1400})
-			if err != nil {
-				t.Fatalf("expected open success, got %v", err)
-			}
-			if dev.Name() != "amz0" {
-				t.Fatalf("expected device name amz0, got %q", dev.Name())
-			}
-			if dev.MTU() != 1400 {
-				t.Fatalf("expected mtu 1400, got %d", dev.MTU())
+			if err := provider.PlaceholderError(); err != nil {
+				t.Fatalf("expected no placeholder error, got %v", err)
 			}
 		})
 	}
@@ -122,8 +162,11 @@ func TestNewProvider(t *testing.T) {
 	if provider.Platform() != runtime.GOOS {
 		t.Fatalf("expected platform %q, got %q", runtime.GOOS, provider.Platform())
 	}
-	if !provider.IsFake() {
-		t.Fatal("expected current platform provider to be fake placeholder")
+	if provider.IsFake() {
+		t.Fatal("expected current platform provider to be real provider")
+	}
+	if provider.PlaceholderError() != nil {
+		t.Fatalf("expected current platform provider to have no placeholder error, got %v", provider.PlaceholderError())
 	}
 
 	if _, err := tun.NewProviderForOS("plan9"); err == nil {
@@ -138,7 +181,7 @@ func TestNewProvider(t *testing.T) {
 func TestFakeProviderOpenDevice(t *testing.T) {
 	provider := tun.NewFakeProvider()
 
-	dev, err := provider.Open(context.Background(), tun.DeviceConfig{
+	devValue, err := provider.Open(context.Background(), tun.DeviceConfig{
 		Name: "amz0",
 		MTU:  1400,
 	})
@@ -147,6 +190,10 @@ func TestFakeProviderOpenDevice(t *testing.T) {
 	}
 	if provider.OpenCount() != 1 {
 		t.Fatalf("expected one open call, got %d", provider.OpenCount())
+	}
+	dev, ok := devValue.(*tun.FakeDevice)
+	if !ok {
+		t.Fatalf("expected fake device, got %T", devValue)
 	}
 	if dev.Name() != "amz0" {
 		t.Fatalf("expected device name amz0, got %q", dev.Name())
@@ -189,6 +236,47 @@ func TestFakeProviderOpenDevice(t *testing.T) {
 	}
 	if err := provider.Close(); err != nil {
 		t.Fatalf("expected provider close success, got %v", err)
+	}
+}
+
+// 验证真实系统 adapter 会把地址配置应用到可配置设备并记录快照。
+func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
+	t.Parallel()
+
+	adapter := tun.NewSystemAdapter()
+	dev := &configurableDevice{name: "amz0", mtu: 1280}
+	config := tun.Config{
+		Device: tun.DeviceConfig{Name: "amz0", MTU: 1400},
+		Addresses: []tun.Address{
+			{CIDR: "172.16.0.2/32"},
+			{CIDR: "2606:4700:110:8d36::2/128"},
+		},
+	}
+	routes := tun.RoutePlan{
+		Mode:           tun.RouteModeSplit,
+		Routes:         []string{"100.64.0.0/10"},
+		EndpointRoutes: []string{"162.159.198.1/32"},
+	}
+
+	if err := adapter.ApplyConfig(context.Background(), dev, config); err != nil {
+		t.Fatalf("expected apply config success, got %v", err)
+	}
+	if err := adapter.ApplyRoutes(context.Background(), dev, routes); err != nil {
+		t.Fatalf("expected apply routes success, got %v", err)
+	}
+
+	snapshot := adapter.Snapshot()
+	if !snapshot.ConfigApplied || !snapshot.RoutesApplied {
+		t.Fatalf("expected both apply flags true, got %+v", snapshot)
+	}
+	if snapshot.BoundDevice != "amz0" {
+		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
+	}
+	if len(dev.config.Addresses) != 2 {
+		t.Fatalf("expected addresses to be applied to device, got %+v", dev.config)
+	}
+	if adapter.PlaceholderError() != nil {
+		t.Fatalf("expected no placeholder error, got %v", adapter.PlaceholderError())
 	}
 }
 
@@ -270,16 +358,18 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 	}
 }
 
-// 验证装配入口会返回绑定到同一设备的 provider 与 adapter 占位实现。
+// 验证装配入口支持注入 provider 与 adapter，并返回绑定到同一设备的结果。
 func TestAssemblePlaceholderBinding(t *testing.T) {
-	t.Parallel()
-
+	provider := &fakePlatformProvider{platform: "linux", delegate: tun.NewFakeProvider()}
+	adapter := tun.NewFakeAdapter()
 	assembled, err := tun.Assemble(tun.AssembleOptions{
 		Platform: "linux",
 		Device: tun.DeviceConfig{
 			Name: "amz0",
 			MTU:  1400,
 		},
+		Provider: provider,
+		Adapter:  adapter,
 	})
 	if err != nil {
 		t.Fatalf("expected assemble success, got %v", err)
@@ -287,7 +377,7 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 	if assembled.Platform != "linux" {
 		t.Fatalf("expected platform linux, got %q", assembled.Platform)
 	}
-	if !assembled.Provider.IsFake() {
+	if assembled.Provider == nil || !assembled.Provider.IsFake() {
 		t.Fatal("expected fake provider")
 	}
 	if assembled.Device == nil {
@@ -318,8 +408,6 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 
 // 验证装配入口会拒绝缺失设备参数与未知平台。
 func TestAssembleValidation(t *testing.T) {
-	t.Parallel()
-
 	if _, err := tun.Assemble(tun.AssembleOptions{}); err == nil {
 		t.Fatal("expected invalid assemble options")
 	}
@@ -338,6 +426,8 @@ func TestAssembleValidation(t *testing.T) {
 			Name: "amz0",
 			MTU:  1400,
 		},
+		Provider: &fakePlatformProvider{platform: runtime.GOOS, delegate: tun.NewFakeProvider()},
+		Adapter:  tun.NewFakeAdapter(),
 	})
 	if err != nil {
 		t.Fatalf("expected default platform assemble success, got %v", err)
@@ -350,14 +440,9 @@ func TestAssembleValidation(t *testing.T) {
 	}
 }
 
-// 验证占位 provider、adapter 与装配结果都会暴露明确的未实现信号。
+// 验证注入的占位 provider、adapter 与装配结果都会暴露明确的未实现信号。
 func TestPlaceholderSignalsNotImplemented(t *testing.T) {
-	t.Parallel()
-
-	provider, err := tun.NewProviderForOS("linux")
-	if err != nil {
-		t.Fatalf("expected provider creation success, got %v", err)
-	}
+	provider := &fakePlatformProvider{platform: "linux", delegate: tun.NewFakeProvider()}
 
 	providerErr := provider.PlaceholderError()
 	if providerErr == nil {
@@ -395,6 +480,8 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 			Name: "amz0",
 			MTU:  1400,
 		},
+		Provider: provider,
+		Adapter:  adapter,
 	})
 	if err != nil {
 		t.Fatalf("expected assemble success, got %v", err)
@@ -409,7 +496,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if !errors.As(assemblyErr, &typedErr) {
 		t.Fatalf("expected typed assembly placeholder error, got %T", assemblyErr)
 	}
-	if typedErr.Platform != "linux" || typedErr.Component != "assembly" {
+	if typedErr.Platform != "linux" || typedErr.Component != "provider" {
 		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
 	}
 	if err := assembled.Close(); err != nil {
