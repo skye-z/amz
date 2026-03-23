@@ -31,7 +31,9 @@ type configurableDevice struct {
 	name   string
 	mtu    int
 	config tun.Config
+	routes tun.RoutePlan
 	closed bool
+	reset  bool
 }
 
 func (d *configurableDevice) Name() string { return d.name }
@@ -56,6 +58,15 @@ func (d *configurableDevice) ApplyTUNConfig(cfg tun.Config) error {
 	d.config = cfg.Clone()
 	d.name = cfg.Device.Name
 	d.mtu = cfg.Device.MTU
+	return nil
+}
+func (d *configurableDevice) ApplyTUNRoutes(plan tun.RoutePlan) error {
+	d.routes = plan.Clone()
+	return nil
+}
+func (d *configurableDevice) ResetTUNRoutes() error {
+	d.reset = true
+	d.routes = tun.RoutePlan{}
 	return nil
 }
 
@@ -275,8 +286,17 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 	if len(dev.config.Addresses) != 2 {
 		t.Fatalf("expected addresses to be applied to device, got %+v", dev.config)
 	}
+	if len(dev.routes.Routes) != 1 || dev.routes.Routes[0] != "100.64.0.0/10" {
+		t.Fatalf("expected routes to be applied to device, got %+v", dev.routes)
+	}
 	if adapter.PlaceholderError() != nil {
 		t.Fatalf("expected no placeholder error, got %v", adapter.PlaceholderError())
+	}
+	if err := adapter.Reset(context.Background()); err != nil {
+		t.Fatalf("expected reset success, got %v", err)
+	}
+	if !dev.reset {
+		t.Fatal("expected route reset to be executed")
 	}
 }
 

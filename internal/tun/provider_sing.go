@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -74,6 +75,11 @@ func (p *singProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, erro
 		tun:  nativeTun,
 		name: deviceName,
 		mtu:  cfg.MTU,
+		options: singtun.Options{
+			Name:      cfg.Name,
+			MTU:       uint32(cfg.MTU),
+			AutoRoute: false,
+		},
 	}
 
 	p.mu.Lock()
@@ -104,10 +110,17 @@ type systemConfigurableDevice interface {
 	ApplyTUNConfig(Config) error
 }
 
+type systemRouteConfigurableDevice interface {
+	Device
+	ApplyTUNRoutes(RoutePlan) error
+	ResetTUNRoutes() error
+}
+
 type singDevice struct {
-	tun  singtun.Tun
-	name string
-	mtu  int
+	tun     singtun.Tun
+	name    string
+	mtu     int
+	options singtun.Options
 }
 
 func (d *singDevice) Name() string {
@@ -137,11 +150,11 @@ func (d *singDevice) Close() error {
 }
 
 func (d *singDevice) ApplyTUNConfig(cfg Config) error {
-	options := singtun.Options{
-		Name:      cfg.Device.Name,
-		MTU:       uint32(cfg.Device.MTU),
-		AutoRoute: false,
-	}
+	options := d.options
+	options.Name = cfg.Device.Name
+	options.MTU = uint32(cfg.Device.MTU)
+	options.Inet4Address = nil
+	options.Inet6Address = nil
 	for _, address := range cfg.Addresses {
 		prefix, err := netip.ParsePrefix(strings.TrimSpace(address.CIDR))
 		if err != nil {
@@ -156,7 +169,68 @@ func (d *singDevice) ApplyTUNConfig(cfg Config) error {
 	if err := d.tun.UpdateRouteOptions(options); err != nil {
 		return fmt.Errorf("update sing-tun route options: %w", err)
 	}
+	d.options = options
 	d.name = cfg.Device.Name
 	d.mtu = cfg.Device.MTU
+	return nil
+}
+
+func (d *singDevice) ApplyTUNRoutes(plan RoutePlan) error {
+	previous := d.options
+	next := previous
+	next.AutoRoute = plan.Mode == RouteModeGlobal
+	next.Inet4RouteAddress = nil
+	next.Inet6RouteAddress = nil
+	next.Inet4RouteExcludeAddress = nil
+	next.Inet6RouteExcludeAddress = nil
+
+	for _, route := range plan.Routes {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
+		if err != nil {
+			return fmt.Errorf("parse tun route %q: %w", route, err)
+		}
+		if prefix.Addr().Is4() {
+			next.Inet4RouteAddress = append(next.Inet4RouteAddress, prefix)
+		} else if prefix.Addr().Is6() {
+			next.Inet6RouteAddress = append(next.Inet6RouteAddress, prefix)
+		}
+	}
+	for _, route := range plan.EndpointRoutes {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
+		if err != nil {
+			return fmt.Errorf("parse tun endpoint route %q: %w", route, err)
+		}
+		if prefix.Addr().Is4() {
+			next.Inet4RouteExcludeAddress = append(next.Inet4RouteExcludeAddress, prefix)
+		} else if prefix.Addr().Is6() {
+			next.Inet6RouteExcludeAddress = append(next.Inet6RouteExcludeAddress, prefix)
+		}
+	}
+
+	if err := d.tun.UpdateRouteOptions(next); err != nil {
+		rollbackErr := d.tun.UpdateRouteOptions(previous)
+		if rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("update sing-tun route options: %w", err),
+				fmt.Errorf("rollback sing-tun route options: %w", rollbackErr),
+			)
+		}
+		return fmt.Errorf("update sing-tun route options: %w", err)
+	}
+	d.options = next
+	return nil
+}
+
+func (d *singDevice) ResetTUNRoutes() error {
+	next := d.options
+	next.AutoRoute = false
+	next.Inet4RouteAddress = nil
+	next.Inet6RouteAddress = nil
+	next.Inet4RouteExcludeAddress = nil
+	next.Inet6RouteExcludeAddress = nil
+	if err := d.tun.UpdateRouteOptions(next); err != nil {
+		return fmt.Errorf("reset sing-tun route options: %w", err)
+	}
+	d.options = next
 	return nil
 }

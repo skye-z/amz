@@ -506,6 +506,7 @@ type SystemAdapter struct {
 	config        Config
 	routes        RoutePlan
 	boundDevice   string
+	routeDevice   systemRouteConfigurableDevice
 	configApplied bool
 	routesApplied bool
 }
@@ -553,8 +554,16 @@ func (a *SystemAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePla
 	if err := plan.Validate(); err != nil {
 		return err
 	}
+	routeConfigurable, ok := dev.(systemRouteConfigurableDevice)
+	if !ok {
+		return fmt.Errorf("%w: tun device does not support system routes", types.ErrInvalidConfig)
+	}
+	if err := routeConfigurable.ApplyTUNRoutes(plan); err != nil {
+		return err
+	}
 	a.routes = plan.Clone()
 	a.boundDevice = dev.Name()
+	a.routeDevice = routeConfigurable
 	a.routesApplied = true
 	return nil
 }
@@ -563,9 +572,15 @@ func (a *SystemAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePla
 func (a *SystemAdapter) Reset(_ context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.routeDevice != nil {
+		if err := a.routeDevice.ResetTUNRoutes(); err != nil {
+			return err
+		}
+	}
 	a.config = Config{}
 	a.routes = RoutePlan{}
 	a.boundDevice = ""
+	a.routeDevice = nil
 	a.configApplied = false
 	a.routesApplied = false
 	return nil
