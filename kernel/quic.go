@@ -66,6 +66,8 @@ type quicConn interface {
 
 type h3ClientConn interface {
 	Close() error
+	AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error
+	Raw() *http3.ClientConn
 }
 
 type transportDialer interface {
@@ -80,9 +82,35 @@ func (a *quicConnAdapter) CloseWithError(code uint64, msg string) error {
 	return a.conn.CloseWithError(quic.ApplicationErrorCode(code), msg)
 }
 
-type http3ClientConnAdapter struct{}
+type http3ClientConnAdapter struct {
+	transport *http3.Transport
+	conn      *http3.ClientConn
+}
 
-func (a *http3ClientConnAdapter) Close() error { return nil }
+func (a *http3ClientConnAdapter) Close() error {
+	if a.transport != nil {
+		a.transport.Close()
+	}
+	return nil
+}
+
+func (a *http3ClientConnAdapter) AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-a.conn.ReceivedSettings():
+	}
+	settings := a.conn.Settings()
+	if requireDatagrams && !settings.EnableDatagrams {
+		return fmt.Errorf("http3 settings: datagrams not enabled")
+	}
+	if requireExtendedConnect && !settings.EnableExtendedConnect {
+		return fmt.Errorf("http3 settings: extended connect not enabled")
+	}
+	return nil
+}
+
+func (a *http3ClientConnAdapter) Raw() *http3.ClientConn { return a.conn }
 
 func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
 	started := time.Now()
@@ -100,8 +128,8 @@ func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3O
 		return nil, nil, 0, fmt.Errorf("dial quic: %w", err)
 	}
 	transport := &http3.Transport{EnableDatagrams: h3Opts.EnableDatagrams}
-	_ = transport.NewClientConn(conn)
-	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{}, time.Since(started), nil
+	clientConn := transport.NewClientConn(conn)
+	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{transport: transport, conn: clientConn}, time.Since(started), nil
 }
 
 func buildTLSConfig(opts QUICOptions) *tls.Config {
@@ -124,6 +152,7 @@ func (m *ConnectionManager) Connect(ctx context.Context) error {
 	quicOpts := m.quic
 	h3Opts := m.h3
 	m.mu.Unlock()
+
 	if dialer == nil {
 		dialer = realTransportDialer{}
 	}
@@ -134,6 +163,16 @@ func (m *ConnectionManager) Connect(ctx context.Context) error {
 		m.mu.Unlock()
 		return err
 	}
+
+	if err := h3conn.AwaitSettings(ctx, h3Opts.EnableDatagrams, true); err != nil {
+		_ = h3conn.Close()
+		_ = conn.CloseWithError(0, "settings failed")
+		m.mu.Lock()
+		m.state = ConnStateIdle
+		m.mu.Unlock()
+		return err
+	}
+
 	m.mu.Lock()
 	m.conn = conn
 	m.h3conn = h3conn
@@ -143,7 +182,7 @@ func (m *ConnectionManager) Connect(ctx context.Context) error {
 	return nil
 }
 
-// 关闭最小连接句柄并回到空闲态。
+// 关闭当前连接句柄并回到空闲态。
 func (m *ConnectionManager) Close() error {
 	m.mu.Lock()
 	conn := m.conn
@@ -152,6 +191,7 @@ func (m *ConnectionManager) Close() error {
 	m.h3conn = nil
 	m.state = ConnStateIdle
 	m.mu.Unlock()
+
 	if h3conn != nil {
 		_ = h3conn.Close()
 	}
@@ -159,6 +199,13 @@ func (m *ConnectionManager) Close() error {
 		return conn.CloseWithError(0, "closed")
 	}
 	return nil
+}
+
+// 返回当前已建立的 HTTP/3 client connection 适配器。
+func (m *ConnectionManager) HTTP3Conn() h3ClientConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.h3conn
 }
 
 // 将配置映射为最小 QUIC 连接参数。

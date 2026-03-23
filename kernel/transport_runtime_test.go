@@ -2,11 +2,25 @@ package kernel
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"math/big"
+	"net"
+	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
+	connectip "github.com/quic-go/connect-ip-go"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 type fakeQUICConn struct {
@@ -21,6 +35,10 @@ func (c *fakeQUICConn) CloseWithError(code uint64, msg string) error {
 type fakeH3Client struct{}
 
 func (c *fakeH3Client) Close() error { return nil }
+func (c *fakeH3Client) AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error {
+	return nil
+}
+func (c *fakeH3Client) Raw() *http3.ClientConn { return nil }
 
 type fakeTransportDialer struct {
 	err      error
@@ -66,7 +84,7 @@ type fakeConnectIPDialer struct {
 	latency  time.Duration
 }
 
-func (d *fakeConnectIPDialer) Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error) {
+func (d *fakeConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error) {
 	d.called = true
 	d.lastQUIC = quic
 	d.lastH3 = h3
@@ -211,4 +229,135 @@ func TestKeepaliveManagerReconnect(t *testing.T) {
 	if last.State != ConnStateReady {
 		t.Fatalf("expected final ready event, got %q", last.State)
 	}
+}
+
+// 验证真实 QUIC/H3/connect-ip 会话协商后会更新地址与路由。
+func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
+	tlsConfig, certPool := newTestTLSConfig(t)
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("expected udp listen success, got %v", err)
+	}
+	t.Cleanup(func() { _ = udpConn.Close() })
+
+	template := fmt.Sprintf("https://localhost:%d/connect-ip", udpConn.LocalAddr().(*net.UDPAddr).Port)
+	proxy := &connectip.Proxy{}
+	connCh := make(chan *connectip.Conn, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connect-ip", func(w http.ResponseWriter, r *http.Request) {
+		tpl := uritemplate.MustNew(template)
+		parsed, err := connectip.ParseRequest(r, tpl)
+		if err != nil {
+			t.Errorf("expected parse request success, got %v", err)
+			return
+		}
+		conn, err := proxy.Proxy(w, parsed)
+		if err != nil {
+			t.Errorf("expected proxy success, got %v", err)
+			return
+		}
+		connCh <- conn
+	})
+	server := http3.Server{Handler: mux, EnableDatagrams: true, TLSConfig: tlsConfig}
+	go func() { _ = server.Serve(udpConn) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	endpoint := fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port)
+	manager, err := NewConnectionManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            "localhost",
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := manager.Connect(ctx); err != nil {
+		t.Fatalf("expected connection success, got %v", err)
+	}
+
+	sessionManager, err := NewConnectIPSessionManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            "localhost",
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected session manager creation success, got %v", err)
+	}
+	sessionManager.BindHTTP3Conn(manager.HTTP3Conn())
+	go func() {
+		conn := <-connCh
+		_ = conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("172.16.0.2/32"), netip.MustParsePrefix("2606:4700:110:8765::2/128")})
+		_ = conn.AdvertiseRoute(ctx, []connectip.IPRoute{{StartIP: netip.MustParseAddr("0.0.0.0"), EndIP: netip.MustParseAddr("255.255.255.255")}})
+	}()
+	if err := sessionManager.Open(ctx); err != nil {
+		t.Fatalf("expected connect-ip open success, got %v", err)
+	}
+	snapshot := sessionManager.Snapshot()
+	if snapshot.State != SessionStateReady {
+		t.Fatalf("expected ready state, got %q", snapshot.State)
+	}
+	if snapshot.IPv4 != "172.16.0.2/32" {
+		t.Fatalf("expected ipv4 assignment, got %q", snapshot.IPv4)
+	}
+	if snapshot.IPv6 != "2606:4700:110:8765::2/128" {
+		t.Fatalf("expected ipv6 assignment, got %q", snapshot.IPv6)
+	}
+	if len(snapshot.Routes) != 1 {
+		t.Fatalf("expected one route, got %+v", snapshot.Routes)
+	}
+}
+
+type realTransportDialerWithTLS struct{ tlsConfig *tls.Config }
+
+func (d realTransportDialerWithTLS) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+	started := time.Now()
+	addr, err := net.ResolveUDPAddr("udp", quicOpts.Endpoint)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	udpConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	conn, err := quic.Dial(ctx, udpConn, addr, d.tlsConfig, &quic.Config{EnableDatagrams: h3Opts.EnableDatagrams})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	tr := &http3.Transport{EnableDatagrams: h3Opts.EnableDatagrams}
+	cc := tr.NewClientConn(conn)
+	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{transport: tr, conn: cc}, time.Since(started), nil
+}
+
+func newTestTLSConfig(t *testing.T) (*tls.Config, *x509.CertPool) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("expected rsa key generation success, got %v", err)
+	}
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost"}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("expected certificate creation success, got %v", err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+	pool := x509.NewCertPool()
+	pool.AddCert(tpl)
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("expected parse cert success, got %v", err)
+	}
+	pool = x509.NewCertPool()
+	pool.AddCert(parsed)
+	return &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{http3.NextProtoH3}}, pool
 }
