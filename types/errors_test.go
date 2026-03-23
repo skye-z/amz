@@ -79,6 +79,18 @@ func TestSanitizeTextRedactsNestedSensitiveValues(t *testing.T) {
 			secret: "priv_key_abcdef",
 			marker: `"privateKey":"<redacted>"`,
 		},
+		{
+			name:   "api key and refresh token",
+			input:  `auth failed: payload={"apiKey":"api_live_123","refreshToken":"refresh_456","licenseKey":"warp_789"}`,
+			secret: "api_live_123",
+			marker: `"apiKey":"<redacted>"`,
+		},
+		{
+			name:   "password and secret values",
+			input:  "proxy auth failed: password=hunter2 secret=shh-123",
+			secret: "hunter2",
+			marker: "password=<redacted>",
+		},
 	}
 
 	for _, tt := range tests {

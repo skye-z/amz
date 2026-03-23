@@ -54,6 +54,66 @@ type Stats struct {
 	HandshakeLatency time.Duration
 }
 
+// 描述便于序列化和结构化输出的生命周期统计。
+type LifecycleStats struct {
+	Starts     int `json:"starts"`
+	Stops      int `json:"stops"`
+	Reconnects int `json:"reconnects"`
+}
+
+// 描述结构化流量统计。
+type TrafficStats struct {
+	TxBytes    int `json:"tx_bytes"`
+	RxBytes    int `json:"rx_bytes"`
+	TotalBytes int `json:"total_bytes"`
+}
+
+// 描述结构化时延统计。
+type TimingStats struct {
+	HandshakeLatencyMillis int64 `json:"handshake_latency_ms"`
+}
+
+// 描述结构化统计输出。
+type StructuredStats struct {
+	Lifecycle LifecycleStats `json:"lifecycle"`
+	Traffic   TrafficStats   `json:"traffic"`
+	Timing    TimingStats    `json:"timing"`
+}
+
+// Structured 将平铺统计转换为结构化视图，便于日志、JSON 和 CLI 输出。
+func (s Stats) Structured() StructuredStats {
+	return StructuredStats{
+		Lifecycle: LifecycleStats{
+			Starts:     s.StartCount,
+			Stops:      s.StopCount,
+			Reconnects: s.ReconnectCount,
+		},
+		Traffic: TrafficStats{
+			TxBytes:    s.TxBytes,
+			RxBytes:    s.RxBytes,
+			TotalBytes: s.TxBytes + s.RxBytes,
+		},
+		Timing: TimingStats{
+			HandshakeLatencyMillis: s.HandshakeLatency.Milliseconds(),
+		},
+	}
+}
+
+// Fields 返回适合结构化日志的扁平字段映射。
+func (s Stats) Fields() map[string]any {
+	structured := s.Structured()
+	return map[string]any{
+		"lifecycle.starts":              structured.Lifecycle.Starts,
+		"lifecycle.stops":               structured.Lifecycle.Stops,
+		"lifecycle.reconnects":          structured.Lifecycle.Reconnects,
+		"traffic.tx_bytes":              structured.Traffic.TxBytes,
+		"traffic.rx_bytes":              structured.Traffic.RxBytes,
+		"traffic.total_bytes":           structured.Traffic.TotalBytes,
+		"timing.handshake_latency_ms":   structured.Timing.HandshakeLatencyMillis,
+		"timing.handshake_latency_text": s.HandshakeLatency.String(),
+	}
+}
+
 // 约定上层可依赖的最小生命周期接口。
 type Tunnel interface {
 	Start(context.Context) error

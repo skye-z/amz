@@ -168,3 +168,40 @@ func TestHTTPProxyManagerLogRedactsCamelCaseCredentials(t *testing.T) {
 		}
 	}
 }
+
+// 验证日志脱敏会覆盖更多账号与订阅类敏感字段。
+func TestTunnelLifecycleLogRedactsExpandedSensitiveValues(t *testing.T) {
+	logger := &recordLogger{}
+	tunnel, err := kernel.NewTunnel(&config.KernelConfig{
+		Endpoint: `api_key=api_live_123 refresh_token=refresh_456 license=warp_plus_789 password=hunter2 secret=shh-123`,
+		SNI:      config.DefaultSNI,
+		MTU:      config.DefaultMTU,
+		Mode:     config.ModeTUN,
+		Logger:   logger,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if err := tunnel.Start(context.Background()); err != nil {
+		t.Fatalf("expected start success, got %v", err)
+	}
+
+	entry := logger.entries[len(logger.entries)-1]
+	for _, secret := range []string{"api_live_123", "refresh_456", "warp_plus_789", "hunter2", "shh-123"} {
+		if strings.Contains(entry, secret) {
+			t.Fatalf("expected secret %q to be redacted, got %q", secret, entry)
+		}
+	}
+	for _, marker := range []string{
+		"api_key=<redacted>",
+		"refresh_token=<redacted>",
+		"license=<redacted>",
+		"password=<redacted>",
+		"secret=<redacted>",
+	} {
+		if !strings.Contains(entry, marker) {
+			t.Fatalf("expected marker %q in %q", marker, entry)
+		}
+	}
+}
