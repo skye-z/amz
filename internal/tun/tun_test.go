@@ -210,6 +210,86 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 	}
 }
 
+// 验证装配入口会返回绑定到同一设备的 provider 与 adapter 占位实现。
+func TestAssemblePlaceholderBinding(t *testing.T) {
+	t.Parallel()
+
+	assembled, err := tun.Assemble(tun.AssembleOptions{
+		Platform: "linux",
+		Device: tun.DeviceConfig{
+			Name: "amz0",
+			MTU:  1400,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected assemble success, got %v", err)
+	}
+	if assembled.Platform != "linux" {
+		t.Fatalf("expected platform linux, got %q", assembled.Platform)
+	}
+	if !assembled.Provider.IsFake() {
+		t.Fatal("expected fake provider")
+	}
+	if assembled.Device == nil {
+		t.Fatal("expected assembled device")
+	}
+	if assembled.Device.Name() != "amz0" {
+		t.Fatalf("expected device name amz0, got %q", assembled.Device.Name())
+	}
+
+	snapshot := assembled.Adapter.Snapshot()
+	if snapshot.BoundDevice != "amz0" {
+		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
+	}
+	if !snapshot.ConfigApplied {
+		t.Fatalf("expected config applied snapshot, got %+v", snapshot)
+	}
+	if snapshot.Config.Device.Name != "amz0" || snapshot.Config.Device.MTU != 1400 {
+		t.Fatalf("unexpected config snapshot: %+v", snapshot.Config)
+	}
+
+	if err := assembled.Close(); err != nil {
+		t.Fatalf("expected close success, got %v", err)
+	}
+	if _, err := assembled.Device.WritePacket(context.Background(), []byte{0x45}); err == nil {
+		t.Fatal("expected closed device write error")
+	}
+}
+
+// 验证装配入口会拒绝缺失设备参数与未知平台。
+func TestAssembleValidation(t *testing.T) {
+	t.Parallel()
+
+	if _, err := tun.Assemble(tun.AssembleOptions{}); err == nil {
+		t.Fatal("expected invalid assemble options")
+	}
+	if _, err := tun.Assemble(tun.AssembleOptions{
+		Platform: "plan9",
+		Device: tun.DeviceConfig{
+			Name: "amz0",
+			MTU:  1400,
+		},
+	}); err == nil {
+		t.Fatal("expected unsupported platform error")
+	}
+
+	assembled, err := tun.Assemble(tun.AssembleOptions{
+		Device: tun.DeviceConfig{
+			Name: "amz0",
+			MTU:  1400,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected default platform assemble success, got %v", err)
+	}
+	if assembled.Platform != runtime.GOOS {
+		t.Fatalf("expected runtime platform %q, got %q", runtime.GOOS, assembled.Platform)
+	}
+	if err := assembled.Close(); err != nil {
+		t.Fatalf("expected close success, got %v", err)
+	}
+}
+
 // 验证最小平台无关模型会拒绝缺失关键字段的输入。
 func TestValidatePlatformNeutralModels(t *testing.T) {
 	validConfig := tun.Config{
