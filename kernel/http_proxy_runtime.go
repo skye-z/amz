@@ -58,6 +58,16 @@ func (m *HTTPProxyManager) SetHTTPRoundTripper(roundTripper http.RoundTripper) {
 	m.transport = roundTripper
 }
 
+// 使用核心会话编排 dialer 包装当前 HTTP 代理的共享拨号入口。
+func (m *HTTPProxyManager) SetCoreTunnelDialer(connection *ConnectionManager, session *ConnectIPSessionManager, delegate HTTPStreamDialer) error {
+	dialer, err := NewCoreTunnelDialer(connection, session, delegate)
+	if err != nil {
+		return err
+	}
+	m.SetHTTPDialer(dialer)
+	return nil
+}
+
 // 记录启动次数并切换到运行态，同时启动真实 HTTP 代理监听。
 func (m *HTTPProxyManager) Start(ctx context.Context) error {
 	m.mu.Lock()

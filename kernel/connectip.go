@@ -159,6 +159,8 @@ func NewConnectIPSessionManager(cfg config.KernelConfig) (*ConnectIPSessionManag
 
 // 返回 CONNECT-IP 会话管理器的状态快照。
 func (m *ConnectIPSessionManager) Snapshot() ConnectIPSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return ConnectIPSnapshot{
 		State:    m.state,
 		Protocol: m.options.Protocol,
@@ -203,6 +205,10 @@ func (m *ConnectIPSessionManager) Stats() types.Stats {
 // 通过最小 dialer 完成一次 CONNECT-IP 会话建立。
 func (m *ConnectIPSessionManager) Open(ctx context.Context) error {
 	m.mu.Lock()
+	if m.session != nil && m.state == SessionStateReady {
+		m.mu.Unlock()
+		return nil
+	}
 	dialer := m.dialer
 	h3conn := m.h3conn
 	quicOpts := m.quic
