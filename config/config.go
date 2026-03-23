@@ -8,6 +8,11 @@ import (
 	"github.com/skye-z/amz/types"
 )
 
+// 描述内核可选使用的最小日志接口。
+type Logger interface {
+	Printf(format string, args ...any)
+}
+
 const (
 	// 默认端点指向 Cloudflare MASQUE 服务。
 	DefaultEndpoint = "162.159.198.1:443"
@@ -25,18 +30,18 @@ const (
 )
 
 const (
-	// DefaultSOCKSListenAddress 提供最小 SOCKS5 监听地址。
+	// 提供最小 SOCKS5 监听地址。
 	DefaultSOCKSListenAddress = "127.0.0.1:1080"
-	// DefaultHTTPListenAddress 提供最小 HTTP 代理监听地址。
+	// 提供最小 HTTP 代理监听地址。
 	DefaultHTTPListenAddress = "127.0.0.1:8080"
 )
 
-// TUNConfig 描述 TUN 模式的最小参数。
+// 描述 TUN 模式的最小参数。
 type TUNConfig struct {
 	Name string
 }
 
-// SOCKSConfig 描述 SOCKS 模式的最小参数。
+// 描述 SOCKS 模式的最小参数。
 type SOCKSConfig struct {
 	ListenAddress string
 	Username      string
@@ -44,21 +49,27 @@ type SOCKSConfig struct {
 	EnableUDP     bool
 }
 
-// HTTPConfig 描述 HTTP 模式的最小参数。
+// 描述 HTTP 模式的最小参数。
 type HTTPConfig struct {
 	ListenAddress string
 }
 
+// 描述 QUIC 与 HTTP/3 连接管理的扩展预留参数。
+type QUICConfig struct {
+	CongestionControl    string
+	ConnectionParameters map[string]string
+}
+
 const (
-	// ModeTUN 表示通过系统 TUN 暴露隧道。
+	// 表示通过系统 TUN 暴露隧道。
 	ModeTUN = "tun"
-	// ModeSOCKS 表示通过 SOCKS5 暴露隧道。
+	// 表示通过 SOCKS5 暴露隧道。
 	ModeSOCKS = "socks"
-	// ModeHTTP 表示通过 HTTP 代理暴露隧道。
+	// 表示通过 HTTP 代理暴露隧道。
 	ModeHTTP = "http"
 )
 
-// KernelConfig 描述内核启动所需的最小参数集合。
+// 描述内核启动所需的最小参数集合。
 type KernelConfig struct {
 	Endpoint       string
 	SNI            string
@@ -66,12 +77,14 @@ type KernelConfig struct {
 	Mode           string
 	Keepalive      time.Duration
 	ConnectTimeout time.Duration
+	QUIC           QUICConfig
+	Logger         Logger
 	TUN            TUNConfig
 	SOCKS          SOCKSConfig
 	HTTP           HTTPConfig
 }
 
-// FillDefaults 为基础阶段补齐最小可运行默认值。
+// 为基础阶段补齐最小可运行默认值。
 func (c *KernelConfig) FillDefaults() {
 	if c.Endpoint == "" {
 		c.Endpoint = DefaultEndpoint
@@ -107,7 +120,7 @@ func (c *KernelConfig) FillDefaults() {
 	}
 }
 
-// Validate 检查配置是否满足最小骨架约束。
+// 检查配置是否满足最小骨架约束。
 func (c KernelConfig) Validate() error {
 	if strings.TrimSpace(c.Endpoint) == "" {
 		return fmt.Errorf("%w: endpoint is required", types.ErrInvalidConfig)

@@ -62,3 +62,30 @@ func TestKeepaliveManagerEvents(t *testing.T) {
 		t.Fatalf("expected timeout reason, got %q", events[1].Reason)
 	}
 }
+
+// 验证保活管理器会累积重连次数统计。
+func TestKeepaliveManagerReconnectStats(t *testing.T) {
+	manager := kernel.NewKeepaliveManager(kernel.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   1 * time.Second,
+		MaxDelay:    5 * time.Second,
+	})
+
+	manager.RecordReconnect("timeout", 2)
+
+	stats := manager.Stats()
+	if stats.ReconnectCount != 1 {
+		t.Fatalf("expected reconnect count 1, got %d", stats.ReconnectCount)
+	}
+
+	events := manager.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Attempt != 2 {
+		t.Fatalf("expected attempt 2, got %d", events[0].Attempt)
+	}
+	if events[0].Reason != "timeout" {
+		t.Fatalf("expected timeout reason, got %q", events[0].Reason)
+	}
+}

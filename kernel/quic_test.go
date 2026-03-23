@@ -2,6 +2,7 @@ package kernel_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/kernel"
@@ -49,6 +50,62 @@ func TestBuildHTTP3Options(t *testing.T) {
 	}
 }
 
+// 验证 QUIC 连接参数会预留拥塞控制与连接参数扩展点。
+func TestBuildQUICOptionsWithExtensions(t *testing.T) {
+	options, err := kernel.BuildQUICOptions(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS: config.SOCKSConfig{
+			ListenAddress: config.DefaultSOCKSListenAddress,
+		},
+		QUIC: config.QUICConfig{
+			CongestionControl: "bbr",
+			ConnectionParameters: map[string]string{
+				"max_streams": "16",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected quic options, got %v", err)
+	}
+	if options.CongestionControl != "bbr" {
+		t.Fatalf("expected congestion control %q, got %q", "bbr", options.CongestionControl)
+	}
+	if got := options.ConnectionParameters["max_streams"]; got != "16" {
+		t.Fatalf("expected connection parameter %q, got %q", "16", got)
+	}
+}
+
+// 验证 HTTP/3 连接参数会继承并隔离 QUIC 连接扩展参数。
+func TestBuildHTTP3OptionsCopiesConnectionParameters(t *testing.T) {
+	http3Options := kernel.BuildHTTP3Options(kernel.QUICOptions{
+		Endpoint:        config.DefaultEndpoint,
+		ServerName:      config.DefaultSNI,
+		EnableDatagrams: true,
+		ConnectionParameters: map[string]string{
+			"masque_version": "draft-08",
+		},
+	})
+	if got := http3Options.ConnectionParameters["masque_version"]; got != "draft-08" {
+		t.Fatalf("expected connection parameter %q, got %q", "draft-08", got)
+	}
+	http3Options.ConnectionParameters["masque_version"] = "changed"
+	quicOptions := kernel.QUICOptions{
+		ConnectionParameters: map[string]string{
+			"masque_version": "draft-08",
+		},
+	}
+	isolated := kernel.BuildHTTP3Options(quicOptions)
+	isolated.ConnectionParameters["masque_version"] = "changed"
+	if quicOptions.ConnectionParameters["masque_version"] != "draft-08" {
+		t.Fatal("expected http3 connection parameters to be copied")
+	}
+}
+
 // 验证连接管理器会暴露最小状态快照。
 func TestConnectionManagerSnapshot(t *testing.T) {
 	manager, err := kernel.NewConnectionManager(config.KernelConfig{
@@ -71,5 +128,38 @@ func TestConnectionManagerSnapshot(t *testing.T) {
 	}
 	if snapshot.State != kernel.ConnStateIdle {
 		t.Fatalf("expected idle state, got %q", snapshot.State)
+	}
+}
+
+// 验证连接管理器会暴露基础连接统计入口。
+func TestConnectionManagerStats(t *testing.T) {
+	manager, err := kernel.NewConnectionManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS: config.SOCKSConfig{
+			ListenAddress: config.DefaultSOCKSListenAddress,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+
+	manager.RecordHandshakeLatency(120 * time.Millisecond)
+	manager.AddTxBytes(128)
+	manager.AddRxBytes(256)
+
+	stats := manager.Stats()
+	if stats.HandshakeLatency != 120*time.Millisecond {
+		t.Fatalf("expected handshake latency 120ms, got %s", stats.HandshakeLatency)
+	}
+	if stats.TxBytes != 128 {
+		t.Fatalf("expected tx bytes 128, got %d", stats.TxBytes)
+	}
+	if stats.RxBytes != 256 {
+		t.Fatalf("expected rx bytes 256, got %d", stats.RxBytes)
 	}
 }
