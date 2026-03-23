@@ -20,6 +20,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
+	"github.com/skye-z/amz/types"
 	"github.com/yosida95/uritemplate/v3"
 )
 
@@ -32,11 +33,13 @@ func (c *fakeQUICConn) CloseWithError(code uint64, msg string) error {
 	return nil
 }
 
-type fakeH3Client struct{}
+type fakeH3Client struct {
+	awaitErr error
+}
 
 func (c *fakeH3Client) Close() error { return nil }
 func (c *fakeH3Client) AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error {
-	return nil
+	return c.awaitErr
 }
 func (c *fakeH3Client) Raw() *http3.ClientConn { return nil }
 
@@ -94,6 +97,7 @@ func (s *fakeConnectIPSession) WritePacket(ctx context.Context, packet []byte) (
 
 type fakeConnectIPDialer struct {
 	err      error
+	response *http.Response
 	called   bool
 	lastQUIC QUICOptions
 	lastH3   HTTP3Options
@@ -102,15 +106,15 @@ type fakeConnectIPDialer struct {
 	latency  time.Duration
 }
 
-func (d *fakeConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error) {
+func (d *fakeConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, *http.Response, time.Duration, error) {
 	d.called = true
 	d.lastQUIC = quic
 	d.lastH3 = h3
 	d.lastOpts = opts
 	if d.err != nil {
-		return nil, 0, d.err
+		return nil, d.response, 0, d.err
 	}
-	return d.session, d.latency, nil
+	return d.session, d.response, d.latency, nil
 }
 
 // 验证连接管理器会执行真实建链路径并更新状态与握手时延。
@@ -175,6 +179,42 @@ func TestConnectionManagerConnectFailure(t *testing.T) {
 	}
 }
 
+// 验证 H3 SETTINGS 缺少 Cloudflare 依赖能力时会返回兼容层错误上下文。
+func TestConnectionManagerConnectWrapsCloudflareSettingsError(t *testing.T) {
+	mgr, err := NewConnectionManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	mgr.dialer = &fakeTransportDialer{
+		conn:    &fakeQUICConn{},
+		h3:      &fakeH3Client{awaitErr: errors.New("http3 settings: datagrams not enabled")},
+		latency: 5 * time.Millisecond,
+	}
+
+	err = mgr.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected connect error")
+	}
+	if !errors.Is(err, types.ErrCloudflareCompat) {
+		t.Fatalf("expected cloudflare compat error, got %v", err)
+	}
+	var compatErr *types.CloudflareCompatError
+	if !errors.As(err, &compatErr) {
+		t.Fatal("expected contextual cloudflare compat error")
+	}
+	if compatErr.Quirk != CloudflareQuirkMissingDatagrams {
+		t.Fatalf("expected quirk %q, got %q", CloudflareQuirkMissingDatagrams, compatErr.Quirk)
+	}
+}
+
 // 验证 CONNECT-IP 会话管理器会通过真实会话建立路径更新地址与路由。
 func TestConnectIPSessionManagerOpen(t *testing.T) {
 	mgr, err := NewConnectIPSessionManager(config.KernelConfig{
@@ -223,6 +263,41 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 	}
 	if mgr.Snapshot().State != SessionStateIdle {
 		t.Fatalf("expected idle state after close, got %q", mgr.Snapshot().State)
+	}
+}
+
+// 验证 CONNECT-IP 会话阶段会将真实 HTTP 状态码映射为 Cloudflare 特殊响应错误。
+func TestConnectIPSessionManagerOpenWrapsCloudflareResponse(t *testing.T) {
+	mgr, err := NewConnectIPSessionManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	mgr.dialer = &fakeConnectIPDialer{
+		err:      errors.New("connect-ip: server responded with 429"),
+		response: &http.Response{StatusCode: http.StatusTooManyRequests},
+	}
+
+	err = mgr.Open(context.Background())
+	if err == nil {
+		t.Fatal("expected connect-ip open error")
+	}
+	if !errors.Is(err, types.ErrCloudflareCompat) {
+		t.Fatalf("expected cloudflare compat error, got %v", err)
+	}
+	var compatErr *types.CloudflareCompatError
+	if !errors.As(err, &compatErr) {
+		t.Fatal("expected contextual cloudflare compat error")
+	}
+	if compatErr.Quirk != CloudflareQuirkRateLimited {
+		t.Fatalf("expected quirk %q, got %q", CloudflareQuirkRateLimited, compatErr.Quirk)
 	}
 }
 

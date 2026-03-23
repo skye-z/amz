@@ -1,7 +1,11 @@
 package kernel
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
@@ -10,6 +14,22 @@ import (
 const (
 	// 表示 Cloudflare 使用的 cf-connect-ip 协议变体。
 	ProtocolCFConnectIP = "cf-connect-ip"
+	// 表示通用响应错误。
+	CloudflareQuirkResponseError = "response_error"
+	// 表示鉴权或授权被拒绝。
+	CloudflareQuirkUnauthorized = "unauthorized"
+	// 表示远端限流。
+	CloudflareQuirkRateLimited = "rate_limited"
+	// 表示远端未暴露 CONNECT-IP 路由。
+	CloudflareQuirkRouteUnavailable = "route_unavailable"
+	// 表示协议能力或协议别名不兼容。
+	CloudflareQuirkProtocolMismatch = "protocol_mismatch"
+	// 表示远端未启用 H3 datagrams。
+	CloudflareQuirkMissingDatagrams = "missing_datagrams"
+	// 表示远端未启用 Extended CONNECT。
+	CloudflareQuirkMissingExtendedConnect = "missing_extended_connect"
+	// 表示其余协议阶段错误。
+	CloudflareQuirkProtocolError = "protocol_error"
 )
 
 // 描述最小兼容层需要暴露的协议差异开关。
@@ -63,14 +83,87 @@ func (l *CloudflareCompatLayer) Snapshot() CloudflareSnapshot {
 	return l.snapshot
 }
 
+// 将通用 CONNECT-IP 参数调整为 Cloudflare 兼容模式。
+func (l *CloudflareCompatLayer) ApplyConnectIPOptions(opts ConnectIPOptions) ConnectIPOptions {
+	if l == nil {
+		return opts
+	}
+	adjusted := opts
+	if l.snapshot.Quirks.UseCFConnectIP {
+		adjusted.Protocol = l.snapshot.Protocol
+	}
+	if l.snapshot.Quirks.RequireDatagrams {
+		adjusted.EnableDatagrams = true
+	}
+	return adjusted
+}
+
 // 为 Cloudflare 兼容分支补充错误上下文，并处理常见未授权映射。
 func (l *CloudflareCompatLayer) WrapResponseError(operation string, statusCode int, cause error) error {
-	if statusCode == 401 && l.snapshot.Quirks.MapUnauthorizedToAuthError {
+	if l == nil {
+		return cause
+	}
+	if isContextError(cause) {
+		return cause
+	}
+	if (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) && l.snapshot.Quirks.MapUnauthorizedToAuthError {
 		cause = types.ErrAuthenticationFailed
 	}
-	quirk := "response_error"
-	if statusCode == 401 {
-		quirk = "unauthorized"
-	}
+	quirk := classifyCloudflareStatus(statusCode)
 	return types.WrapCloudflareError(operation, quirk, cause)
+}
+
+// 基于真实 HTTP 响应或协议错误包装 Cloudflare 特殊响应。
+func (l *CloudflareCompatLayer) WrapConnectIPError(operation string, rsp *http.Response, cause error) error {
+	if l == nil || isContextError(cause) {
+		return cause
+	}
+	if rsp != nil {
+		return l.WrapResponseError(operation, rsp.StatusCode, cause)
+	}
+	return l.WrapProtocolError(operation, cause)
+}
+
+// 基于真实协议阶段错误映射 Cloudflare 兼容分支。
+func (l *CloudflareCompatLayer) WrapProtocolError(operation string, cause error) error {
+	if l == nil || isContextError(cause) {
+		return cause
+	}
+	return types.WrapCloudflareError(operation, classifyCloudflareProtocolError(cause), cause)
+}
+
+func classifyCloudflareStatus(statusCode int) string {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return CloudflareQuirkUnauthorized
+	case http.StatusTooManyRequests:
+		return CloudflareQuirkRateLimited
+	case http.StatusNotFound:
+		return CloudflareQuirkRouteUnavailable
+	case http.StatusBadRequest, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return CloudflareQuirkProtocolMismatch
+	default:
+		return CloudflareQuirkResponseError
+	}
+}
+
+func classifyCloudflareProtocolError(cause error) string {
+	if cause == nil {
+		return CloudflareQuirkProtocolError
+	}
+	message := strings.ToLower(cause.Error())
+	switch {
+	case strings.Contains(message, "datagrams not enabled"), strings.Contains(message, "didn't enable datagrams"):
+		return CloudflareQuirkMissingDatagrams
+	case strings.Contains(message, "extended connect not enabled"), strings.Contains(message, "didn't enable extended connect"):
+		return CloudflareQuirkMissingExtendedConnect
+	case strings.Contains(message, "unexpected protocol"), strings.Contains(message, "capsule"), strings.Contains(message, "not implemented"):
+		return CloudflareQuirkProtocolMismatch
+	default:
+		return CloudflareQuirkProtocolError
+	}
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

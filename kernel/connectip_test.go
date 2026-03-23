@@ -83,8 +83,8 @@ func TestNewConnectIPSessionManager(t *testing.T) {
 	if snapshot.State != kernel.SessionStateIdle {
 		t.Fatalf("expected idle state, got %q", snapshot.State)
 	}
-	if snapshot.Protocol != kernel.ProtocolConnectIP {
-		t.Fatalf("expected protocol %q, got %q", kernel.ProtocolConnectIP, snapshot.Protocol)
+	if snapshot.Protocol != kernel.ProtocolCFConnectIP {
+		t.Fatalf("expected protocol %q, got %q", kernel.ProtocolCFConnectIP, snapshot.Protocol)
 	}
 }
 

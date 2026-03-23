@@ -2,6 +2,7 @@ package kernel_test
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -39,14 +40,39 @@ func TestCloudflareCompatLayerWrapResponseErrorTableDriven(t *testing.T) {
 			name:       "map unauthorized to auth error",
 			statusCode: 401,
 			cause:      errors.New("remote unauthorized"),
-			wantQuirk:  "unauthorized",
+			wantQuirk:  kernel.CloudflareQuirkUnauthorized,
 			wantAuth:   true,
+		},
+		{
+			name:       "map forbidden to auth error",
+			statusCode: 403,
+			cause:      errors.New("remote forbidden"),
+			wantQuirk:  kernel.CloudflareQuirkUnauthorized,
+			wantAuth:   true,
+		},
+		{
+			name:       "map rate limited response",
+			statusCode: 429,
+			cause:      errors.New("too many requests"),
+			wantQuirk:  kernel.CloudflareQuirkRateLimited,
+		},
+		{
+			name:       "map connect-ip route missing response",
+			statusCode: 404,
+			cause:      errors.New("not found"),
+			wantQuirk:  kernel.CloudflareQuirkRouteUnavailable,
+		},
+		{
+			name:       "map protocol mismatch response",
+			statusCode: 501,
+			cause:      errors.New("not implemented"),
+			wantQuirk:  kernel.CloudflareQuirkProtocolMismatch,
 		},
 		{
 			name:       "keep generic response error",
 			statusCode: 503,
 			cause:      errors.New("temporary unavailable"),
-			wantQuirk:  "response_error",
+			wantQuirk:  kernel.CloudflareQuirkResponseError,
 		},
 	}
 
@@ -75,6 +101,94 @@ func TestCloudflareCompatLayerWrapResponseErrorTableDriven(t *testing.T) {
 				t.Fatalf("expected wrapped error to retain cause %v", tt.cause)
 			}
 		})
+	}
+}
+
+// 验证 Cloudflare 兼容层会把 CONNECT-IP 参数调整为 Cloudflare 协议别名与 datagrams 要求。
+func TestCloudflareCompatLayerApplyConnectIPOptions(t *testing.T) {
+	layer, err := kernel.NewCloudflareCompatLayer(config.KernelConfig{})
+	if err != nil {
+		t.Fatalf("expected compat layer creation success, got %v", err)
+	}
+
+	adjusted := layer.ApplyConnectIPOptions(kernel.ConnectIPOptions{
+		Authority:       config.DefaultEndpoint,
+		Protocol:        kernel.ProtocolConnectIP,
+		EnableDatagrams: false,
+	})
+	if adjusted.Protocol != kernel.ProtocolCFConnectIP {
+		t.Fatalf("expected protocol %q, got %q", kernel.ProtocolCFConnectIP, adjusted.Protocol)
+	}
+	if !adjusted.EnableDatagrams {
+		t.Fatal("expected datagrams forced by cloudflare quirks")
+	}
+}
+
+// 验证兼容层会把真实协议阶段错误映射为 Cloudflare quirks。
+func TestCloudflareCompatLayerWrapProtocolError(t *testing.T) {
+	layer, err := kernel.NewCloudflareCompatLayer(config.KernelConfig{})
+	if err != nil {
+		t.Fatalf("expected compat layer creation success, got %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		cause     error
+		wantQuirk string
+	}{
+		{
+			name:      "missing datagrams",
+			cause:     errors.New("http3 settings: datagrams not enabled"),
+			wantQuirk: kernel.CloudflareQuirkMissingDatagrams,
+		},
+		{
+			name:      "missing extended connect",
+			cause:     errors.New("connect-ip: server didn't enable Extended CONNECT"),
+			wantQuirk: kernel.CloudflareQuirkMissingExtendedConnect,
+		},
+		{
+			name:      "protocol mismatch",
+			cause:     errors.New("unexpected protocol: connect-ip"),
+			wantQuirk: kernel.CloudflareQuirkProtocolMismatch,
+		},
+		{
+			name:      "generic protocol error",
+			cause:     errors.New("remote closed"),
+			wantQuirk: kernel.CloudflareQuirkProtocolError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapped := layer.WrapProtocolError("connect-ip", tt.cause)
+			if !errors.Is(wrapped, types.ErrCloudflareCompat) {
+				t.Fatal("expected cloudflare compat error")
+			}
+			var compatErr *types.CloudflareCompatError
+			if !errors.As(wrapped, &compatErr) {
+				t.Fatal("expected contextual cloudflare error")
+			}
+			if compatErr.Quirk != tt.wantQuirk {
+				t.Fatalf("expected quirk %q, got %q", tt.wantQuirk, compatErr.Quirk)
+			}
+		})
+	}
+}
+
+// 验证兼容层会优先使用真实 HTTP 响应状态码包装 CONNECT-IP 错误。
+func TestCloudflareCompatLayerWrapConnectIPErrorUsesResponse(t *testing.T) {
+	layer, err := kernel.NewCloudflareCompatLayer(config.KernelConfig{})
+	if err != nil {
+		t.Fatalf("expected compat layer creation success, got %v", err)
+	}
+
+	wrapped := layer.WrapConnectIPError("connect-ip", &http.Response{StatusCode: http.StatusTooManyRequests}, errors.New("rate limited"))
+	var compatErr *types.CloudflareCompatError
+	if !errors.As(wrapped, &compatErr) {
+		t.Fatal("expected contextual cloudflare error")
+	}
+	if compatErr.Quirk != kernel.CloudflareQuirkRateLimited {
+		t.Fatalf("expected quirk %q, got %q", kernel.CloudflareQuirkRateLimited, compatErr.Quirk)
 	}
 }
 
@@ -176,8 +290,8 @@ func TestCloudflareCompatLayerWrapResponseErrorUnauthorized(t *testing.T) {
 	if !errors.As(wrapped, &compatErr) {
 		t.Fatal("expected wrapped error to expose CloudflareCompatError")
 	}
-	if compatErr.Quirk != "unauthorized" {
-		t.Fatalf("expected quirk %q, got %q", "unauthorized", compatErr.Quirk)
+	if compatErr.Quirk != kernel.CloudflareQuirkUnauthorized {
+		t.Fatalf("expected quirk %q, got %q", kernel.CloudflareQuirkUnauthorized, compatErr.Quirk)
 	}
 }
 
@@ -214,8 +328,8 @@ func TestCloudflareCompatLayerWrapResponseErrorResponseError(t *testing.T) {
 	if !errors.As(wrapped, &compatErr) {
 		t.Fatal("expected wrapped error to expose CloudflareCompatError")
 	}
-	if compatErr.Quirk != "response_error" {
-		t.Fatalf("expected quirk %q, got %q", "response_error", compatErr.Quirk)
+	if compatErr.Quirk != kernel.CloudflareQuirkResponseError {
+		t.Fatalf("expected quirk %q, got %q", kernel.CloudflareQuirkResponseError, compatErr.Quirk)
 	}
 	if compatErr.Cause != cause {
 		t.Fatalf("expected cause %v, got %v", cause, compatErr.Cause)

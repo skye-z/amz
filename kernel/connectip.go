@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -55,6 +56,7 @@ type ConnectIPSessionManager struct {
 	h3conn  h3ClientConn
 	info    SessionInfo
 	stats   connectionStats
+	compat  *CloudflareCompatLayer
 	dialer  connectIPDialer
 	session connectIPSession
 }
@@ -67,7 +69,7 @@ type connectIPSession interface {
 }
 
 type connectIPDialer interface {
-	Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error)
+	Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, *http.Response, time.Duration, error)
 }
 
 type realConnectIPSession struct {
@@ -92,23 +94,23 @@ func (s *realConnectIPSession) WritePacket(ctx context.Context, packet []byte) (
 
 type realConnectIPDialer struct{}
 
-func (d realConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, time.Duration, error) {
+func (d realConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, *http.Response, time.Duration, error) {
 	if h3conn == nil || h3conn.Raw() == nil {
-		return nil, 0, fmt.Errorf("http3 client connection is required")
+		return nil, nil, 0, fmt.Errorf("http3 client connection is required")
 	}
 	tmpl := uritemplate.MustNew("https://" + opts.Authority + "/connect-ip")
 	started := time.Now()
-	conn, _, err := connectip.Dial(ctx, h3conn.Raw(), tmpl)
+	conn, rsp, err := connectip.Dial(ctx, h3conn.Raw(), tmpl)
 	if err != nil {
-		return nil, 0, err
+		return nil, rsp, 0, err
 	}
 	prefixes, err := conn.LocalPrefixes(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	routes, err := conn.Routes(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	info := SessionInfo{Routes: make([]string, 0, len(routes))}
 	for _, prefix := range prefixes {
@@ -122,7 +124,7 @@ func (d realConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic
 	for _, route := range routes {
 		info.Routes = append(info.Routes, route.StartIP.String()+"-"+route.EndIP.String())
 	}
-	return &realConnectIPSession{conn: conn, info: info}, time.Since(started), nil
+	return &realConnectIPSession{conn: conn, info: info}, rsp, time.Since(started), nil
 }
 
 // 基于 HTTP/3 参数生成 CONNECT-IP 会话参数。
@@ -141,11 +143,16 @@ func NewConnectIPSessionManager(cfg config.KernelConfig) (*ConnectIPSessionManag
 		return nil, fmt.Errorf("build quic options: %w", err)
 	}
 	h3 := BuildHTTP3Options(quic)
+	compat, err := NewCloudflareCompatLayer(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build cloudflare compat: %w", err)
+	}
 	return &ConnectIPSessionManager{
 		state:   SessionStateIdle,
-		options: BuildConnectIPOptions(h3),
+		options: compat.ApplyConnectIPOptions(BuildConnectIPOptions(h3)),
 		quic:    quic,
 		h3:      h3,
+		compat:  compat,
 		dialer:  realConnectIPDialer{},
 	}, nil
 }
@@ -201,12 +208,16 @@ func (m *ConnectIPSessionManager) Open(ctx context.Context) error {
 	quicOpts := m.quic
 	h3Opts := m.h3
 	opts := m.options
+	compat := m.compat
 	m.mu.Unlock()
 	if dialer == nil {
 		return fmt.Errorf("connect-ip dialer is required")
 	}
-	session, latency, err := dialer.Dial(ctx, h3conn, quicOpts, h3Opts, opts)
+	session, rsp, latency, err := dialer.Dial(ctx, h3conn, quicOpts, h3Opts, opts)
 	if err != nil {
+		if compat != nil {
+			return compat.WrapConnectIPError("connect-ip", rsp, err)
+		}
 		return err
 	}
 	m.mu.Lock()

@@ -55,6 +55,7 @@ type ConnectionManager struct {
 	quic   QUICOptions
 	h3     HTTP3Options
 	stats  connectionStats
+	compat *CloudflareCompatLayer
 	dialer transportDialer
 	conn   quicConn
 	h3conn h3ClientConn
@@ -151,6 +152,7 @@ func (m *ConnectionManager) Connect(ctx context.Context) error {
 	dialer := m.dialer
 	quicOpts := m.quic
 	h3Opts := m.h3
+	compat := m.compat
 	m.mu.Unlock()
 
 	if dialer == nil {
@@ -170,6 +172,9 @@ func (m *ConnectionManager) Connect(ctx context.Context) error {
 		m.mu.Lock()
 		m.state = ConnStateIdle
 		m.mu.Unlock()
+		if compat != nil {
+			return compat.WrapProtocolError("http3-settings", err)
+		}
 		return err
 	}
 
@@ -252,11 +257,16 @@ func NewConnectionManager(cfg config.KernelConfig) (*ConnectionManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build quic options: %w", err)
 	}
+	compat, err := NewCloudflareCompatLayer(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build cloudflare compat: %w", err)
+	}
 	return &ConnectionManager{
-		cfg:   cfg,
-		state: ConnStateIdle,
-		quic:  quic,
-		h3:    BuildHTTP3Options(quic),
+		cfg:    cfg,
+		state:  ConnStateIdle,
+		quic:   quic,
+		h3:     BuildHTTP3Options(quic),
+		compat: compat,
 	}, nil
 }
 
