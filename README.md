@@ -1,127 +1,97 @@
 # amz
 
-`amz` 是本仓库中的 WARP/MASQUE 内核层，负责：
+> WARP / MASQUE transport kernel for the Cloudflare WARP 2026 Proxy Mode path.
+>
+> `amz` provides the protocol and runtime layer used by this repository: QUIC, HTTP/3, HTTP/3 CONNECT stream relay, proxy runtimes, tunnel scaffolding, and Cloudflare-specific compatibility behavior.
 
-- QUIC / HTTP/3 / HTTP/3 CONNECT L4 代理会话建立 (2026 Proxy Mode)
-- TUN、SOCKS5、HTTP 代理三种运行模式
-- Cloudflare 兼容处理
-- 数据面转发、路由与基础观测
+## Overview
 
-> **注意**：自 2026 年 3 月 Cloudflare 官方博客宣布 Proxy Mode 重大更新后，WARP 已从 CONNECT-IP (L3) 方案彻底转向 **direct L4 proxying** (HTTP/3 CONNECT + QUIC streams)。本实现已对齐最新协议。
+`amz` is the transport kernel module in this repository.
 
-## 当前对外 API
+It is designed for two audiences at the same time:
 
-### 配置
+- **internal integration** — as the runtime engine behind `igara`
+- **external embedding** — as a reusable Go package for proxy / tunnel integration
 
-```go
-cfg := config.KernelConfig{
-    Endpoint: "162.159.198.1:443",
-    SNI:      "consumer-masque.cloudflareclient.com",
-    Mode:     config.ModeHTTP,
-    HTTP: config.HTTPConfig{
-        ListenAddress: "127.0.0.1:8080",
-    },
-}
-cfg.FillDefaults()
-if err := cfg.Validate(); err != nil {
-    panic(err)
-}
-```
+The current mainline is aligned with **Cloudflare WARP 2026 Proxy Mode**, which is centered on:
 
-### TUN 生命周期
+- **QUIC + HTTP/3**
+- **HTTP/3 CONNECT**
+- **direct L4 proxying over streams**
 
-```go
-tunKernel, err := kernel.NewTunnel(&cfg)
-if err != nil {
-    panic(err)
-}
-if err := tunKernel.Start(context.Background()); err != nil {
-    panic(err)
-}
-defer tunKernel.Close()
-```
+As of **March 24, 2026**, the HTTP proxy mainline has been validated against real [`ipwho.is`](https://ipwho.is/) traffic with a confirmed egress IP change.
 
-### SOCKS5 模式
+## Read in Your Preferred Language
+
+- [简体中文 / Chinese](./README.zh-CN.md)
+- [English](./README.en.md)
+
+## Current Status
+
+- **Validated mainline:** HTTP Proxy Mode over QUIC / HTTP/3 / HTTP/3 CONNECT
+- **Available runtime surfaces:** HTTP proxy, SOCKS5 proxy, TUN scaffolding
+- **Compatibility path:** CONNECT-IP is still present for TUN / legacy-style completion work
+
+## Public Package Surface
+
+The root package now acts as the primary façade:
 
 ```go
-cfg.Mode = config.ModeSOCKS
-cfg.SOCKS.ListenAddress = "127.0.0.1:1080"
-cfg.SOCKS.EnableUDP = true
-
-socks, err := kernel.NewSOCKSManager(&cfg)
-if err != nil {
-    panic(err)
-}
-if err := socks.Start(context.Background()); err != nil {
-    panic(err)
-}
-defer socks.Close()
+proxy, err := amz.NewHTTPProxy(cfg)
+socks, err := amz.NewSOCKS5Proxy(cfg)
+tun, err := amz.NewTunnel(cfg)
 ```
 
-### HTTP 代理模式
+Supporting packages are organized by responsibility:
+
+- `config/` — configuration model, defaults, validation
+- `session/` — QUIC / HTTP/3 / CONNECT stream / CONNECT-IP session primitives
+- `proxy/http/` — HTTP proxy runtime
+- `proxy/socks5/` — SOCKS5 runtime
+- `tun/` — TUN-related surface
+- `datapath/` — packet relay abstractions
+- `cloudflare/` — Cloudflare compatibility surface
+- `observe/` — stats / sanitization-facing types
+
+## Quick Example
 
 ```go
-cfg.Mode = config.ModeHTTP
-cfg.HTTP.ListenAddress = "127.0.0.1:8080"
+package main
 
-proxy, err := kernel.NewHTTPProxyManager(cfg)
-if err != nil {
-    panic(err)
+import (
+    "context"
+
+    "github.com/skye-z/amz"
+    "github.com/skye-z/amz/config"
+)
+
+func main() {
+    cfg := &config.KernelConfig{
+        Endpoint: "162.159.198.2:443",
+        SNI:      "warp.cloudflare.com",
+        Mode:     config.ModeHTTP,
+        HTTP: config.HTTPConfig{
+            ListenAddress: "127.0.0.1:8080",
+        },
+    }
+    cfg.FillDefaults()
+
+    proxy, err := amz.NewHTTPProxy(cfg)
+    if err != nil {
+        panic(err)
+    }
+    defer proxy.Close()
+
+    if err := proxy.Start(context.Background()); err != nil {
+        panic(err)
+    }
 }
-
-connMgr, err := kernel.NewConnectionManager(cfg)
-if err != nil {
-    panic(err)
-}
-
-// 2026 L4 Proxy: 使用 ConnectStreamManager (HTTP/3 CONNECT stream)
-streamMgr, err := kernel.NewConnectStreamManager(cfg)
-if err != nil {
-    panic(err)
-}
-
-// 绑定 HTTP/3 连接并设置 stream manager
-connMgr.Connect(context.Background())
-streamMgr.BindHTTP3Conn(connMgr.HTTP3Conn())
-streamMgr.SetReady()
-
-proxy.SetStreamManager(streamMgr)
-if err := proxy.Start(context.Background()); err != nil {
-    panic(err)
-}
-defer proxy.Close()
 ```
 
-## 关键模块
+## Recommended Reading Order
 
-- `config/`
-  - 内核配置模型与默认值
-- `kernel/`
-  - QUIC、HTTP/3 CONNECT (L4)、SOCKS5/HTTP 代理运行时、统计、Cloudflare 兼容
-  - **2026 更新**：`connect_stream.go` - L4 stream relay 实现 (HTTP/3 CONNECT)
-  - **兼容路径**：`connectip.go` - 旧版 CONNECT-IP 实现 (保留用于 2025 客户端兼容)
-- `internal/tun/`
-  - `sing-tun` 设备创建、地址配置、系统路由与回滚
-- `types/`
-  - 通用错误、状态、结构化统计输出
+If you're new to this module:
 
-## 测试
-
-```bash
-go test ./amz/...
-```
-
-重点覆盖：
-
-- QUIC / HTTP/3 CONNECT (L4) 建链
-- TUN 设备与路由装配
-- SOCKS5 / HTTP 代理运行时
-- Cloudflare 兼容逻辑
-- 结构化统计与日志脱敏
-- HTTP/3 CONNECT stream 生命周期
-
-## 注意事项
-
-- TUN 与系统路由修改通常需要管理员/root 权限。
-- HTTP 代理虽已具备真实 CONNECT/转发运行时，但跨平台实际可用性仍依赖本机权限、路由环境与 WARP 端点可达性。
-- 代理模式下请优先为测试环境使用随机监听地址（如 `127.0.0.1:0`），避免端口冲突。
+1. Start with [README.zh-CN.md](./README.zh-CN.md) or [README.en.md](./README.en.md)
+2. Use the **HTTP Proxy Mode** examples first
+3. Treat **TUN / CONNECT-IP** as a compatibility-oriented path still being completed
