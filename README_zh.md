@@ -1,4 +1,4 @@
-# amz
+﻿# amz
 
 > 面向 Cloudflare WARP 2026 Proxy Mode 的 SDK-first Go 实现。
 
@@ -172,4 +172,5 @@ SDK v1 暂不聚焦：
 ## 文档语言
 
 - [README.md](./README.md)
-- [README.en.md](./README.en.md)
+- [README_zh.md](./README_zh.md)
+
