@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/skye-z/amz/types"
@@ -256,36 +257,24 @@ func (m *SOCKSManager) handleConnect(ctx context.Context, clientConn net.Conn, t
 		return err
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer clientConn.Close()
-		defer remoteConn.Close()
-		m.relayStream(clientConn, remoteConn)
+		defer wg.Done()
+		_, _ = io.Copy(&countingWriter{writer: remoteConn, onWrite: m.AddTxBytes}, clientConn)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&countingWriter{writer: clientConn, onWrite: m.AddRxBytes}, remoteConn)
+	}()
+
+	go func() {
+		wg.Wait()
+		clientConn.Close()
+		remoteConn.Close()
 	}()
 
 	return nil
-}
-
-func (m *SOCKSManager) relayStream(local, remote net.Conn) {
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := local.Read(buf)
-		if err != nil {
-			break
-		}
-		m.AddTxBytes(n)
-		if _, err := remote.Write(buf[:n]); err != nil {
-			break
-		}
-
-		n, err = remote.Read(buf)
-		if err != nil {
-			break
-		}
-		m.AddRxBytes(n)
-		if _, err := local.Write(buf[:n]); err != nil {
-			break
-		}
-	}
 }
 
 func parseSOCKSTargetAddress(addr string) (host, port string, err error) {

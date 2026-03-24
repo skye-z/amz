@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
 )
@@ -73,6 +74,10 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 		return nil, nil, 0, fmt.Errorf("http3 client connection is required")
 	}
 
+	if ctx.Err() != nil {
+		return nil, nil, 0, fmt.Errorf("context already canceled: %w", ctx.Err())
+	}
+
 	started := time.Now()
 	clientConn := h3conn.Raw()
 
@@ -81,56 +86,108 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 		targetAddr = net.JoinHostPort(opts.TargetHost, opts.TargetPort)
 	}
 
+	rstr, err := clientConn.OpenRequestStream(ctx)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("open request stream: %w", err)
+	}
+
 	req := &http.Request{
-		Method: http.MethodConnect,
-		URL:    &url.URL{Scheme: "https", Host: targetAddr},
-		Header: make(http.Header),
+		Method:     http.MethodConnect,
+		URL:        &url.URL{Scheme: "https", Host: targetAddr},
+		Header:     make(http.Header),
+		Host:       targetAddr,
+		Proto:      "HTTP/3",
+		ProtoMajor: 3,
 	}
 	req.Header.Set("X-Masque-Protocol", opts.Protocol)
+	req.Header.Set("Capsule-Protocol", "?1")
 
-	rsp, err := clientConn.RoundTrip(req)
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("http3 roundtrip: %w", err)
+	if err := rstr.SendRequestHeader(req); err != nil {
+		rstr.Close()
+		return nil, nil, 0, fmt.Errorf("send request header: %w", err)
 	}
+
+	rsp, err := rstr.ReadResponse()
+	if err != nil {
+		rstr.Close()
+		return nil, nil, 0, fmt.Errorf("read response: %w", err)
+	}
+
+	fmt.Printf("[DialStream] CONNECT response: status=%d\n", rsp.StatusCode)
 
 	if rsp.StatusCode < 200 || rsp.StatusCode >= 300 {
-		body, _ := io.ReadAll(rsp.Body)
+		body, _ := io.ReadAll(io.LimitReader(rsp.Body, 1024))
 		rsp.Body.Close()
+		rstr.Close()
 		return nil, rsp, 0, fmt.Errorf("connect failed: status=%d body=%s", rsp.StatusCode, string(body))
 	}
+
+	// 暂时注释掉 Capsule-Protocol 检查
+	// if !strings.HasPrefix(rsp.Header.Get("Capsule-Protocol"), "?1") {
+	// 	rsp.Body.Close()
+	// 	rstr.Close()
+	// 	return nil, rsp, 0, fmt.Errorf("server did not acknowledge Capsule-Protocol")
+	// }
 
 	rsp.Body.Close()
 
 	streamConn := &http3StreamConn{
-		rsp:   rsp,
-		local: quicOpts.Endpoint,
+		rsp:    rsp,
+		stream: rstr,
+		local:  quicOpts.Endpoint,
 	}
 
 	return streamConn, rsp, time.Since(started), nil
 }
 
 type http3StreamConn struct {
-	rsp   *http.Response
-	local string
+	rsp     *http.Response
+	stream  *http3.RequestStream
+	local   string
+	readBuf []byte
 }
 
 func (c *http3StreamConn) Read(b []byte) (int, error) {
-	return 0, io.EOF
+	if c.stream == nil {
+		return 0, io.EOF
+	}
+	return c.stream.Read(b)
 }
 
 func (c *http3StreamConn) Write(b []byte) (int, error) {
-	return len(b), nil
+	if c.stream == nil {
+		return 0, io.EOF
+	}
+	return c.stream.Write(b)
 }
 
 func (c *http3StreamConn) Close() error {
+	if c.stream != nil {
+		return c.stream.Close()
+	}
 	return nil
 }
 
-func (c *http3StreamConn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
-func (c *http3StreamConn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
-func (c *http3StreamConn) SetDeadline(t time.Time) error      { return nil }
-func (c *http3StreamConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *http3StreamConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *http3StreamConn) LocalAddr() net.Addr  { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
+func (c *http3StreamConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
+func (c *http3StreamConn) SetDeadline(t time.Time) error {
+	if c.stream != nil {
+		return c.stream.SetDeadline(t)
+	}
+	return nil
+}
+func (c *http3StreamConn) SetReadDeadline(t time.Time) error {
+	if c.stream != nil {
+		return c.stream.SetReadDeadline(t)
+	}
+	return nil
+}
+func (c *http3StreamConn) SetWriteDeadline(t time.Time) error {
+	if c.stream != nil {
+		return c.stream.SetWriteDeadline(t)
+	}
+	return nil
+}
 
 func BuildConnectStreamOptions(h3 HTTP3Options, targetHost, targetPort string) ConnectStreamOptions {
 	return ConnectStreamOptions{
