@@ -1,4 +1,4 @@
-package datapath
+package session
 
 import (
 	"context"
@@ -15,23 +15,21 @@ import (
 const packetIdleBackoff = 5 * time.Millisecond
 const maxPacketBufferSize = 65535
 
-type Device interface {
-	ReadPacket(context.Context, []byte) (int, error)
-	WritePacket(context.Context, []byte) (int, error)
-}
-
+// 约定隧道远端最小数据面收发接口。
 type PacketRelayEndpoint interface {
 	ReadPacket(context.Context, []byte) (int, error)
 	WritePacket(context.Context, []byte) ([]byte, error)
 	Close() error
 }
 
+// 描述数据面的最小包收发骨架。
 type PacketIO struct {
 	mtu   int
 	pool  *packet.BufferPool
 	stats *packet.Stats
 }
 
+// 创建带缓冲池和统计的最小数据面对象。
 func NewPacketIO(mtu int) *PacketIO {
 	if mtu <= 0 {
 		mtu = config.DefaultMTU
@@ -43,15 +41,18 @@ func NewPacketIO(mtu int) *PacketIO {
 	}
 }
 
+// 返回当前数据面使用的 MTU。
 func (p *PacketIO) MTU() int {
 	return p.mtu
 }
 
+// 返回当前数据面的最小统计信息。
 func (p *PacketIO) Stats() packet.Snapshot {
 	return p.stats.Snapshot()
 }
 
-func (p *PacketIO) Relay(ctx context.Context, dev Device, endpoint PacketRelayEndpoint) error {
+// Relay 启动双向收发循环，并在上下文结束时关闭远端数据面。
+func (p *PacketIO) Relay(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
 	if dev == nil {
 		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
 	}
@@ -89,7 +90,8 @@ func (p *PacketIO) Relay(ctx context.Context, dev Device, endpoint PacketRelayEn
 	return nil
 }
 
-func (p *PacketIO) ForwardUplink(ctx context.Context, dev Device, endpoint PacketRelayEndpoint) error {
+// ForwardUplink 将本地设备读到的 IP 包转发到远端，并处理远端返回的 ICMP 响应。
+func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
 	if dev == nil {
 		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
 	}
@@ -144,7 +146,8 @@ func (p *PacketIO) ForwardUplink(ctx context.Context, dev Device, endpoint Packe
 	}
 }
 
-func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndpoint, dev Device) error {
+// ForwardDownlink 将远端返回的 IP 包写回本地设备。
+func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndpoint, dev TUNDevice) error {
 	if dev == nil {
 		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
 	}
