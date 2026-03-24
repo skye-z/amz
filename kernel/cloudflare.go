@@ -98,6 +98,16 @@ func (l *CloudflareCompatLayer) ApplyConnectIPOptions(opts ConnectIPOptions) Con
 	return adjusted
 }
 
+// 将通用 CONNECT-STREAM 参数调整为 Cloudflare 兼容模式 (2026 L4 Proxy)。
+func (l *CloudflareCompatLayer) ApplyConnectStreamOptions(opts ConnectStreamOptions) ConnectStreamOptions {
+	if l == nil {
+		return opts
+	}
+	adjusted := opts
+	adjusted.Protocol = ProtocolConnectStream
+	return adjusted
+}
+
 // 为 Cloudflare 兼容分支补充错误上下文，并处理常见未授权映射。
 func (l *CloudflareCompatLayer) WrapResponseError(operation string, statusCode int, cause error) error {
 	if l == nil {
@@ -115,6 +125,17 @@ func (l *CloudflareCompatLayer) WrapResponseError(operation string, statusCode i
 
 // 基于真实 HTTP 响应或协议错误包装 Cloudflare 特殊响应。
 func (l *CloudflareCompatLayer) WrapConnectIPError(operation string, rsp *http.Response, cause error) error {
+	if l == nil || isContextError(cause) {
+		return cause
+	}
+	if rsp != nil {
+		return l.WrapResponseError(operation, rsp.StatusCode, cause)
+	}
+	return l.WrapProtocolError(operation, cause)
+}
+
+// 基于真实 HTTP 响应或协议错误包装 Cloudflare CONNECT-STREAM 特殊响应 (2026 L4 Proxy)。
+func (l *CloudflareCompatLayer) WrapConnectStreamError(operation string, rsp *http.Response, cause error) error {
 	if l == nil || isContextError(cause) {
 		return cause
 	}

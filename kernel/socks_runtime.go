@@ -60,6 +60,13 @@ func (m *SOCKSManager) SetUDPAssociateRelay(relay UDPAssociateRelay) {
 	m.udpRelay = relay
 }
 
+// 注入 HTTP/3 CONNECT stream 依赖 (2026 L4 Proxy)。
+func (m *SOCKSManager) SetStreamManager(mgr *ConnectStreamManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamManager = mgr
+}
+
 // 记录启动次数并切换到运行态，同时启动真实 SOCKS5 监听。
 func (m *SOCKSManager) Start(ctx context.Context) error {
 	m.mu.Lock()
@@ -202,12 +209,16 @@ func (m *SOCKSManager) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 	m.RecordHandshakeLatency(latency)
 
-	command, _, err := readSOCKSRequest(conn)
+	command, targetAddr, err := readSOCKSRequest(conn)
 	if err != nil {
 		return
 	}
 
 	switch command {
+	case socksCommandConnect:
+		if err := m.handleConnect(ctx, conn, targetAddr); err != nil {
+			return
+		}
 	case socksCommandUDPAssociate:
 		if err := m.handleUDPAssociate(ctx, conn); err != nil {
 			return
@@ -216,6 +227,74 @@ func (m *SOCKSManager) handleConnection(ctx context.Context, conn net.Conn) {
 		_ = writeSOCKSReply(conn, socksReplyCommandNotSup, conn.LocalAddr().String())
 		return
 	}
+}
+
+func (m *SOCKSManager) handleConnect(ctx context.Context, clientConn net.Conn, targetAddr string) error {
+	m.mu.Lock()
+	streamMgr := m.streamManager
+	m.mu.Unlock()
+
+	if streamMgr == nil {
+		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+		return fmt.Errorf("stream manager not configured")
+	}
+
+	host, port, err := parseSOCKSTargetAddress(targetAddr)
+	if err != nil {
+		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+		return err
+	}
+
+	remoteConn, err := streamMgr.OpenStream(ctx, host, port)
+	if err != nil {
+		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+		return err
+	}
+
+	if err := writeSOCKSReply(clientConn, socksReplySucceeded, clientConn.LocalAddr().String()); err != nil {
+		_ = remoteConn.Close()
+		return err
+	}
+
+	go func() {
+		defer clientConn.Close()
+		defer remoteConn.Close()
+		m.relayStream(clientConn, remoteConn)
+	}()
+
+	return nil
+}
+
+func (m *SOCKSManager) relayStream(local, remote net.Conn) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := local.Read(buf)
+		if err != nil {
+			break
+		}
+		m.AddTxBytes(n)
+		if _, err := remote.Write(buf[:n]); err != nil {
+			break
+		}
+
+		n, err = remote.Read(buf)
+		if err != nil {
+			break
+		}
+		m.AddRxBytes(n)
+		if _, err := local.Write(buf[:n]); err != nil {
+			break
+		}
+	}
+}
+
+func parseSOCKSTargetAddress(addr string) (host, port string, err error) {
+	host, port, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		host = addr
+		port = "443"
+	}
+	return host, port, nil
 }
 
 func (m *SOCKSManager) negotiate(conn net.Conn) error {

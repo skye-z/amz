@@ -27,6 +27,7 @@ type SOCKSManager struct {
 	runWG         sync.WaitGroup
 	udpRelay      UDPAssociateRelay
 	associations  map[string]*udpAssociation
+	streamManager *ConnectStreamManager
 }
 
 // 描述 SOCKS5 管理器的最小配置快照。
@@ -38,16 +39,17 @@ type SOCKSSnapshot struct {
 
 // 管理 HTTP 代理模式的最小监听骨架。
 type HTTPProxyManager struct {
-	mu        sync.Mutex
-	cfg       config.KernelConfig
-	state     string
-	stats     types.Stats
-	listen    string
-	listener  net.Listener
-	server    *http.Server
-	runWG     sync.WaitGroup
-	dialer    HTTPStreamDialer
-	transport http.RoundTripper
+	mu            sync.Mutex
+	cfg           config.KernelConfig
+	state         string
+	stats         types.Stats
+	listen        string
+	listener      net.Listener
+	server        *http.Server
+	runWG         sync.WaitGroup
+	dialer        HTTPStreamDialer
+	transport     http.RoundTripper
+	streamManager *ConnectStreamManager
 }
 
 // 描述 HTTP 代理管理器的最小配置快照。
