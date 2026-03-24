@@ -2,7 +2,9 @@ package kernel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -495,4 +497,125 @@ func TestHTTP3StreamConnWithoutStreamFailsCleanly(t *testing.T) {
 	if conn.RemoteAddr() == nil {
 		t.Fatal("expected remote addr fallback")
 	}
+}
+
+func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
+	tlsServerCfg, rootPool := newTestTLSConfig(t)
+	tlsListener, err := tls.Listen("tcp", "127.0.0.1:0", tlsServerCfg)
+	if err != nil {
+		t.Fatalf("expected tls listener success, got %v", err)
+	}
+	defer tlsListener.Close()
+
+	handshakeDone := make(chan error, 1)
+	go func() {
+		conn, err := tlsListener.Accept()
+		if err != nil {
+			handshakeDone <- err
+			return
+		}
+		defer conn.Close()
+		tlsConn, ok := conn.(*tls.Conn)
+		if !ok {
+			handshakeDone <- errors.New("accepted connection is not tls")
+			return
+		}
+		handshakeDone <- tlsConn.Handshake()
+	}()
+
+	h3TLS, h3Pool := newTestTLSConfig(t)
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("expected udp listen success, got %v", err)
+	}
+	defer udpConn.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "expected connect", http.StatusMethodNotAllowed)
+			return
+		}
+		targetConn, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, "dial target failed", http.StatusBadGateway)
+			return
+		}
+		defer targetConn.Close()
+
+		w.WriteHeader(http.StatusOK)
+		if rc := http.NewResponseController(w); rc != nil {
+			_ = rc.Flush()
+		}
+
+		go func() { _, _ = io.Copy(targetConn, r.Body) }()
+		_, _ = io.Copy(w, targetConn)
+	})
+	server := http3.Server{Handler: mux, EnableDatagrams: true, TLSConfig: h3TLS}
+	go func() { _ = server.Serve(udpConn) }()
+	defer server.Close()
+
+	endpoint := net.JoinHostPort("localhost", fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
+	manager, err := NewConnectionManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            "localhost",
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected connection manager creation success, got %v", err)
+	}
+	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: "localhost", RootCAs: h3Pool, NextProtos: []string{http3.NextProtoH3}}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := manager.Connect(ctx); err != nil {
+		t.Fatalf("expected quic/http3 connection success, got %v", err)
+	}
+
+	streamMgr, err := NewConnectStreamManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            "localhost",
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected stream manager creation success, got %v", err)
+	}
+	streamMgr.BindHTTP3Conn(manager.HTTP3Conn())
+	streamMgr.h3.Authority = endpoint
+	streamMgr.SetReady()
+
+	targetHost, targetPort, err := net.SplitHostPort(tlsListener.Addr().String())
+	if err != nil {
+		t.Fatalf("expected target split success, got %v", err)
+	}
+	tunneledConn, err := streamMgr.OpenStream(ctx, targetHost, targetPort)
+	if err != nil {
+		t.Fatalf("expected connect stream open success, got %v", err)
+	}
+	defer tunneledConn.Close()
+
+	clientTLS := tls.Client(tunneledConn, &tls.Config{ServerName: "localhost", RootCAs: rootPool})
+	if err := clientTLS.HandshakeContext(ctx); err != nil {
+		t.Fatalf("expected tls handshake over connect stream success, got %v", err)
+	}
+	defer clientTLS.Close()
+
+	select {
+	case err := <-handshakeDone:
+		if err != nil {
+			t.Fatalf("expected server-side tls handshake success, got %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("expected server-side tls handshake completion, got %v", context.Cause(ctx))
+	}
+	_ = manager.Close()
+	_ = streamMgr.Close()
 }

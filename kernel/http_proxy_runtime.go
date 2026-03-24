@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skye-z/amz/types"
@@ -252,8 +253,12 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 	}
 
 	h.manager.logf("handleConnectViaStream: host=%s port=%s target=%s", host, port, r.Host)
+	debug := masqueDebugEnabled() && r.Host == "ipwho.is:443"
 
 	started := time.Now()
+	if debug {
+		h.manager.logf("masque debug: connect target=%s opening stream", r.Host)
+	}
 	upstream, err := streamMgr.OpenStream(r.Context(), host, port)
 	if err != nil {
 		h.manager.logf("http proxy connect stream failed: target=%s err=%v", r.Host, err)
@@ -263,6 +268,9 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 	defer upstream.Close()
 
 	h.manager.logf("handleConnectViaStream: stream opened successfully, remote=%s", upstream.RemoteAddr())
+	if debug {
+		h.manager.logf("masque debug: connect target=%s stream ready local=%s remote=%s", r.Host, upstream.LocalAddr(), upstream.RemoteAddr())
+	}
 
 	latency := time.Since(started)
 	if latency <= 0 {
@@ -290,12 +298,21 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 	if err := rw.Flush(); err != nil {
 		return
 	}
+	if debug {
+		h.manager.logf("masque debug: connect target=%s sent 200 established to client", r.Host)
+	}
 
 	if buffered := rw.Reader.Buffered(); buffered > 0 {
+		if debug {
+			h.manager.logf("masque debug: connect target=%s buffered client bytes=%d", r.Host, buffered)
+		}
 		peek, err := rw.Reader.Peek(buffered)
 		if err == nil && len(peek) > 0 {
 			written, writeErr := upstream.Write(peek)
 			h.manager.AddTxBytes(written)
+			if debug {
+				h.manager.logf("masque debug: connect target=%s pre-relay upstream write bytes=%d err=%v", r.Host, written, writeErr)
+			}
 			if writeErr != nil {
 				return
 			}
@@ -309,13 +326,18 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 		upstream,
 		h.manager.AddTxBytes,
 		h.manager.AddRxBytes,
-		h.manager.logf,
+		func(format string, args ...any) {
+			if debug || !strings.HasPrefix(format, "masque debug:") {
+				h.manager.logf(format, args...)
+			}
+		},
+		r.Host,
 	)
 	upstream = nil
 	h.manager.logf("handleConnectViaStream: relay complete")
 }
 
-func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), onRx func(int), logf func(string, ...any)) {
+func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), onRx func(int), logf func(string, ...any), target string) {
 	var closeOnce sync.Once
 	shutdown := func() {
 		closeOnce.Do(func() {
@@ -325,12 +347,25 @@ func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), 
 	}
 
 	var wg sync.WaitGroup
+	var clientToUpstreamFirst atomic.Bool
+	var upstreamToClientFirst atomic.Bool
 	runCopy := func(label string, dst net.Conn, src net.Conn, onWrite func(int)) {
 		defer wg.Done()
 		if logf != nil {
 			logf("relay: %s", label)
 		}
-		_, _ = io.Copy(&countingWriter{writer: dst, onWrite: onWrite}, src)
+		cw := &countingWriter{writer: dst, onWrite: onWrite}
+		n, err := io.Copy(cw, src)
+		if masqueDebugEnabled() && target == "ipwho.is:443" {
+			first := &clientToUpstreamFirst
+			if label == "upstream -> client" {
+				first = &upstreamToClientFirst
+			}
+			if first.CompareAndSwap(false, true) {
+				logf("masque debug: target=%s %s first-copy bytes=%d err=%v", target, label, n, err)
+			}
+			logf("masque debug: target=%s %s done bytes=%d err=%v", target, label, n, err)
+		}
 		if logf != nil {
 			logf("relay: %s done", label)
 		}

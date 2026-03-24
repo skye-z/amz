@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skye-z/amz/config"
@@ -150,27 +152,47 @@ type http3StreamConn struct {
 	local   string
 	remote  string
 	readBuf []byte
+	debug   *streamDebugState
+}
+
+type streamDebugState struct {
+	tag        string
+	writeFirst atomic.Bool
+	readFirst  atomic.Bool
+	closed     atomic.Bool
 }
 
 func (c *http3StreamConn) Read(b []byte) (int, error) {
 	if c.stream == nil {
 		return 0, io.EOF
 	}
-	return c.stream.Read(b)
+	n, err := c.stream.Read(b)
+	if c.debug != nil && c.debug.readFirst.CompareAndSwap(false, true) {
+		fmt.Printf("[MASQUE_DEBUG] stream %s first read bytes=%d err=%v\n", c.debug.tag, n, err)
+	}
+	return n, err
 }
 
 func (c *http3StreamConn) Write(b []byte) (int, error) {
 	if c.stream == nil {
 		return 0, io.EOF
 	}
-	return c.stream.Write(b)
+	n, err := c.stream.Write(b)
+	if c.debug != nil && c.debug.writeFirst.CompareAndSwap(false, true) {
+		fmt.Printf("[MASQUE_DEBUG] stream %s first write bytes=%d err=%v\n", c.debug.tag, n, err)
+	}
+	return n, err
 }
 
 func (c *http3StreamConn) Close() error {
 	if c.stream == nil {
 		return nil
 	}
-	return c.stream.Close()
+	err := c.stream.Close()
+	if c.debug != nil && c.debug.closed.CompareAndSwap(false, true) {
+		fmt.Printf("[MASQUE_DEBUG] stream %s close err=%v\n", c.debug.tag, err)
+	}
+	return err
 }
 
 func (c *http3StreamConn) LocalAddr() net.Addr {
@@ -318,6 +340,11 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 			m.removeStream(streamID)
 		},
 	}
+	if masqueDebugEnabled() && streamID == "ipwho.is:443" {
+		if sc, ok := conn.(*http3StreamConn); ok {
+			sc.debug = &streamDebugState{tag: streamID}
+		}
+	}
 	m.mu.Lock()
 	m.streams[streamID] = &activeStream{
 		conn:   managedConn,
@@ -334,6 +361,10 @@ func (m *ConnectStreamManager) removeStream(streamID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.streams, streamID)
+}
+
+func masqueDebugEnabled() bool {
+	return strings.TrimSpace(os.Getenv("WARP_MASQUE_DEBUG")) == "1"
 }
 
 func (m *ConnectStreamManager) BindHTTP3Conn(conn h3ClientConn) {
