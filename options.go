@@ -1,11 +1,12 @@
 package amz
 
 type Options struct {
-	Storage StorageOptions
-	Listen  ListenOptions
-	HTTP    HTTPOptions
-	SOCKS5  SOCKS5Options
-	TUN     TUNOptions
+	Storage   StorageOptions
+	Listen    ListenOptions
+	Transport TransportOptions
+	HTTP      HTTPOptions
+	SOCKS5    SOCKS5Options
+	TUN       TUNOptions
 }
 
 type StorageOptions struct {
@@ -14,6 +15,11 @@ type StorageOptions struct {
 
 type ListenOptions struct {
 	Address string
+}
+
+type TransportOptions struct {
+	Endpoint string
+	SNI      string
 }
 
 type HTTPOptions struct {

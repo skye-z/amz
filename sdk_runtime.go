@@ -27,12 +27,14 @@ func init() {
 type managedRuntime struct {
 	mu         sync.Mutex
 	opts       Options
-	store      *storage.FileStore
-	auth       *auth.Service
-	runtime    *iruntime.ClientRuntime
+	store      stateStore
+	auth       authEnsurer
+	runtime    sdkRuntime
 	status     Status
 	registered bool
 	endpoint   string
+	selectFn   func(context.Context, storage.State) (discovery.Candidate, []storage.Node, error)
+	buildFn    func(string, storage.State) (sdkRuntime, error)
 }
 
 func newManagedRuntime(opts Options) (sdkRuntime, error) {
@@ -46,12 +48,12 @@ func newManagedRuntime(opts Options) (sdkRuntime, error) {
 		opts.Storage.Path = path
 	}
 
-	service, err := auth.NewDefaultService(path)
+	service, err := newDefaultAuthService(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return &managedRuntime{
+	runtime := &managedRuntime{
 		opts:  opts,
 		store: storage.NewFileStore(path),
 		auth:  service,
@@ -60,7 +62,10 @@ func newManagedRuntime(opts Options) (sdkRuntime, error) {
 			SOCKS5Enabled: opts.SOCKS5.Enabled,
 			TUNEnabled:    opts.TUN.Enabled,
 		},
-	}, nil
+	}
+	runtime.selectFn = runtime.selectEndpoint
+	runtime.buildFn = runtime.buildRuntime
+	return runtime, nil
 }
 
 func (m *managedRuntime) Start(ctx context.Context) error {
@@ -82,7 +87,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 	}
 
 	state := authResult.State
-	candidate, cache, err := m.selectEndpoint(ctx, state)
+	candidate, cache, err := m.selectFn(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -92,7 +97,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		return saveErr
 	}
 
-	runtime, err := m.buildRuntime(candidate.Address, state)
+	runtime, err := m.buildFn(candidate.Address, state)
 	if err != nil {
 		return err
 	}
@@ -150,7 +155,7 @@ func (m *managedRuntime) ListenAddress() string {
 	return m.status.ListenAddress
 }
 
-func (m *managedRuntime) refreshStatusLocked(runtime *iruntime.ClientRuntime) {
+func (m *managedRuntime) refreshStatusLocked(runtime sdkRuntime) {
 	if runtime == nil {
 		return
 	}
@@ -165,6 +170,16 @@ func (m *managedRuntime) refreshStatusLocked(runtime *iruntime.ClientRuntime) {
 }
 
 func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State) (discovery.Candidate, []storage.Node, error) {
+	if endpoint := strings.TrimSpace(m.opts.Transport.Endpoint); endpoint != "" {
+		candidate := discovery.Candidate{
+			Address:     endpoint,
+			Source:      discovery.SourceFixed,
+			Available:   true,
+			WarpEnabled: true,
+		}
+		return candidate, state.NodeCache, nil
+	}
+
 	input := discovery.Input{
 		Registration: registrationFromState(state),
 		Cache:        cacheFromState(state),
@@ -176,7 +191,7 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 	}
 
 	prober := discovery.NewRealProber(10*time.Second, discovery.WithWarpStatusChecker(discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
-		kernelCfg := baseKernelConfigFromState(state, candidate.Address, amzconfig.ModeHTTP, m.opts.Listen.Address)
+		kernelCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address)
 		connectionManager, err := amzsession.NewConnectionManager(kernelCfg)
 		if err != nil {
 			return false, err
@@ -195,13 +210,13 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 	return result.Best, state.NodeCache, nil
 }
 
-func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (*iruntime.ClientRuntime, error) {
+func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdkRuntime, error) {
 	var httpRT *iruntime.HTTPRuntime
 	var socksRT *iruntime.SOCKS5Runtime
 	var tunRT *iruntime.TUNRuntime
 
 	if m.opts.HTTP.Enabled || m.opts.SOCKS5.Enabled {
-		baseCfg := baseKernelConfigFromState(state, endpoint, amzconfig.ModeHTTP, m.opts.Listen.Address)
+		baseCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address)
 		connectionManager, err := amzsession.NewConnectionManager(baseCfg)
 		if err != nil {
 			return nil, err
@@ -236,7 +251,7 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (*ir
 	}
 
 	if m.opts.TUN.Enabled {
-		tunCfg := baseKernelConfigFromState(state, endpoint, amzconfig.ModeTUN, "")
+		tunCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeTUN, "")
 		manager, err := tunruntime.NewRuntime(&tunCfg)
 		if err != nil {
 			return nil, err
@@ -244,15 +259,42 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (*ir
 		tunRT = iruntime.NewTUNRuntime(manager)
 	}
 
-	return iruntime.NewClientRuntime(iruntime.ClientRuntimeOptions{
+	runtime, err := iruntime.NewClientRuntime(iruntime.ClientRuntimeOptions{
 		ListenAddress: m.opts.Listen.Address,
 		HTTP:          httpRT,
 		SOCKS5:        socksRT,
 		TUN:           tunRT,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &runtimeAdapter{runtime: runtime}, nil
 }
 
-func baseKernelConfigFromState(state storage.State, endpoint, mode, listen string) amzconfig.KernelConfig {
+type runtimeAdapter struct {
+	runtime *iruntime.ClientRuntime
+}
+
+func (r *runtimeAdapter) Start(ctx context.Context) error { return r.runtime.Start(ctx) }
+func (r *runtimeAdapter) Run() error                      { return r.runtime.Run() }
+func (r *runtimeAdapter) Close() error                    { return r.runtime.Close() }
+func (r *runtimeAdapter) ListenAddress() string           { return r.runtime.ListenAddress() }
+
+func (r *runtimeAdapter) Status() Status {
+	if r == nil || r.runtime == nil {
+		return Status{}
+	}
+	status := r.runtime.Status()
+	return Status{
+		Running:       status.Running,
+		ListenAddress: status.ListenAddress,
+		HTTPEnabled:   status.HTTPEnabled,
+		SOCKS5Enabled: status.SOCKS5Enabled,
+		TUNEnabled:    status.TUNEnabled,
+	}
+}
+
+func baseKernelConfigFromState(state storage.State, endpoint, sni, mode, listen string) amzconfig.KernelConfig {
 	cfg := amzconfig.KernelConfig{
 		Endpoint: endpoint,
 		SNI:      amzconfig.DefaultSNI,
@@ -263,6 +305,9 @@ func baseKernelConfigFromState(state storage.State, endpoint, mode, listen strin
 			PeerPublicKey:     state.Certificate.PeerPublicKey,
 			ClientID:          state.Certificate.ClientID,
 		},
+	}
+	if strings.TrimSpace(sni) != "" {
+		cfg.SNI = strings.TrimSpace(sni)
 	}
 	switch mode {
 	case amzconfig.ModeHTTP:
@@ -378,3 +423,14 @@ func dedupeStrings(items []string) []string {
 	}
 	return out
 }
+
+type authEnsurer interface {
+	Ensure(context.Context) (auth.Result, error)
+}
+
+type stateStore interface {
+	Load() (storage.State, error)
+	Save(state storage.State) error
+}
+
+var newDefaultAuthService = auth.NewDefaultService
