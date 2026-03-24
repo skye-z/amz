@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -75,7 +76,73 @@ type h3ClientConn interface {
 	Close() error
 	AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error
 	Raw() *http3.ClientConn
+	RequestConn() h3RequestConn
 }
+
+type h3RequestConn interface {
+	OpenRequestStream(ctx context.Context) (h3RequestStream, error)
+}
+
+type h3RequestStream interface {
+	SendRequestHeader(req *http.Request) error
+	ReadResponse() (*http.Response, error)
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	LocalAddr() net.Addr
+	RemoteAddr() net.Addr
+}
+
+type http3RequestConnAdapter struct{ conn *http3.ClientConn }
+
+func (a *http3RequestConnAdapter) OpenRequestStream(ctx context.Context) (h3RequestStream, error) {
+	stream, err := a.conn.OpenRequestStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &http3RequestStreamAdapter{stream: stream}, nil
+}
+
+type http3RequestStreamAdapter struct{ stream *http3.RequestStream }
+
+func (a *http3RequestStreamAdapter) SendRequestHeader(req *http.Request) error {
+	return a.stream.SendRequestHeader(req)
+}
+
+func (a *http3RequestStreamAdapter) ReadResponse() (*http.Response, error) {
+	return a.stream.ReadResponse()
+}
+
+func (a *http3RequestStreamAdapter) Read(b []byte) (int, error) {
+	return a.stream.Read(b)
+}
+
+func (a *http3RequestStreamAdapter) Write(b []byte) (int, error) {
+	return a.stream.Write(b)
+}
+
+func (a *http3RequestStreamAdapter) Close() error {
+	return a.stream.Close()
+}
+
+func (a *http3RequestStreamAdapter) SetDeadline(t time.Time) error {
+	return a.stream.SetDeadline(t)
+}
+
+func (a *http3RequestStreamAdapter) SetReadDeadline(t time.Time) error {
+	return a.stream.SetReadDeadline(t)
+}
+
+func (a *http3RequestStreamAdapter) SetWriteDeadline(t time.Time) error {
+	return a.stream.SetWriteDeadline(t)
+}
+
+func (a *http3RequestStreamAdapter) LocalAddr() net.Addr { return nil }
+
+func (a *http3RequestStreamAdapter) RemoteAddr() net.Addr { return nil }
 
 type transportDialer interface {
 	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error)
@@ -99,7 +166,7 @@ func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3O
 		udpConn.Close()
 		return nil, nil, 0, fmt.Errorf("dial quic: %w", err)
 	}
-	transport := &http3.Transport{EnableDatagrams: h3Opts.EnableDatagrams}
+	transport := &http3.Transport{EnableDatagrams: quicOpts.EnableDatagrams && h3Opts.EnableDatagrams}
 	clientConn := transport.NewClientConn(conn)
 	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{transport: transport, conn: clientConn}, time.Since(started), nil
 }
@@ -122,7 +189,8 @@ func buildTLSConfig(opts QUICOptions) *tls.Config {
 
 func buildQUICConfig(opts QUICOptions) *quic.Config {
 	return &quic.Config{
-		EnableDatagrams: false, // 暂时禁用 datagrams 尝试连接
+		EnableDatagrams: opts.EnableDatagrams,
+		MaxIdleTimeout:  30 * time.Second,
 	}
 }
 
@@ -150,6 +218,13 @@ func (a *http3ClientConnAdapter) AwaitSettings(ctx context.Context, requireDatag
 
 func (a *http3ClientConnAdapter) Raw() *http3.ClientConn {
 	return a.conn
+}
+
+func (a *http3ClientConnAdapter) RequestConn() h3RequestConn {
+	if a.conn == nil {
+		return nil
+	}
+	return &http3RequestConnAdapter{conn: a.conn}
 }
 
 // 发起一次最小真实 QUIC/H3 建链。

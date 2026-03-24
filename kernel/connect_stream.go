@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
 )
@@ -63,6 +62,22 @@ type activeStream struct {
 	deadline time.Time
 }
 
+type managedStreamConn struct {
+	net.Conn
+	onClose func()
+	once    sync.Once
+}
+
+func (c *managedStreamConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	return err
+}
+
 type streamDialer interface {
 	DialStream(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectStreamOptions) (net.Conn, *http.Response, time.Duration, error)
 }
@@ -70,7 +85,7 @@ type streamDialer interface {
 type realStreamDialer struct{}
 
 func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, quicOpts QUICOptions, h3Opts HTTP3Options, opts ConnectStreamOptions) (net.Conn, *http.Response, time.Duration, error) {
-	if h3conn == nil || h3conn.Raw() == nil {
+	if h3conn == nil || h3conn.RequestConn() == nil {
 		return nil, nil, 0, fmt.Errorf("http3 client connection is required")
 	}
 
@@ -79,7 +94,7 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 	}
 
 	started := time.Now()
-	clientConn := h3conn.Raw()
+	clientConn := h3conn.RequestConn()
 
 	targetAddr := opts.TargetHost
 	if opts.TargetPort != "" {
@@ -100,41 +115,30 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 		ProtoMajor: 3,
 	}
 	req.Header.Set("X-Masque-Protocol", opts.Protocol)
-	req.Header.Set("Capsule-Protocol", "?1")
 
 	if err := rstr.SendRequestHeader(req); err != nil {
-		rstr.Close()
+		_ = rstr.Close()
 		return nil, nil, 0, fmt.Errorf("send request header: %w", err)
 	}
 
 	rsp, err := rstr.ReadResponse()
 	if err != nil {
-		rstr.Close()
+		_ = rstr.Close()
 		return nil, nil, 0, fmt.Errorf("read response: %w", err)
 	}
-
-	fmt.Printf("[DialStream] CONNECT response: status=%d\n", rsp.StatusCode)
 
 	if rsp.StatusCode < 200 || rsp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(rsp.Body, 1024))
 		rsp.Body.Close()
-		rstr.Close()
+		_ = rstr.Close()
 		return nil, rsp, 0, fmt.Errorf("connect failed: status=%d body=%s", rsp.StatusCode, string(body))
 	}
-
-	// 暂时注释掉 Capsule-Protocol 检查
-	// if !strings.HasPrefix(rsp.Header.Get("Capsule-Protocol"), "?1") {
-	// 	rsp.Body.Close()
-	// 	rstr.Close()
-	// 	return nil, rsp, 0, fmt.Errorf("server did not acknowledge Capsule-Protocol")
-	// }
-
-	rsp.Body.Close()
 
 	streamConn := &http3StreamConn{
 		rsp:    rsp,
 		stream: rstr,
 		local:  quicOpts.Endpoint,
+		remote: targetAddr,
 	}
 
 	return streamConn, rsp, time.Since(started), nil
@@ -142,8 +146,9 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 
 type http3StreamConn struct {
 	rsp     *http.Response
-	stream  *http3.RequestStream
+	stream  h3RequestStream
 	local   string
+	remote  string
 	readBuf []byte
 }
 
@@ -162,14 +167,35 @@ func (c *http3StreamConn) Write(b []byte) (int, error) {
 }
 
 func (c *http3StreamConn) Close() error {
-	if c.stream != nil {
-		return c.stream.Close()
+	if c.stream == nil {
+		return nil
 	}
-	return nil
+	return c.stream.Close()
 }
 
-func (c *http3StreamConn) LocalAddr() net.Addr  { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
-func (c *http3StreamConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
+func (c *http3StreamConn) LocalAddr() net.Addr {
+	if c.stream != nil {
+		if addr := c.stream.LocalAddr(); addr != nil {
+			return addr
+		}
+	}
+	if c.local != "" {
+		return staticAddr(c.local)
+	}
+	return staticAddr("0.0.0.0:0")
+}
+
+func (c *http3StreamConn) RemoteAddr() net.Addr {
+	if c.stream != nil {
+		if addr := c.stream.RemoteAddr(); addr != nil {
+			return addr
+		}
+	}
+	if c.remote != "" {
+		return staticAddr(c.remote)
+	}
+	return staticAddr("0.0.0.0:0")
+}
 func (c *http3StreamConn) SetDeadline(t time.Time) error {
 	if c.stream != nil {
 		return c.stream.SetDeadline(t)
@@ -188,6 +214,11 @@ func (c *http3StreamConn) SetWriteDeadline(t time.Time) error {
 	}
 	return nil
 }
+
+type staticAddr string
+
+func (a staticAddr) Network() string { return "tcp" }
+func (a staticAddr) String() string  { return string(a) }
 
 func BuildConnectStreamOptions(h3 HTTP3Options, targetHost, targetPort string) ConnectStreamOptions {
 	return ConnectStreamOptions{
@@ -281,16 +312,28 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 	m.RecordHandshakeLatency(latency)
 
 	streamID := fmt.Sprintf("%s:%s", targetHost, targetPort)
+	managedConn := &managedStreamConn{
+		Conn: conn,
+		onClose: func() {
+			m.removeStream(streamID)
+		},
+	}
 	m.mu.Lock()
 	m.streams[streamID] = &activeStream{
-		conn:   conn,
+		conn:   managedConn,
 		info:   StreamInfo{RemoteAddr: net.JoinHostPort(targetHost, targetPort), Protocol: ProtocolConnectStream},
 		local:  quicOpts.Endpoint,
 		remote: net.JoinHostPort(targetHost, targetPort),
 	}
 	m.mu.Unlock()
 
-	return conn, nil
+	return managedConn, nil
+}
+
+func (m *ConnectStreamManager) removeStream(streamID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.streams, streamID)
 }
 
 func (m *ConnectStreamManager) BindHTTP3Conn(conn h3ClientConn) {

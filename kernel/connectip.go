@@ -8,6 +8,7 @@ import (
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/types"
 	"github.com/yosida95/uritemplate/v3"
@@ -95,12 +96,13 @@ func (s *realConnectIPSession) WritePacket(ctx context.Context, packet []byte) (
 type realConnectIPDialer struct{}
 
 func (d realConnectIPDialer) Dial(ctx context.Context, h3conn h3ClientConn, quic QUICOptions, h3 HTTP3Options, opts ConnectIPOptions) (connectIPSession, *http.Response, time.Duration, error) {
-	if h3conn == nil || h3conn.Raw() == nil {
+	rawH3, ok := h3conn.(interface{ Raw() *http3.ClientConn })
+	if h3conn == nil || !ok || rawH3.Raw() == nil {
 		return nil, nil, 0, fmt.Errorf("http3 client connection is required")
 	}
 	tmpl := uritemplate.MustNew("https://" + opts.Authority + "/connect-ip")
 	started := time.Now()
-	conn, rsp, err := connectip.Dial(ctx, h3conn.Raw(), tmpl)
+	conn, rsp, err := connectip.Dial(ctx, rawH3.Raw(), tmpl)
 	if err != nil {
 		return nil, rsp, 0, err
 	}

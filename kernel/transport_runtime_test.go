@@ -20,6 +20,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/config"
+	internaltun "github.com/skye-z/amz/internal/tun"
 	"github.com/skye-z/amz/types"
 	"github.com/yosida95/uritemplate/v3"
 )
@@ -41,7 +42,8 @@ func (c *fakeH3Client) Close() error { return nil }
 func (c *fakeH3Client) AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error {
 	return c.awaitErr
 }
-func (c *fakeH3Client) Raw() *http3.ClientConn { return nil }
+func (c *fakeH3Client) Raw() *http3.ClientConn     { return nil }
+func (c *fakeH3Client) RequestConn() h3RequestConn { return nil }
 
 type fakeTransportDialer struct {
 	err      error
@@ -298,6 +300,66 @@ func TestConnectIPSessionManagerOpenWrapsCloudflareResponse(t *testing.T) {
 	}
 	if compatErr.Quirk != CloudflareQuirkRateLimited {
 		t.Fatalf("expected quirk %q, got %q", CloudflareQuirkRateLimited, compatErr.Quirk)
+	}
+}
+
+// 验证核心 bootstrap 会把已建立的 HTTP/3 连接绑定进 stream manager 并置为就绪态。
+func TestCoreTunnelDialerBindsHTTP3ConnIntoStreamManager(t *testing.T) {
+	cfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	}
+
+	connectionManager, err := NewConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connection manager creation success, got %v", err)
+	}
+	fakeH3 := &fakeH3Client{}
+	connectionManager.dialer = &fakeTransportDialer{conn: &fakeQUICConn{}, h3: fakeH3, latency: 5 * time.Millisecond}
+
+	sessionManager, err := NewConnectIPSessionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connect-ip session manager creation success, got %v", err)
+	}
+	sessionManager.dialer = &fakeConnectIPDialer{session: &fakeConnectIPSession{info: SessionInfo{IPv4: "172.16.0.2/32"}}}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, &stubHTTPStreamDialer{conn: clientConn})
+	if err != nil {
+		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+	}
+	dialer.provider = &fakePlatformProvider{platform: "linux", delegate: internaltun.NewFakeProvider()}
+	dialer.adapter = internaltun.NewFakeAdapter()
+	dialer.packetRelay = func(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
+		<-ctx.Done()
+		return context.Cause(ctx)
+	}
+	defer func() { _ = dialer.Close() }()
+
+	if _, err := dialer.DialContext(context.Background(), "tcp", "example.com:443"); err != nil {
+		t.Fatalf("expected downstream dial success, got %v", err)
+	}
+
+	streamManager := dialer.StreamManager()
+	if streamManager == nil {
+		t.Fatal("expected core tunnel dialer to expose a bound stream manager")
+	}
+	if streamManager.h3conn != h3ClientConn(fakeH3) {
+		t.Fatal("expected stream manager to reuse established http3 connection")
+	}
+	if snapshot := streamManager.Snapshot(); snapshot.State != StreamStateReady {
+		t.Fatalf("expected ready stream manager, got %+v", snapshot)
+	}
+	if sessionManager.h3conn != h3ClientConn(fakeH3) {
+		t.Fatal("expected connect-ip session manager to reuse established http3 connection")
 	}
 }
 

@@ -215,3 +215,38 @@ func TestCoreTunnelDialerPropagatesBootstrapError(t *testing.T) {
 		t.Fatalf("expected underlying dialer not to be called, got %d", streamDialer.calls)
 	}
 }
+
+func TestHTTPProxyManagerSetCoreTunnelDialerBindsStreamManager(t *testing.T) {
+	cfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	}
+
+	connectionManager, err := NewConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connection manager creation success, got %v", err)
+	}
+	sessionManager, err := NewConnectIPSessionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+	}
+	manager, err := NewHTTPProxyManager(cfg)
+	if err != nil {
+		t.Fatalf("expected http proxy manager creation success, got %v", err)
+	}
+
+	if err := manager.SetCoreTunnelDialer(connectionManager, sessionManager, &stubHTTPStreamDialer{}); err != nil {
+		t.Fatalf("expected core tunnel dialer binding success, got %v", err)
+	}
+	if manager.currentHTTPDialer() == nil {
+		t.Fatal("expected core tunnel dialer to be installed as HTTP dialer")
+	}
+	if manager.currentStreamManager() == nil {
+		t.Fatal("expected stream manager to be bound with core tunnel dialer")
+	}
+}

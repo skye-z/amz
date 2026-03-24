@@ -18,6 +18,7 @@ type CoreTunnelDialer struct {
 	connection *ConnectionManager
 	session    *ConnectIPSessionManager
 	delegate   HTTPStreamDialer
+	streamMgr  *ConnectStreamManager
 
 	mu              sync.Mutex
 	packetIO        *PacketIO
@@ -43,13 +44,30 @@ func NewCoreTunnelDialer(connection *ConnectionManager, session *ConnectIPSessio
 	if delegate == nil {
 		delegate = &net.Dialer{}
 	}
+	streamMgr, err := NewConnectStreamManager(connection.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect stream manager: %w", err)
+	}
 	return &CoreTunnelDialer{
 		connection:      connection,
 		session:         session,
 		delegate:        delegate,
+		streamMgr:       streamMgr,
 		packetIO:        NewPacketIO(connection.cfg.MTU),
 		assemblyFactory: internaltun.Assemble,
 	}, nil
+}
+
+// Prepare 在对外暴露代理前预热并绑定核心会话与 stream manager。
+func (d *CoreTunnelDialer) Prepare(ctx context.Context) error {
+	return d.ensureReady(ctx)
+}
+
+// StreamManager 返回与当前核心会话绑定的 CONNECT stream manager。
+func (d *CoreTunnelDialer) StreamManager() *ConnectStreamManager {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.streamMgr
 }
 
 // 在共享 dialer 拨号前建立并复用核心会话。
@@ -70,9 +88,14 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 	if err := d.connection.Connect(ctx); err != nil {
 		return fmt.Errorf("ensure quic/http3 ready: %w", err)
 	}
-	d.session.BindHTTP3Conn(d.connection.HTTP3Conn())
+	h3conn := d.connection.HTTP3Conn()
+	d.session.BindHTTP3Conn(h3conn)
 	if err := d.session.Open(ctx); err != nil {
 		return fmt.Errorf("ensure connect-ip ready: %w", err)
+	}
+	if d.streamMgr != nil {
+		d.streamMgr.BindHTTP3Conn(h3conn)
+		d.streamMgr.SetReady()
 	}
 	if d.assembly == nil {
 		assembly, err := d.assemblyFactory(d.buildAssembleOptions())
@@ -192,6 +215,11 @@ func (d *CoreTunnelDialer) Close() error {
 		<-done
 	}
 	var closeErr error
+	if d.streamMgr != nil {
+		if err := d.streamMgr.Close(); err != nil {
+			closeErr = err
+		}
+	}
 	if assembly != nil {
 		if err := assembly.Close(); err != nil {
 			closeErr = err

@@ -72,6 +72,7 @@ func (m *HTTPProxyManager) SetCoreTunnelDialer(connection *ConnectionManager, se
 		return err
 	}
 	m.SetHTTPDialer(dialer)
+	m.SetStreamManager(dialer.StreamManager())
 	return nil
 }
 
@@ -250,6 +251,8 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 		return
 	}
 
+	h.manager.logf("handleConnectViaStream: host=%s port=%s target=%s", host, port, r.Host)
+
 	started := time.Now()
 	upstream, err := streamMgr.OpenStream(r.Context(), host, port)
 	if err != nil {
@@ -257,6 +260,9 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 		http.Error(w, "connect stream failed", http.StatusBadGateway)
 		return
 	}
+	defer upstream.Close()
+
+	h.manager.logf("handleConnectViaStream: stream opened successfully, remote=%s", upstream.RemoteAddr())
 
 	latency := time.Since(started)
 	if latency <= 0 {
@@ -297,16 +303,43 @@ func (h *httpProxyHandler) handleConnectViaStream(w http.ResponseWriter, r *http
 		}
 	}
 
+	h.manager.logf("handleConnectViaStream: starting relay")
+	relayBidirectional(
+		clientConn,
+		upstream,
+		h.manager.AddTxBytes,
+		h.manager.AddRxBytes,
+		h.manager.logf,
+	)
+	upstream = nil
+	h.manager.logf("handleConnectViaStream: relay complete")
+}
+
+func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), onRx func(int), logf func(string, ...any)) {
+	var closeOnce sync.Once
+	shutdown := func() {
+		closeOnce.Do(func() {
+			_ = upstream.Close()
+			_ = clientConn.Close()
+		})
+	}
+
 	var wg sync.WaitGroup
+	runCopy := func(label string, dst net.Conn, src net.Conn, onWrite func(int)) {
+		defer wg.Done()
+		if logf != nil {
+			logf("relay: %s", label)
+		}
+		_, _ = io.Copy(&countingWriter{writer: dst, onWrite: onWrite}, src)
+		if logf != nil {
+			logf("relay: %s done", label)
+		}
+		shutdown()
+	}
+
 	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: upstream, onWrite: h.manager.AddTxBytes}, clientConn)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: clientConn, onWrite: h.manager.AddRxBytes}, upstream)
-	}()
+	go runCopy("client -> upstream", upstream, clientConn, onTx)
+	go runCopy("upstream -> client", clientConn, upstream, onRx)
 	wg.Wait()
 }
 

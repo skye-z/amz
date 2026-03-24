@@ -257,22 +257,24 @@ func (m *SOCKSManager) handleConnect(ctx context.Context, clientConn net.Conn, t
 		return err
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	closeBoth := sync.OnceFunc(func() {
+		_ = clientConn.Close()
+		_ = remoteConn.Close()
+	})
+	errCh := make(chan error, 2)
 	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: remoteConn, onWrite: m.AddTxBytes}, clientConn)
+		_, err := io.Copy(&countingWriter{writer: remoteConn, onWrite: m.AddTxBytes}, clientConn)
+		closeBoth()
+		errCh <- err
 	}()
 	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: clientConn, onWrite: m.AddRxBytes}, remoteConn)
+		_, err := io.Copy(&countingWriter{writer: clientConn, onWrite: m.AddRxBytes}, remoteConn)
+		closeBoth()
+		errCh <- err
 	}()
 
-	go func() {
-		wg.Wait()
-		clientConn.Close()
-		remoteConn.Close()
-	}()
+	<-errCh
+	closeBoth()
 
 	return nil
 }
