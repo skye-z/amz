@@ -131,6 +131,17 @@ func (m *Manager) SetStreamManager(mgr ConnectStreamOpener) {
 }
 
 func (m *Manager) Start(ctx context.Context) error {
+	return m.start(ctx, nil)
+}
+
+func (m *Manager) StartWithListener(ctx context.Context, listener net.Listener) error {
+	if listener == nil {
+		return errors.New("listener is required")
+	}
+	return m.start(ctx, listener)
+}
+
+func (m *Manager) start(ctx context.Context, provided net.Listener) error {
 	m.mu.Lock()
 	if m.state == types.StateStopped {
 		m.mu.Unlock()
@@ -144,10 +155,14 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.mu.Unlock()
 		return err
 	}
-	ln, err := net.Listen("tcp", m.listen)
-	if err != nil {
-		m.mu.Unlock()
-		return fmt.Errorf("listen socks tcp: %w", err)
+	ln := provided
+	var err error
+	if ln == nil {
+		ln, err = net.Listen("tcp", m.listen)
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("listen socks tcp: %w", err)
+		}
 	}
 	actualListen := ln.Addr().String()
 	var packetConn net.PacketConn

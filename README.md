@@ -1,97 +1,74 @@
 # amz
 
-> WARP / MASQUE transport kernel for the Cloudflare WARP 2026 Proxy Mode path.
->
-> `amz` provides the protocol and runtime layer used by this repository: QUIC, HTTP/3, HTTP/3 CONNECT stream relay, proxy runtimes, tunnel scaffolding, and Cloudflare-specific compatibility behavior.
+> A SDK-first WARP / MASQUE client core for the Cloudflare WARP 2026 Proxy Mode path.
 
-## Overview
+`amz` now treats the root package as the primary user-facing entry point.  
+Most implementation details live under `internal/`, while SDK users are expected
+to start with:
 
-`amz` is the transport kernel module in this repository.
-
-It is designed for two audiences at the same time:
-
-- **internal integration** — as the runtime engine behind `igara`
-- **external embedding** — as a reusable Go package for proxy / tunnel integration
-
-The current mainline is aligned with **Cloudflare WARP 2026 Proxy Mode**, which is centered on:
-
-- **QUIC + HTTP/3**
-- **HTTP/3 CONNECT**
-- **direct L4 proxying over streams**
-
-As of **March 24, 2026**, the HTTP proxy mainline has been validated against real [`ipwho.is`](https://ipwho.is/) traffic with a confirmed egress IP change.
-
-## Read in Your Preferred Language
-
-- [简体中文 / Chinese](./README.zh-CN.md)
-- [English](./README.en.md)
+```go
+client, err := amz.NewClient(opts)
+```
 
 ## Current Status
 
-- **Validated mainline:** HTTP Proxy Mode over QUIC / HTTP/3 / HTTP/3 CONNECT
-- **Available runtime surfaces:** HTTP proxy, SOCKS5 proxy, TUN scaffolding
-- **Compatibility path:** CONNECT-IP is still present for TUN / legacy-style completion work
+- ✅ HTTP Proxy Mode mainline validated against real `ipwho.is` traffic
+- ✅ automatic registration / reuse, endpoint discovery, and local state storage
+- ✅ HTTP + SOCKS5 true single-port multiplexing
+- ✅ TUN can be enabled as a parallel runtime
 
-## Public Package Surface
-
-The root package now acts as the primary façade:
-
-```go
-proxy, err := amz.NewHTTPProxy(cfg)
-socks, err := amz.NewSOCKS5Proxy(cfg)
-tun, err := amz.NewTunnel(cfg)
-```
-
-Supporting packages are organized by responsibility:
-
-- `config/` — configuration model, defaults, validation
-- `session/` — QUIC / HTTP/3 / CONNECT stream / CONNECT-IP session primitives
-- `proxy/http/` — HTTP proxy runtime
-- `proxy/socks5/` — SOCKS5 runtime
-- `tun/` — TUN-related surface
-- `datapath/` — packet relay abstractions
-- `cloudflare/` — Cloudflare compatibility surface
-- `observe/` — stats / sanitization-facing types
-
-## Quick Example
+## Quick Start
 
 ```go
 package main
 
 import (
-    "context"
+	"context"
 
-    "github.com/skye-z/amz"
-    "github.com/skye-z/amz/config"
+	"github.com/skye-z/amz"
 )
 
 func main() {
-    cfg := &config.KernelConfig{
-        Endpoint: "162.159.198.2:443",
-        SNI:      "warp.cloudflare.com",
-        Mode:     config.ModeHTTP,
-        HTTP: config.HTTPConfig{
-            ListenAddress: "127.0.0.1:8080",
-        },
-    }
-    cfg.FillDefaults()
+	client, err := amz.NewClient(amz.Options{
+		Storage: amz.StorageOptions{
+			Path: "./amz.state.json",
+		},
+		Listen: amz.ListenOptions{
+			Address: "127.0.0.1:9811",
+		},
+		HTTP: amz.HTTPOptions{
+			Enabled: true,
+		},
+		SOCKS5: amz.SOCKS5Options{
+			Enabled: true,
+		},
+		TUN: amz.TUNOptions{
+			Enabled: false,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 
-    proxy, err := amz.NewHTTPProxy(cfg)
-    if err != nil {
-        panic(err)
-    }
-    defer proxy.Close()
-
-    if err := proxy.Start(context.Background()); err != nil {
-        panic(err)
-    }
+	if err := client.Start(context.Background()); err != nil {
+		panic(err)
+	}
+	defer client.Close()
 }
 ```
 
-## Recommended Reading Order
+## SDK Model
 
-If you're new to this module:
+`amz` v1 is designed around one `Client` instance that manages:
 
-1. Start with [README.zh-CN.md](./README.zh-CN.md) or [README.en.md](./README.en.md)
-2. Use the **HTTP Proxy Mode** examples first
-3. Treat **TUN / CONNECT-IP** as a compatibility-oriented path still being completed
+- local state storage
+- automatic registration / reuse
+- automatic endpoint discovery
+- QUIC / HTTP3 / CONNECT stream transport
+- one shared local listener for HTTP + SOCKS5
+- optional TUN runtime
+
+## Read in Your Preferred Language
+
+- [简体中文 / Chinese](./README.zh-CN.md)
+- [English](./README.en.md)
