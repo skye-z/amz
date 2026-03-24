@@ -87,16 +87,16 @@ func (p *fakePlatformProvider) Open(ctx context.Context, cfg internaltun.DeviceC
 }
 func (p *fakePlatformProvider) Close() error { return p.delegate.Close() }
 
-// 验证核心 dialer 会在真实拨号前建立并复用 QUIC/H3 与 CONNECT-IP 会话。
+// 验证 TUN 模式下核心 dialer 会在真实拨号前建立并复用 QUIC/H3 与 CONNECT-IP 会话。
 func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	cfg := config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
 		SNI:            config.DefaultSNI,
 		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
+		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		TUN:            config.TUNConfig{Name: "igara0"},
 	}
 
 	connectionManager, err := NewConnectionManager(cfg)
@@ -213,6 +213,63 @@ func TestCoreTunnelDialerPropagatesBootstrapError(t *testing.T) {
 	}
 	if streamDialer.calls != 0 {
 		t.Fatalf("expected underlying dialer not to be called, got %d", streamDialer.calls)
+	}
+}
+
+// 验证 HTTP 代理模式不会强依赖 CONNECT-IP 会话，避免 2026 L4 Proxy Mode 被旧前置条件阻塞。
+func TestCoreTunnelDialerHTTPModeDoesNotRequireConnectIP(t *testing.T) {
+	cfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	}
+
+	connectionManager, err := NewConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connection manager creation success, got %v", err)
+	}
+	transportDialer := &countingTransportDialer{conn: &fakeQUICConn{}, h3: &fakeH3Client{}}
+	connectionManager.dialer = transportDialer
+
+	sessionManager, err := NewConnectIPSessionManager(cfg)
+	if err != nil {
+		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+	}
+	connectDialer := &countingConnectIPDialer{err: errors.New("server didn't enable Extended CONNECT")}
+	sessionManager.dialer = connectDialer
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	streamDialer := &stubHTTPStreamDialer{conn: clientConn}
+	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, streamDialer)
+	if err != nil {
+		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+	}
+
+	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("expected http mode dial success without connect-ip, got %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection")
+	}
+	if transportDialer.calls != 1 {
+		t.Fatalf("expected one transport dial, got %d", transportDialer.calls)
+	}
+	if connectDialer.calls != 0 {
+		t.Fatalf("expected connect-ip to be skipped in http mode, got %d calls", connectDialer.calls)
+	}
+	if streamDialer.calls != 1 {
+		t.Fatalf("expected downstream dial once, got %d", streamDialer.calls)
+	}
+	if err := dialer.Close(); err != nil {
+		t.Fatalf("expected core dialer close success, got %v", err)
 	}
 }
 

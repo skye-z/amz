@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	amzconfig "github.com/skye-z/amz/config"
 	internaltun "github.com/skye-z/amz/internal/tun"
 )
 
@@ -89,13 +90,16 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 		return fmt.Errorf("ensure quic/http3 ready: %w", err)
 	}
 	h3conn := d.connection.HTTP3Conn()
-	d.session.BindHTTP3Conn(h3conn)
-	if err := d.session.Open(ctx); err != nil {
-		return fmt.Errorf("ensure connect-ip ready: %w", err)
-	}
 	if d.streamMgr != nil {
 		d.streamMgr.BindHTTP3Conn(h3conn)
 		d.streamMgr.SetReady()
+	}
+	d.session.BindHTTP3Conn(h3conn)
+	if d.connection.cfg.Mode != amzconfig.ModeTUN {
+		return nil
+	}
+	if err := d.session.Open(ctx); err != nil {
+		return fmt.Errorf("ensure connect-ip ready: %w", err)
 	}
 	if d.assembly == nil {
 		assembly, err := d.assemblyFactory(d.buildAssembleOptions())

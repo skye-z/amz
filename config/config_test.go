@@ -33,6 +33,13 @@ func TestKernelConfigFillDefaults(t *testing.T) {
 	}
 }
 
+// 验证默认 SNI 与真实 WARP Proxy Mode 可用值保持一致。
+func TestDefaultSNIUsesWarpCloudflareCom(t *testing.T) {
+	if config.DefaultSNI != "warp.cloudflare.com" {
+		t.Fatalf("expected default sni %q, got %q", "warp.cloudflare.com", config.DefaultSNI)
+	}
+}
+
 // 验证配置校验能拒绝明显无效的基础参数。
 func TestKernelConfigValidate(t *testing.T) {
 	tests := []struct {

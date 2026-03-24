@@ -16,8 +16,8 @@ type Logger interface {
 const (
 	// 默认端点指向 Cloudflare MASQUE 服务。
 	DefaultEndpoint = "162.159.198.1:443"
-	// 默认 SNI 与官方客户端观测值保持一致。
-	DefaultSNI = "consumer-masque.cloudflareclient.com"
+	// 默认 SNI 与当前真实可用的 WARP Proxy Mode 行为保持一致。
+	DefaultSNI = "warp.cloudflare.com"
 	// 默认 MTU 兼顾通用平台与隧道开销。
 	DefaultMTU = 1280
 )

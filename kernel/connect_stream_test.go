@@ -393,6 +393,15 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if got := stream.request.Header.Get("X-Masque-Protocol"); got != ProtocolConnectStream {
 		t.Fatalf("expected masque protocol header %q, got %q", ProtocolConnectStream, got)
 	}
+	if values, ok := stream.request.Header["User-Agent"]; !ok || len(values) != 1 || values[0] != "" {
+		t.Fatalf("expected explicit empty user-agent to suppress quic-go default, got %#v", stream.request.Header["User-Agent"])
+	}
+	if stream.request.Proto != "" {
+		t.Fatalf("expected plain CONNECT request without extended protocol marker, got %q", stream.request.Proto)
+	}
+	if stream.request.ProtoMajor != 0 || stream.request.ProtoMinor != 0 {
+		t.Fatalf("expected plain CONNECT proto version unset, got %d.%d", stream.request.ProtoMajor, stream.request.ProtoMinor)
+	}
 
 	buf := make([]byte, len("server-bytes"))
 	n, err := conn.Read(buf)
@@ -530,8 +539,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	}
 	defer udpConn.Close()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
 			http.Error(w, "expected connect", http.StatusMethodNotAllowed)
 			return
@@ -551,7 +559,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 		go func() { _, _ = io.Copy(targetConn, r.Body) }()
 		_, _ = io.Copy(w, targetConn)
 	})
-	server := http3.Server{Handler: mux, EnableDatagrams: true, TLSConfig: h3TLS}
+	server := http3.Server{Handler: handler, EnableDatagrams: true, TLSConfig: h3TLS}
 	go func() { _ = server.Serve(udpConn) }()
 	defer server.Close()
 

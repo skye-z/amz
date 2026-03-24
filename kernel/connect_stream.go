@@ -113,10 +113,9 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 		URL:        &url.URL{Scheme: "https", Host: targetAddr},
 		Header:     make(http.Header),
 		Host:       targetAddr,
-		Proto:      "HTTP/3",
-		ProtoMajor: 3,
 	}
 	req.Header.Set("X-Masque-Protocol", opts.Protocol)
+	req.Header.Set("User-Agent", "")
 
 	if err := rstr.SendRequestHeader(req); err != nil {
 		_ = rstr.Close()

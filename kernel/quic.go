@@ -166,9 +166,23 @@ func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3O
 		udpConn.Close()
 		return nil, nil, 0, fmt.Errorf("dial quic: %w", err)
 	}
-	transport := &http3.Transport{EnableDatagrams: quicOpts.EnableDatagrams && h3Opts.EnableDatagrams}
+	transport := buildHTTP3Transport(quicOpts, h3Opts)
 	clientConn := transport.NewClientConn(conn)
 	return &quicConnAdapter{conn: conn}, &http3ClientConnAdapter{transport: transport, conn: clientConn}, time.Since(started), nil
+}
+
+func buildHTTP3Transport(quicOpts QUICOptions, h3Opts HTTP3Options) *http3.Transport {
+	enableDatagrams := quicOpts.EnableDatagrams && h3Opts.EnableDatagrams
+	transport := &http3.Transport{
+		EnableDatagrams:    enableDatagrams,
+		DisableCompression: true,
+	}
+	if enableDatagrams {
+		transport.AdditionalSettings = map[uint64]uint64{
+			0x276: 1,
+		}
+	}
+	return transport
 }
 
 func buildTLSConfig(opts QUICOptions) *tls.Config {

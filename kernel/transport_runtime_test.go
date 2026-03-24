@@ -476,6 +476,27 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	}
 }
 
+// 验证真实 H3 transport 会携带 Cloudflare 当前链路要求的兼容 settings。
+func TestBuildHTTP3TransportUsesCloudflareCompatSettings(t *testing.T) {
+	transport := buildHTTP3Transport(
+		QUICOptions{EnableDatagrams: true},
+		HTTP3Options{EnableDatagrams: true},
+	)
+
+	if transport == nil {
+		t.Fatal("expected transport")
+	}
+	if !transport.EnableDatagrams {
+		t.Fatal("expected datagrams enabled")
+	}
+	if !transport.DisableCompression {
+		t.Fatal("expected compression disabled")
+	}
+	if got := transport.AdditionalSettings[0x276]; got != 1 {
+		t.Fatalf("expected deprecated H3 datagram setting 0x276=1, got %d", got)
+	}
+}
+
 type realTransportDialerWithTLS struct{ tlsConfig *tls.Config }
 
 func (d realTransportDialerWithTLS) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
