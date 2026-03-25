@@ -1,34 +1,54 @@
-﻿# amz
+# AMZ - Third-Party Cloudflare WARP SDK
 
-> A SDK-first Go implementation for the Cloudflare WARP 2026 Proxy Mode path.
+[中文](./README.zh-CN.md)
 
-`amz` now treats the root package as the primary entry point.  
-SDK users are expected to start with:
+This is a Go SDK that allows you to embed the Cloudflare WARP proxy directly into your application.
 
-```go
-client, err := amz.NewClient(opts)
+You only need to integrate it via `amz.NewClient(...)`; the SDK will automatically handle registration, state persistence, endpoint selection, and runtime initialization.
+
+## Features
+
+- Post-quantum encryption with X25519MLKEM768
+- HTTP, SOCKS5, and TUN proxies
+- L4 transport layer proxy
+- Proxy port reuse
+- Automatic registration
+- Automatic endpoint selection
+
+## Use Cases
+
+Ideal for applications that only need to change their external IP via Cloudflare WARP without additional features, and want to avoid the official ~100MB client.
+
+I use this for my network probe, which is deployed on an ultra-small VPS with 1 CPU core, 1GB RAM, and 10GB SSD.
+
+## Why Choose AMZ
+
+There are several WARP libraries based on WireGuard in the community—why choose AMZ?
+
+- High Performance: In internal Cloudflare tests, Quic L4 proxy doubles download/upload speeds and significantly reduces latency
+- Small Size: ~1.1MB compiled binary with full implementation of the latest WARP proxy model
+- Multi-Channel: Built-in HTTP, SOCKS5, and TUN proxy channels with excellent extensibility for adding more protocols
+- Enhanced Security: Modern hybrid key exchange using X25519 + ML-KEM-768 for quantum-resistant encryption
+
+## Roadmap
+
+- [ ] Team WARP
+- [ ] Advanced optimization strategies
+
+## Quick Start
+
+```bash
+go get github.com/skye-z/amz
 ```
 
-instead of assembling lower-level transport components directly.
-
-## Current Status
-
-As of 2026-03-25, SDK v1 already includes:
-
-- ✅ automatic registration / identity reuse
-- ✅ automatic endpoint discovery
-- ✅ local state persistence
-- ✅ real HTTP Proxy Mode validation against `ipwho.is`
-- ✅ true single-port multiplexing for HTTP + SOCKS5
-- ✅ optional parallel TUN runtime
-
-## Recommended Usage
+Below is an example enabling both HTTP and SOCKS5 proxy channels:
 
 ```go
 package main
 
 import (
 	"context"
+	"log"
 
 	"github.com/skye-z/amz"
 )
@@ -47,114 +67,30 @@ func main() {
 		SOCKS5: amz.SOCKS5Options{
 			Enabled: true,
 		},
-		TUN: amz.TUNOptions{
-			Enabled: false,
-		},
 	})
 	if err != nil {
-		panic(err)
-	}
-
-	if err := client.Start(context.Background()); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer client.Close()
+
+	if err := client.Start(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("proxy listening on %s", client.ListenAddress())
 }
 ```
 
-## SDK Design
-
-### Root package is the public surface
-
-SDK v1 is centered on a small public API:
-
-- `NewClient`
-- `Start`
-- `Run`
-- `Close`
-- `Status`
-- `ListenAddress`
-
-### HTTP and SOCKS5 share one real listener
-
-If both are enabled and `Listen.Address` is set, the SDK opens **one** TCP listener and dispatches each accepted connection by sniffing the first bytes:
-
-- SOCKS5 handshake
-- HTTP proxy request
-
-### Storage only keeps state
-
-The SDK state file only stores:
-
-- device ID
-- token
-- certificates
-- account state
-- last selected node
-- node cache
-
-It does **not** persist application-owned integration settings such as:
-
-- whether HTTP / SOCKS5 / TUN is enabled
-- listen port choices made by the embedding application
-
-### TUN runs in parallel
-
-TUN is not part of the single-port multiplexing path. It is managed as an optional parallel runtime under the same `Client`.
-
-## Real Validation
-
-The transport path behind the SDK has already been validated with real traffic:
-
-- WARP connection established successfully
-- traffic actually flowed through the mainline path
-- `ipwho.is` observed a changed egress IP
-
-That means the SDK is not built on top of a purely synthetic or mock-only path.
-
-## API Shape
-
-```go
-type Options struct {
-    Storage StorageOptions
-    Listen  ListenOptions
-    HTTP    HTTPOptions
-    SOCKS5  SOCKS5Options
-    TUN     TUNOptions
-}
-```
-
-```go
-client, err := amz.NewClient(opts)
-err = client.Start(ctx)
-defer client.Close()
-```
-
-Blocking convenience entry:
+For a blocking implementation, simply call `Run()`:
 
 ```go
 client, err := amz.NewClient(opts)
 if err != nil {
-    panic(err)
+	panic(err)
 }
-panic(client.Run())
+defer client.Close()
+
+if err := client.Run(); err != nil {
+	panic(err)
+}
 ```
-
-## Good Fit For
-
-- embedding a WARP-capable local proxy SDK
-- exposing HTTP and SOCKS5 on a single port
-- automatically registering / reusing device identity
-- automatically selecting a usable WARP endpoint
-
-## Not the Focus of SDK v1
-
-- Team WARP
-- Preferred / PreferredStrategy
-- rich public event streaming
-- persistence of application-level integration settings
-
-## Other Languages
-
-- [README_zh.md](./README_zh.md)
-

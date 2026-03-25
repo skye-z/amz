@@ -5,8 +5,7 @@ import (
 	"errors"
 	"net"
 
-	socks5proxy "github.com/skye-z/amz/proxy/socks5"
-	"github.com/skye-z/amz/types"
+	internalconfig "github.com/skye-z/amz/internal/config"
 )
 
 type socks5Starter interface {
@@ -15,7 +14,7 @@ type socks5Starter interface {
 	Stop(context.Context) error
 	Close() error
 	State() string
-	Stats() types.Stats
+	Stats() internalconfig.Stats
 	ListenAddress() string
 }
 
@@ -24,7 +23,7 @@ type SOCKS5Runtime struct {
 	listener net.Listener
 }
 
-func NewSOCKS5Runtime(manager *socks5proxy.Manager) *SOCKS5Runtime {
+func NewSOCKS5Runtime(manager socks5Starter) *SOCKS5Runtime {
 	if manager == nil {
 		return nil
 	}
@@ -68,14 +67,14 @@ func (r *SOCKS5Runtime) ListenAddress() string {
 
 func (r *SOCKS5Runtime) State() string {
 	if r == nil || r.manager == nil {
-		return types.StateStopped
+		return internalconfig.StateStopped
 	}
 	return r.manager.State()
 }
 
-func (r *SOCKS5Runtime) Stats() types.Stats {
+func (r *SOCKS5Runtime) Stats() internalconfig.Stats {
 	if r == nil || r.manager == nil {
-		return types.Stats{}
+		return internalconfig.Stats{}
 	}
 	return r.manager.Stats()
 }

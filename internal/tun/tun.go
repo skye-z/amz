@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/skye-z/amz/types"
+	"github.com/skye-z/amz/internal/config"
 )
 
 // 描述平台无关的最小设备参数。
@@ -21,10 +21,10 @@ type DeviceConfig struct {
 // 检查设备参数是否满足骨架阶段的最小约束。
 func (c DeviceConfig) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
-		return fmt.Errorf("%w: tun name is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun name is required", config.ErrInvalidConfig)
 	}
 	if c.MTU < 1280 || c.MTU > 65535 {
-		return fmt.Errorf("%w: mtu out of range", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: mtu out of range", config.ErrInvalidConfig)
 	}
 	return nil
 
@@ -39,10 +39,10 @@ type Address struct {
 func (a Address) Validate() error {
 	cidr := strings.TrimSpace(a.CIDR)
 	if cidr == "" {
-		return fmt.Errorf("%w: address cidr is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: address cidr is required", config.ErrInvalidConfig)
 	}
 	if _, err := netip.ParsePrefix(cidr); err != nil {
-		return fmt.Errorf("%w: invalid address cidr: %v", types.ErrInvalidConfig, err)
+		return fmt.Errorf("%w: invalid address cidr: %v", config.ErrInvalidConfig, err)
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func (c Config) Validate() error {
 		return err
 	}
 	if len(c.Addresses) == 0 {
-		return fmt.Errorf("%w: tun addresses are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun addresses are required", config.ErrInvalidConfig)
 	}
 	for _, addr := range c.Addresses {
 		if err := addr.Validate(); err != nil {
@@ -118,13 +118,13 @@ func (p RoutePlan) Clone() RoutePlan {
 // 检查路由计划是否满足骨架阶段的最小约束。
 func (p RoutePlan) Validate() error {
 	if !p.Mode.Valid() {
-		return fmt.Errorf("%w: route mode is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: route mode is required", config.ErrInvalidConfig)
 	}
 	if len(p.Routes) == 0 {
-		return fmt.Errorf("%w: routes are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: routes are required", config.ErrInvalidConfig)
 	}
 	if len(p.EndpointRoutes) == 0 {
-		return fmt.Errorf("%w: endpoint routes are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: endpoint routes are required", config.ErrInvalidConfig)
 	}
 	return nil
 }
@@ -168,17 +168,17 @@ func (r PrivilegeRequirement) Clone() PrivilegeRequirement {
 // 检查权限要求是否具备最小描述信息。
 func (r PrivilegeRequirement) Validate() error {
 	if !r.Level.Valid() {
-		return fmt.Errorf("%w: privilege level is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: privilege level is required", config.ErrInvalidConfig)
 	}
 	if strings.TrimSpace(r.Reason) == "" {
-		return fmt.Errorf("%w: privilege reason is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: privilege reason is required", config.ErrInvalidConfig)
 	}
 	if len(r.Operations) == 0 {
-		return fmt.Errorf("%w: privilege operations are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: privilege operations are required", config.ErrInvalidConfig)
 	}
 	for _, operation := range r.Operations {
 		if strings.TrimSpace(operation) == "" {
-			return fmt.Errorf("%w: privilege operation is required", types.ErrInvalidConfig)
+			return fmt.Errorf("%w: privilege operation is required", config.ErrInvalidConfig)
 		}
 	}
 	return nil
@@ -194,13 +194,13 @@ type SecurityWarning struct {
 // 检查安全提示是否具备最小展示信息。
 func (w SecurityWarning) Validate() error {
 	if strings.TrimSpace(w.Code) == "" {
-		return fmt.Errorf("%w: warning code is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: warning code is required", config.ErrInvalidConfig)
 	}
 	if strings.TrimSpace(w.Summary) == "" {
-		return fmt.Errorf("%w: warning summary is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: warning summary is required", config.ErrInvalidConfig)
 	}
 	if strings.TrimSpace(w.Mitigation) == "" {
-		return fmt.Errorf("%w: warning mitigation is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: warning mitigation is required", config.ErrInvalidConfig)
 	}
 	return nil
 }
@@ -214,10 +214,10 @@ type RollbackStep struct {
 // 检查回滚动作是否具备最小描述信息。
 func (s RollbackStep) Validate() error {
 	if strings.TrimSpace(s.Stage) == "" {
-		return fmt.Errorf("%w: rollback stage is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: rollback stage is required", config.ErrInvalidConfig)
 	}
 	if strings.TrimSpace(s.Action) == "" {
-		return fmt.Errorf("%w: rollback action is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: rollback action is required", config.ErrInvalidConfig)
 	}
 	return nil
 }
@@ -248,7 +248,7 @@ func (p ProtectionPlan) Validate() error {
 		return err
 	}
 	if len(p.Warnings) == 0 {
-		return fmt.Errorf("%w: security warnings are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: security warnings are required", config.ErrInvalidConfig)
 	}
 	for _, warning := range p.Warnings {
 		if err := warning.Validate(); err != nil {
@@ -256,7 +256,7 @@ func (p ProtectionPlan) Validate() error {
 		}
 	}
 	if len(p.Rollback) == 0 {
-		return fmt.Errorf("%w: rollback steps are required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: rollback steps are required", config.ErrInvalidConfig)
 	}
 	for _, step := range p.Rollback {
 		if err := step.Validate(); err != nil {
@@ -275,10 +275,10 @@ type FailureEvent struct {
 // 检查失败信息是否具备最小上下文。
 func (e FailureEvent) Validate() error {
 	if strings.TrimSpace(e.Stage) == "" {
-		return fmt.Errorf("%w: failure stage is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: failure stage is required", config.ErrInvalidConfig)
 	}
 	if e.Err == nil {
-		return fmt.Errorf("%w: failure error is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: failure error is required", config.ErrInvalidConfig)
 	}
 	return nil
 }
@@ -526,14 +526,14 @@ func (a *SystemAdapter) ApplyConfig(_ context.Context, dev Device, cfg Config) e
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	configurable, ok := dev.(systemConfigurableDevice)
 	if !ok {
-		return fmt.Errorf("%w: tun device does not support system config", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device does not support system config", config.ErrInvalidConfig)
 	}
 	if err := configurable.ApplyTUNConfig(cfg); err != nil {
 		return err
@@ -549,14 +549,14 @@ func (a *SystemAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePla
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
 	}
 	if err := plan.Validate(); err != nil {
 		return err
 	}
 	routeConfigurable, ok := dev.(systemRouteConfigurableDevice)
 	if !ok {
-		return fmt.Errorf("%w: tun device does not support system routes", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device does not support system routes", config.ErrInvalidConfig)
 	}
 	if err := routeConfigurable.ApplyTUNRoutes(plan); err != nil {
 		return err
@@ -617,7 +617,7 @@ func (a *FakeAdapter) ApplyConfig(_ context.Context, dev Device, cfg Config) err
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -633,7 +633,7 @@ func (a *FakeAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePlan)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", types.ErrInvalidConfig)
+		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
 	}
 	if err := plan.Validate(); err != nil {
 		return err

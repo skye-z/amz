@@ -9,15 +9,12 @@ import (
 	"sync"
 	"time"
 
-	amzconfig "github.com/skye-z/amz/config"
 	"github.com/skye-z/amz/internal/auth"
+	amzconfig "github.com/skye-z/amz/internal/config"
 	"github.com/skye-z/amz/internal/discovery"
 	iruntime "github.com/skye-z/amz/internal/runtime"
+	amzsession "github.com/skye-z/amz/internal/session"
 	"github.com/skye-z/amz/internal/storage"
-	httpproxy "github.com/skye-z/amz/proxy/http"
-	socks5proxy "github.com/skye-z/amz/proxy/socks5"
-	amzsession "github.com/skye-z/amz/session"
-	tunruntime "github.com/skye-z/amz/tun"
 )
 
 func init() {
@@ -231,32 +228,32 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			httpCfg := baseCfg
 			httpCfg.Mode = amzconfig.ModeHTTP
 			httpCfg.HTTP.ListenAddress = m.opts.Listen.Address
-			manager, err := httpproxy.NewWithBootstrap(httpCfg, connectionManager, connectIPManager, delegate)
+			runtime, err := iruntime.NewHTTPRuntimeFromBootstrap(httpCfg, connectionManager, connectIPManager, delegate)
 			if err != nil {
 				return nil, err
 			}
-			httpRT = iruntime.NewHTTPRuntime(manager)
+			httpRT = runtime
 		}
 
 		if m.opts.SOCKS5.Enabled {
 			socksCfg := baseCfg
 			socksCfg.Mode = amzconfig.ModeSOCKS
 			socksCfg.SOCKS.ListenAddress = m.opts.Listen.Address
-			manager, err := socks5proxy.NewWithBootstrap(&socksCfg, connectionManager, connectIPManager, delegate)
+			runtime, err := iruntime.NewSOCKS5RuntimeFromBootstrap(&socksCfg, connectionManager, connectIPManager, delegate)
 			if err != nil {
 				return nil, err
 			}
-			socksRT = iruntime.NewSOCKS5Runtime(manager)
+			socksRT = runtime
 		}
 	}
 
 	if m.opts.TUN.Enabled {
 		tunCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeTUN, "")
-		manager, err := tunruntime.NewRuntime(&tunCfg)
+		runtime, err := iruntime.NewTUNRuntimeFromConfig(&tunCfg)
 		if err != nil {
 			return nil, err
 		}
-		tunRT = iruntime.NewTUNRuntime(manager)
+		tunRT = runtime
 	}
 
 	runtime, err := iruntime.NewClientRuntime(iruntime.ClientRuntimeOptions{

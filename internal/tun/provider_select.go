@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/skye-z/amz/types"
+	"github.com/skye-z/amz/internal/config"
 )
 
 // 描述 TUN 骨架阶段对未实现平台能力的结构化占位错误。
@@ -16,12 +16,12 @@ type PlaceholderError struct {
 
 // 返回便于上层展示的未实现错误描述。
 func (e *PlaceholderError) Error() string {
-	return fmt.Sprintf("%s %s: %v", e.Platform, e.Component, types.ErrNotImplemented)
+	return fmt.Sprintf("%s %s: %v", e.Platform, e.Component, config.ErrNotImplemented)
 }
 
 // 支持使用 errors.Is 判断未实现占位信号。
 func (e *PlaceholderError) Unwrap() error {
-	return types.ErrNotImplemented
+	return config.ErrNotImplemented
 }
 
 // 描述带平台元信息的占位 provider 行为。
@@ -47,7 +47,7 @@ func NewProviderForOS(goos string) (PlatformProvider, error) {
 	case platformWindows:
 		return newWindowsProvider(), nil
 	default:
-		return nil, fmt.Errorf("%w: unsupported tun platform %q", types.ErrInvalidConfig, goos)
+		return nil, fmt.Errorf("%w: unsupported tun platform %q", config.ErrInvalidConfig, goos)
 	}
 }
 

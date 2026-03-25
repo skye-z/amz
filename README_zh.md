@@ -1,34 +1,54 @@
-﻿# amz
+# AMZ - 第三方 Cloudflare WARP SDK
 
-> 面向 Cloudflare WARP 2026 Proxy Mode 的 SDK-first Go 实现。
+[English](./README.md)
 
-`amz` 现在将根包视为主要对外入口。  
-用户不需要理解底层 `session / proxy / tun / ...` 细节，推荐直接从：
+这是一个 Go SDK, 你可以用它来在你的应用里嵌入 Cloudflare WARP 代理
 
-```go
-client, err := amz.NewClient(opts)
+你只需要通过 `amz.NewClient(...)` 接入, 剩下的注册、状态复用、选点和 runtime 启动都由 SDK 统一编排管理
+
+## 特性
+
+- X25519MLKEM768 后量子加密
+- HTTP、SOCKS5 和 TUN 代理
+- L4 传输层代理
+- 代理端口复用
+- 自动注册
+- 自动选点
+
+## 适用场景
+
+只想接入 Cloudflare WARP 来改变应用的外部IP, 用不到其他额外的功能, 不想使用官方 ~100MB 的客户端
+
+我将其用于我的探针, 它被部署在1C1G 10GSSD的超小VPS上
+
+## 为什么选择 AMZ
+
+社区中有不少基于 WireGuard 实现的 WARP 库, 为什么我要选择用 AMZ 呢?
+
+- 高性能: 在 Cloudflare 内部测试中, 使用 Quic L4 代理下载和上传速度翻倍, 延迟显著降低
+- 小体积: 在完整实现了 WARP 最新代理模型的情况下做到了 ~1.1M 的编译大小
+- 多通道: 内建了 HTTP、SOCKS5 和 TUN 代理通道, 并且具备良好的扩展性能快速扩展更多代理方式
+- 更安全: 采用了更加现代的 X25519 搭配 ML‑KEM‑768 混合密钥实现抗量子攻击
+
+## 路线图
+
+- [ ] Team WARP
+- [ ] 更复杂的优化策略
+
+## 快速开始
+
+```bash
+go get github.com/skye-z/amz
 ```
 
-开始接入。
-
-## 当前状态
-
-截至 2026-03-25，当前 SDK 主线能力包括：
-
-- ✅ 自动注册 / 复用设备身份
-- ✅ 自动选点
-- ✅ 本地状态存储（设备 ID、token、证书、账号状态、最后一次节点、节点缓存）
-- ✅ HTTP Proxy Mode 主线已通过真实 `ipwho.is` 联调验证
-- ✅ HTTP + SOCKS5 真单端口复用
-- ✅ TUN 作为并行可选 runtime 接入
-
-## 推荐用法
+下面是一个同时启用 HTTP 和 SOCKS5 代理通道的例子
 
 ```go
 package main
 
 import (
 	"context"
+	"log"
 
 	"github.com/skye-z/amz"
 )
@@ -47,130 +67,30 @@ func main() {
 		SOCKS5: amz.SOCKS5Options{
 			Enabled: true,
 		},
-		TUN: amz.TUNOptions{
-			Enabled: false,
-		},
 	})
 	if err != nil {
-		panic(err)
-	}
-
-	if err := client.Start(context.Background()); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer client.Close()
+
+	if err := client.Start(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("proxy listening on %s", client.ListenAddress())
 }
 ```
 
-## 设计要点
-
-### 1. 根包是唯一主入口
-
-SDK v1 默认只推荐通过根包接入：
-
-- `NewClient`
-- `Start`
-- `Run`
-- `Close`
-- `Status`
-- `ListenAddress`
-
-### 2. HTTP 和 SOCKS5 真单端口复用
-
-如果同时启用：
-
-- `HTTP.Enabled = true`
-- `SOCKS5.Enabled = true`
-
-并设置：
-
-```go
-Listen: amz.ListenOptions{
-    Address: "127.0.0.1:9811",
-}
-```
-
-那么 SDK 只监听一个 TCP 端口，并按首包自动识别：
-
-- SOCKS5 握手
-- HTTP 代理请求
-
-### 3. 存储只保存状态，不保存接入配置
-
-`Storage.Path` 对应的状态文件仅保存：
-
-- 设备 ID
-- token
-- 证书
-- 账号状态
-- 最后一次选中的节点
-- 节点缓存
-
-不会替接入应用持久化：
-
-- 监听端口
-- HTTP / SOCKS5 / TUN 开关
-
-### 4. TUN 是并行可选能力
-
-TUN 不参与单端口复用，而是作为与代理并行的 runtime。
-
-## 真实链路验证
-
-当前仓库已确认：
-
-- 可以接入 WARP
-- 代理流量确实经过主线转发
-- `ipwho.is` 观测到出口 IP 变化
-
-这意味着当前 SDK 所依赖的核心传输主线不是“只在单元测试里成立”，而是经过真实联调验证。
-
-## API 概览
-
-```go
-type Options struct {
-    Storage StorageOptions
-    Listen  ListenOptions
-    HTTP    HTTPOptions
-    SOCKS5  SOCKS5Options
-    TUN     TUNOptions
-}
-```
-
-```go
-client, err := amz.NewClient(opts)
-err = client.Start(ctx)
-defer client.Close()
-```
-
-阻塞式便捷入口：
+如果你想用阻塞式, 可以直接调用 `Run()`：
 
 ```go
 client, err := amz.NewClient(opts)
 if err != nil {
-    panic(err)
+	panic(err)
 }
-panic(client.Run())
+defer client.Close()
+
+if err := client.Run(); err != nil {
+	panic(err)
+}
 ```
-
-## 适用场景
-
-- 想快速接入一个可用的本地 WARP 代理 SDK
-- 想同时提供 HTTP 和 SOCKS5 入口，但只暴露一个端口
-- 想自动完成设备注册 / 复用与选点
-- 想把现有 WARP 连接能力嵌入自己的程序
-
-## 暂不包含
-
-SDK v1 暂不聚焦：
-
-- Team WARP
-- Preferred / PreferredStrategy
-- 丰富的公开事件流 API
-- 应用侧配置持久化
-
-## 文档语言
-
-- [README.md](./README.md)
-- [README_zh.md](./README_zh.md)
-

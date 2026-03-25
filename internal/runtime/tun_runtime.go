@@ -3,14 +3,14 @@ package runtime
 import (
 	"context"
 
-	"github.com/skye-z/amz/types"
+	internalconfig "github.com/skye-z/amz/internal/config"
 )
 
 type TUNRuntime struct {
-	runtime types.Tunnel
+	runtime internalconfig.Tunnel
 }
 
-func NewTUNRuntime(runtime types.Tunnel) *TUNRuntime {
+func NewTUNRuntime(runtime internalconfig.Tunnel) *TUNRuntime {
 	if runtime == nil {
 		return nil
 	}
@@ -40,14 +40,14 @@ func (r *TUNRuntime) Stop(ctx context.Context) error {
 
 func (r *TUNRuntime) State() string {
 	if r == nil || r.runtime == nil {
-		return types.StateStopped
+		return internalconfig.StateStopped
 	}
 	return r.runtime.State()
 }
 
-func (r *TUNRuntime) Stats() types.Stats {
+func (r *TUNRuntime) Stats() internalconfig.Stats {
 	if r == nil || r.runtime == nil {
-		return types.Stats{}
+		return internalconfig.Stats{}
 	}
 	return r.runtime.Stats()
 }

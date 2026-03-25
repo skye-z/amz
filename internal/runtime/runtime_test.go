@@ -9,18 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/skye-z/amz/config"
+	"github.com/skye-z/amz/internal/config"
 	internalruntime "github.com/skye-z/amz/internal/runtime"
-	httpproxy "github.com/skye-z/amz/proxy/http"
-	socks5proxy "github.com/skye-z/amz/proxy/socks5"
-	amztun "github.com/skye-z/amz/tun"
-	"github.com/skye-z/amz/types"
+	"github.com/skye-z/amz/internal/session"
 )
 
 func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	t.Parallel()
 
-	httpManager, err := httpproxy.NewManager(config.KernelConfig{
+	httpManager, err := internalruntime.NewHTTPManager(config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
 		SNI:            config.DefaultSNI,
 		MTU:            config.DefaultMTU,
@@ -40,7 +37,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		}, nil
 	}))
 
-	socksManager, err := socks5proxy.NewManager(&config.KernelConfig{
+	socksManager, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
 		SNI:            config.DefaultSNI,
 		MTU:            config.DefaultMTU,
@@ -141,7 +138,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	t.Parallel()
 
-	httpManager, err := httpproxy.NewManager(config.KernelConfig{
+	httpManager, err := internalruntime.NewHTTPManager(config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
 		SNI:            config.DefaultSNI,
 		MTU:            config.DefaultMTU,
@@ -154,7 +151,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 		t.Fatalf("expected http manager creation success, got %v", err)
 	}
 
-	tunnel, err := amztun.NewRuntime(&config.KernelConfig{
+	tunnel, err := internalruntime.NewTunManager(&config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
 		SNI:            config.DefaultSNI,
 		MTU:            config.DefaultMTU,
@@ -184,14 +181,14 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	if !status.Running || !status.HTTPEnabled || !status.TUNEnabled {
 		t.Fatalf("expected running http+tun status, got %+v", status)
 	}
-	if tunnel.State() != types.StateRunning {
+	if tunnel.State() != config.StateRunning {
 		t.Fatalf("expected tun runtime running, got %q", tunnel.State())
 	}
 
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("expected runtime close success, got %v", err)
 	}
-	if tunnel.State() != types.StateStopped {
+	if tunnel.State() != config.StateStopped {
 		t.Fatalf("expected tun runtime stopped, got %q", tunnel.State())
 	}
 }
@@ -202,6 +199,141 @@ func TestNewClientRuntimeRejectsEmptyConfig(t *testing.T) {
 	_, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{})
 	if err == nil {
 		t.Fatal("expected configuration error when no runtime is configured")
+	}
+}
+
+func TestNewHTTPRuntimeFromConfig(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := internalruntime.NewHTTPRuntimeFromConfig(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected http runtime factory success, got %v", err)
+	}
+	if runtime == nil {
+		t.Fatal("expected non-nil http runtime")
+	}
+}
+
+func TestNewSOCKS5RuntimeFromBootstrap(t *testing.T) {
+	t.Parallel()
+
+	baseCfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+	}
+	connectionManager, err := session.NewConnectionManager(baseCfg)
+	if err != nil {
+		t.Fatalf("expected connection manager success, got %v", err)
+	}
+	connectIPManager, err := session.NewConnectIPSessionManager(baseCfg)
+	if err != nil {
+		t.Fatalf("expected connect-ip manager success, got %v", err)
+	}
+
+	runtime, err := internalruntime.NewSOCKS5RuntimeFromBootstrap(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	}, connectionManager, connectIPManager, &net.Dialer{Timeout: config.DefaultConnectTimeout})
+	if err != nil {
+		t.Fatalf("expected socks runtime factory success, got %v", err)
+	}
+	if runtime == nil {
+		t.Fatal("expected non-nil socks runtime")
+	}
+}
+
+func TestNewTUNRuntimeFromConfig(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := internalruntime.NewTUNRuntimeFromConfig(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeTUN,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		TUN:            config.TUNConfig{Name: "igara-test0"},
+	})
+	if err != nil {
+		t.Fatalf("expected tun runtime factory success, got %v", err)
+	}
+	if runtime == nil {
+		t.Fatal("expected non-nil tun runtime")
+	}
+}
+
+func TestNewHTTPRuntimeAcceptsInterfaceManager(t *testing.T) {
+	t.Parallel()
+
+	runtime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: "127.0.0.1:9811", state: config.StateIdle})
+	if runtime == nil {
+		t.Fatal("expected http runtime from interface manager")
+	}
+}
+
+func TestNewSOCKS5RuntimeAcceptsInterfaceManager(t *testing.T) {
+	t.Parallel()
+
+	runtime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: "127.0.0.1:1080", state: config.StateIdle})
+	if runtime == nil {
+		t.Fatal("expected socks5 runtime from interface manager")
+	}
+}
+
+func TestNewHTTPRuntimeFromBootstrapExposesReusableSnapshot(t *testing.T) {
+	t.Parallel()
+
+	baseCfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+	}
+	connectionManager, err := session.NewConnectionManager(baseCfg)
+	if err != nil {
+		t.Fatalf("expected connection manager success, got %v", err)
+	}
+	connectIPManager, err := session.NewConnectIPSessionManager(baseCfg)
+	if err != nil {
+		t.Fatalf("expected connect-ip manager success, got %v", err)
+	}
+
+	runtime, err := internalruntime.NewHTTPRuntimeFromBootstrap(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	}, connectionManager, connectIPManager, &net.Dialer{Timeout: config.DefaultConnectTimeout})
+	if err != nil {
+		t.Fatalf("expected http runtime factory success, got %v", err)
+	}
+	if runtime == nil {
+		t.Fatal("expected non-nil http runtime")
+	}
+	if runtime.ListenAddress() != "127.0.0.1:0" {
+		t.Fatalf("expected initial listen address from bootstrap runtime, got %q", runtime.ListenAddress())
 	}
 }
 
@@ -255,3 +387,29 @@ func readSOCKSReply(r io.Reader) ([]byte, error) {
 	}
 	return reply, nil
 }
+
+type stubHTTPStarter struct {
+	listenAddress string
+	state         string
+}
+
+func (s stubHTTPStarter) Start(context.Context) error                           { return nil }
+func (s stubHTTPStarter) StartWithListener(context.Context, net.Listener) error { return nil }
+func (s stubHTTPStarter) Stop(context.Context) error                            { return nil }
+func (s stubHTTPStarter) Close() error                                          { return nil }
+func (s stubHTTPStarter) State() string                                         { return s.state }
+func (s stubHTTPStarter) Stats() config.Stats                                   { return config.Stats{} }
+func (s stubHTTPStarter) ListenAddress() string                                 { return s.listenAddress }
+
+type stubSOCKSStarter struct {
+	listenAddress string
+	state         string
+}
+
+func (s stubSOCKSStarter) Start(context.Context) error                           { return nil }
+func (s stubSOCKSStarter) StartWithListener(context.Context, net.Listener) error { return nil }
+func (s stubSOCKSStarter) Stop(context.Context) error                            { return nil }
+func (s stubSOCKSStarter) Close() error                                          { return nil }
+func (s stubSOCKSStarter) State() string                                         { return s.state }
+func (s stubSOCKSStarter) Stats() config.Stats                                   { return config.Stats{} }
+func (s stubSOCKSStarter) ListenAddress() string                                 { return s.listenAddress }

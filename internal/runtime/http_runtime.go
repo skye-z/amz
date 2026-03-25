@@ -5,8 +5,7 @@ import (
 	"errors"
 	"net"
 
-	httpproxy "github.com/skye-z/amz/proxy/http"
-	"github.com/skye-z/amz/types"
+	internalconfig "github.com/skye-z/amz/internal/config"
 )
 
 type httpStarter interface {
@@ -15,7 +14,7 @@ type httpStarter interface {
 	Stop(context.Context) error
 	Close() error
 	State() string
-	Stats() types.Stats
+	Stats() internalconfig.Stats
 	ListenAddress() string
 }
 
@@ -24,7 +23,7 @@ type HTTPRuntime struct {
 	listener net.Listener
 }
 
-func NewHTTPRuntime(manager *httpproxy.Manager) *HTTPRuntime {
+func NewHTTPRuntime(manager httpStarter) *HTTPRuntime {
 	if manager == nil {
 		return nil
 	}
@@ -68,14 +67,14 @@ func (r *HTTPRuntime) ListenAddress() string {
 
 func (r *HTTPRuntime) State() string {
 	if r == nil || r.manager == nil {
-		return types.StateStopped
+		return internalconfig.StateStopped
 	}
 	return r.manager.State()
 }
 
-func (r *HTTPRuntime) Stats() types.Stats {
+func (r *HTTPRuntime) Stats() internalconfig.Stats {
 	if r == nil || r.manager == nil {
-		return types.Stats{}
+		return internalconfig.Stats{}
 	}
 	return r.manager.Stats()
 }

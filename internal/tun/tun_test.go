@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skye-z/amz/internal/config"
 	"github.com/skye-z/amz/internal/tun"
-	"github.com/skye-z/amz/types"
 )
 
 type fakePlatformProvider struct {
@@ -112,7 +112,7 @@ func TestAddressValidateTableDriven(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected validation error")
 				}
-				if !errors.Is(err, types.ErrInvalidConfig) {
+				if !errors.Is(err, config.ErrInvalidConfig) {
 					t.Fatalf("expected ErrInvalidConfig, got %v", err)
 				}
 				if !strings.Contains(err.Error(), tt.wantMessage) {
@@ -468,7 +468,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if providerErr == nil {
 		t.Fatal("expected provider placeholder error")
 	}
-	if !errors.Is(providerErr, types.ErrNotImplemented) {
+	if !errors.Is(providerErr, config.ErrNotImplemented) {
 		t.Fatalf("expected provider placeholder to wrap ErrNotImplemented, got %v", providerErr)
 	}
 	var typedErr *tun.PlaceholderError
@@ -484,7 +484,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if adapterErr == nil {
 		t.Fatal("expected adapter placeholder error")
 	}
-	if !errors.Is(adapterErr, types.ErrNotImplemented) {
+	if !errors.Is(adapterErr, config.ErrNotImplemented) {
 		t.Fatalf("expected adapter placeholder to wrap ErrNotImplemented, got %v", adapterErr)
 	}
 	if !errors.As(adapterErr, &typedErr) {
@@ -510,7 +510,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if assemblyErr == nil {
 		t.Fatal("expected assembly placeholder error")
 	}
-	if !errors.Is(assemblyErr, types.ErrNotImplemented) {
+	if !errors.Is(assemblyErr, config.ErrNotImplemented) {
 		t.Fatalf("expected assembly placeholder to wrap ErrNotImplemented, got %v", assemblyErr)
 	}
 	if !errors.As(assemblyErr, &typedErr) {
