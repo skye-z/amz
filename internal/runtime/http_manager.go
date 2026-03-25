@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/masque"
 	"github.com/skye-z/amz/internal/observe"
 )
 
@@ -301,7 +302,7 @@ func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "invalid target host", http.StatusBadRequest)
 		return
 	}
-	debug := masqueDebugEnabled() && r.Host == "ipwho.is:443"
+	debug := masque.ShouldDebugTarget(masqueDebugEnabled(), r.Host)
 	started := time.Now()
 	if debug {
 		h.manager.logf("masque debug: connect target=%s opening stream", r.Host)
@@ -369,7 +370,7 @@ func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), 
 		}
 		cw := &countingWriter{writer: dst, onWrite: onWrite}
 		n, err := io.Copy(cw, src)
-		if masqueDebugEnabled() && target == "ipwho.is:443" {
+		if masque.ShouldDebugTarget(masqueDebugEnabled(), target) {
 			first := &clientToUpstreamFirst
 			if label == "upstream -> client" {
 				first = &upstreamToClientFirst

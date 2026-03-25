@@ -1,6 +1,6 @@
 # AMZ - 第三方 Cloudflare WARP SDK
 
-[English](./README.md)
+[English](./README.md) [中文](./README_zh.md) [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 
 这是一个 Go SDK, 你可以用它来在你的应用里嵌入 Cloudflare WARP 代理
 
@@ -25,7 +25,7 @@
 
 社区中有不少基于 WireGuard 实现的 WARP 库, 为什么我要选择用 AMZ 呢?
 
-- 高性能: 在 Cloudflare 内部测试中, 使用 Quic L4 代理下载和上传速度翻倍, 延迟显著降低
+- 高性能: 在 Cloudflare 内部测试中, 使用 Quic L4 代理比 WireGuard 下载和上传速度翻倍, 延迟显著降低
 - 小体积: 在完整实现了 WARP 最新代理模型的情况下做到了 ~1.1M 的编译大小
 - 多通道: 内建了 HTTP、SOCKS5 和 TUN 代理通道, 并且具备良好的扩展性能快速扩展更多代理方式
 - 更安全: 采用了更加现代的 X25519 搭配 ML‑KEM‑768 混合密钥实现抗量子攻击

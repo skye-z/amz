@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/masque"
 )
 
 const (
@@ -338,7 +339,7 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 			m.removeStream(streamID)
 		},
 	}
-	if masqueDebugEnabled() && streamID == "ipwho.is:443" {
+	if masque.ShouldDebugTarget(masqueDebugEnabled(), streamID) {
 		if sc, ok := conn.(*http3StreamConn); ok {
 			sc.debug = &streamDebugState{tag: streamID}
 		}

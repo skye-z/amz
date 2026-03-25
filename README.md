@@ -1,6 +1,6 @@
 # AMZ - Third-Party Cloudflare WARP SDK
 
-[中文](./README.zh-CN.md)
+[English](./README.md) [中文](./README_zh.md) [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 
 This is a Go SDK that allows you to embed the Cloudflare WARP proxy directly into your application.
 
@@ -25,7 +25,7 @@ I use this for my network probe, which is deployed on an ultra-small VPS with 1 
 
 There are several WARP libraries based on WireGuard in the community—why choose AMZ?
 
-- High Performance: In internal Cloudflare tests, Quic L4 proxy doubles download/upload speeds and significantly reduces latency
+- High Performance: In internal Cloudflare tests, the QUIC L4 proxy achieves double the download and upload speeds compared to WireGuard, with significantly reduced latency.
 - Small Size: ~1.1MB compiled binary with full implementation of the latest WARP proxy model
 - Multi-Channel: Built-in HTTP, SOCKS5, and TUN proxy channels with excellent extensibility for adding more protocols
 - Enhanced Security: Modern hybrid key exchange using X25519 + ML-KEM-768 for quantum-resistant encryption
