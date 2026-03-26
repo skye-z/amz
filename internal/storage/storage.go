@@ -10,13 +10,15 @@ import (
 const CurrentVersion = "1"
 
 type State struct {
-	Version      string        `json:"version"`
-	DeviceID     string        `json:"device_id,omitempty"`
-	Token        string        `json:"token,omitempty"`
-	Certificate  Certificate   `json:"certificate,omitempty"`
-	Account      AccountStatus `json:"account,omitempty"`
-	SelectedNode string        `json:"selected_node,omitempty"`
-	NodeCache    []Node        `json:"node_cache,omitempty"`
+	Version      string             `json:"version"`
+	DeviceID     string             `json:"device_id,omitempty"`
+	Token        string             `json:"token,omitempty"`
+	Certificate  Certificate        `json:"certificate,omitempty"`
+	Account      AccountStatus      `json:"account,omitempty"`
+	Interface    InterfaceAddresses `json:"interface,omitempty"`
+	Services     Services           `json:"services,omitempty"`
+	SelectedNode string             `json:"selected_node,omitempty"`
+	NodeCache    []Node             `json:"node_cache,omitempty"`
 }
 
 type Certificate struct {
@@ -29,6 +31,15 @@ type Certificate struct {
 type AccountStatus struct {
 	State       string `json:"state,omitempty"`
 	AccountType string `json:"account_type,omitempty"`
+}
+
+type InterfaceAddresses struct {
+	V4 string `json:"v4,omitempty"`
+	V6 string `json:"v6,omitempty"`
+}
+
+type Services struct {
+	HTTPProxy string `json:"http_proxy,omitempty"`
 }
 
 type Node struct {

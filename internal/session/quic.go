@@ -14,6 +14,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 	"github.com/skye-z/amz/internal/config"
 )
 
@@ -93,6 +94,9 @@ type h3RequestStream interface {
 	SetWriteDeadline(time.Time) error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+	CancelRead(quic.StreamErrorCode)
 }
 
 type http3RequestConnAdapter struct{ conn *http3.ClientConn }
@@ -142,6 +146,18 @@ func (a *http3RequestStreamAdapter) SetWriteDeadline(t time.Time) error {
 func (a *http3RequestStreamAdapter) LocalAddr() net.Addr { return nil }
 
 func (a *http3RequestStreamAdapter) RemoteAddr() net.Addr { return nil }
+
+func (a *http3RequestStreamAdapter) SendDatagram(b []byte) error {
+	return a.stream.SendDatagram(b)
+}
+
+func (a *http3RequestStreamAdapter) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return a.stream.ReceiveDatagram(ctx)
+}
+
+func (a *http3RequestStreamAdapter) CancelRead(code quic.StreamErrorCode) {
+	a.stream.CancelRead(code)
+}
 
 type transportDialer interface {
 	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error)
@@ -202,8 +218,9 @@ func buildTLSConfig(opts QUICOptions) *tls.Config {
 
 func buildQUICConfig(opts QUICOptions) *quic.Config {
 	return &quic.Config{
-		EnableDatagrams: opts.EnableDatagrams,
-		MaxIdleTimeout:  30 * time.Second,
+		EnableDatagrams:  opts.EnableDatagrams,
+		MaxIdleTimeout:   30 * time.Second,
+		KeepAlivePeriod:  4 * time.Second,
 	}
 }
 
@@ -426,3 +443,5 @@ func (m *ConnectionManager) AddRxBytes(n int) {
 func (m *ConnectionManager) Stats() config.Stats {
 	return m.stats.Snapshot()
 }
+
+var contextIDZero = quicvarint.Append(nil, 0)

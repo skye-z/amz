@@ -71,6 +71,31 @@ func (d *CoreTunnelDialer) StreamManager() *ConnectStreamManager {
 	return d.streamMgr
 }
 
+// SessionInfo 返回当前核心 CONNECT-IP 会话快照，供上层用户态数据面复用。
+func (d *CoreTunnelDialer) SessionInfo() SessionInfo {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.session == nil {
+		return SessionInfo{}
+	}
+	snapshot := d.session.Snapshot()
+	return SessionInfo{
+		IPv4:   snapshot.IPv4,
+		IPv6:   snapshot.IPv6,
+		Routes: append([]string(nil), snapshot.Routes...),
+	}
+}
+
+// PacketEndpoint 返回当前核心 CONNECT-IP 会话的数据面端点。
+func (d *CoreTunnelDialer) PacketEndpoint() PacketRelayEndpoint {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.session == nil {
+		return nil
+	}
+	return d.session.PacketEndpoint()
+}
+
 // 在共享 dialer 拨号前建立并复用核心会话。
 func (d *CoreTunnelDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if err := d.ensureReady(ctx); err != nil {
@@ -95,11 +120,11 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 		d.streamMgr.SetReady()
 	}
 	d.session.BindHTTP3Conn(h3conn)
-	if d.connection.cfg.Mode != amzconfig.ModeTUN {
-		return nil
-	}
 	if err := d.session.Open(ctx); err != nil {
 		return fmt.Errorf("ensure connect-ip ready: %w", err)
+	}
+	if d.connection.cfg.Mode != amzconfig.ModeTUN {
+		return nil
 	}
 	if d.assembly == nil {
 		assembly, err := d.assemblyFactory(d.buildAssembleOptions())

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,16 +45,17 @@ type StreamInfo struct {
 }
 
 type ConnectStreamManager struct {
-	mu      sync.Mutex
-	state   string
-	options ConnectStreamOptions
-	quic    QUICOptions
-	h3      HTTP3Options
-	h3conn  h3ClientConn
-	stats   connectionStats
-	compat  *CloudflareCompatLayer
-	dialer  streamDialer
-	streams map[string]*activeStream
+	mu        sync.Mutex
+	state     string
+	options   ConnectStreamOptions
+	proxyMode bool
+	quic      QUICOptions
+	h3        HTTP3Options
+	h3conn    h3ClientConn
+	stats     connectionStats
+	compat    *CloudflareCompatLayer
+	dialer    streamDialer
+	streams   map[string]*activeStream
 }
 
 type activeStream struct {
@@ -114,7 +116,11 @@ func (d realStreamDialer) DialStream(ctx context.Context, h3conn h3ClientConn, q
 		Header: make(http.Header),
 		Host:   targetAddr,
 	}
-	req.Header.Set("X-Masque-Protocol", opts.Protocol)
+	if opts.Protocol != "" {
+		req.Proto = opts.Protocol
+		req.Header.Set("CF-Client-Version", defaultMASQUEClientVersion())
+		req.Header.Set("pq-enabled", "true")
+	}
 	req.Header.Set("User-Agent", "")
 
 	if err := rstr.SendRequestHeader(req); err != nil {
@@ -309,12 +315,13 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 	m.mu.Lock()
 	if m.state != StreamStateReady {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("connect stream manager not ready")
+		return nil, fmt.Errorf("connect stream manager not ready (state=%s)", m.state)
 	}
 	dialer := m.dialer
 	h3conn := m.h3conn
 	quicOpts := m.quic
 	h3Opts := m.h3
+	proxyMode := m.proxyMode
 	m.mu.Unlock()
 
 	if dialer == nil {
@@ -322,6 +329,9 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 	}
 
 	opts := BuildConnectStreamOptions(h3Opts, targetHost, targetPort)
+	if proxyMode {
+		opts.Protocol = ""
+	}
 	conn, rsp, latency, err := dialer.DialStream(ctx, h3conn, quicOpts, h3Opts, opts)
 	if err != nil {
 		if m.compat != nil {
@@ -376,6 +386,12 @@ func (m *ConnectStreamManager) SetReady() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.state = StreamStateReady
+}
+
+func (m *ConnectStreamManager) EnableProxyMode() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.proxyMode = true
 }
 
 func (m *ConnectStreamManager) StreamEndpoint(targetHost, targetPort string) StreamRelayEndpoint {
@@ -495,4 +511,11 @@ func parseConnectTarget(urlStr string) (host, port string, err error) {
 		port = "443"
 	}
 	return host, port, nil
+}
+
+func defaultMASQUEClientVersion() string {
+	if runtime.GOOS == "windows" {
+		return "w-2026.1.150.0"
+	}
+	return "m-2026.1.150.0"
 }

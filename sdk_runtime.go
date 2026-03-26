@@ -222,13 +222,25 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 		if err != nil {
 			return nil, err
 		}
+		connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
 		delegate := &net.Dialer{Timeout: baseCfg.ConnectTimeout}
+
+		// Create one shared BootstrapDialer and PacketStackDialer for both HTTP and SOCKS5
+		sharedDialer, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, delegate)
+		if err != nil {
+			return nil, err
+		}
+		sharedPacketDialer, err := amzsession.NewPacketStackDialer(sharedDialer)
+		if err != nil {
+			return nil, err
+		}
+		sharedDNSDialer := iruntime.NewExportedDNSResolvingDialer(sharedPacketDialer)
 
 		if m.opts.HTTP.Enabled {
 			httpCfg := baseCfg
 			httpCfg.Mode = amzconfig.ModeHTTP
 			httpCfg.HTTP.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewHTTPRuntimeFromBootstrap(httpCfg, connectionManager, connectIPManager, delegate)
+			runtime, err := iruntime.NewHTTPRuntimeFromSharedDialer(httpCfg, sharedDNSDialer)
 			if err != nil {
 				return nil, err
 			}
@@ -239,7 +251,7 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			socksCfg := baseCfg
 			socksCfg.Mode = amzconfig.ModeSOCKS
 			socksCfg.SOCKS.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewSOCKS5RuntimeFromBootstrap(&socksCfg, connectionManager, connectIPManager, delegate)
+			runtime, err := iruntime.NewSOCKS5RuntimeFromSharedDialer(&socksCfg, sharedDNSDialer)
 			if err != nil {
 				return nil, err
 			}
@@ -309,6 +321,8 @@ func baseKernelConfigFromState(state storage.State, endpoint, sni, mode, listen 
 	switch mode {
 	case amzconfig.ModeHTTP:
 		cfg.HTTP.ListenAddress = listen
+		// Free accounts don't support upstream proxy; use PacketStack direct dialer instead
+		// cfg.HTTP.UpstreamAddress = strings.TrimSpace(state.Services.HTTPProxy)
 	case amzconfig.ModeSOCKS:
 		cfg.SOCKS.ListenAddress = listen
 	case amzconfig.ModeTUN:
@@ -419,6 +433,19 @@ func dedupeStrings(items []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func sessionInfoFromState(state storage.State) amzsession.SessionInfo {
+	info := amzsession.SessionInfo{}
+	if strings.TrimSpace(state.Interface.V4) != "" {
+		info.IPv4 = strings.TrimSpace(state.Interface.V4) + "/32"
+		info.Routes = append(info.Routes, "0.0.0.0/0")
+	}
+	if strings.TrimSpace(state.Interface.V6) != "" {
+		info.IPv6 = strings.TrimSpace(state.Interface.V6) + "/128"
+		info.Routes = append(info.Routes, "::/0")
+	}
+	return info
 }
 
 type authEnsurer interface {

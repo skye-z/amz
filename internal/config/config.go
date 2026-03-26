@@ -179,7 +179,8 @@ type SOCKSConfig struct {
 
 // 描述 HTTP 模式的最小参数。
 type HTTPConfig struct {
-	ListenAddress string
+	ListenAddress   string
+	UpstreamAddress string
 }
 
 // 描述 QUIC 与 HTTP/3 连接管理的扩展预留参数。

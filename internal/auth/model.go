@@ -75,8 +75,33 @@ type ResponseAccount struct {
 }
 
 type ResponseConfig struct {
-	ClientID string         `json:"client_id"`
-	Peers    []ResponsePeer `json:"peers,omitempty"`
+	ClientID  string                  `json:"client_id"`
+	Peers     []ResponsePeer          `json:"peers,omitempty"`
+	Interface ResponseConfigInterface `json:"interface,omitempty"`
+	Services  ResponseConfigServices  `json:"services,omitempty"`
+}
+
+type ResponseConfigInterface struct {
+	Addresses storage.InterfaceAddresses `json:"addresses,omitempty"`
+}
+
+func (i *ResponseConfigInterface) UnmarshalJSON(data []byte) error {
+	type alias ResponseConfigInterface
+	var nested alias
+	if err := json.Unmarshal(data, &nested); err == nil && (nested.Addresses.V4 != "" || nested.Addresses.V6 != "") {
+		*i = ResponseConfigInterface(nested)
+		return nil
+	}
+	var flat storage.InterfaceAddresses
+	if err := json.Unmarshal(data, &flat); err == nil {
+		i.Addresses = flat
+		return nil
+	}
+	return nil
+}
+
+type ResponseConfigServices struct {
+	HTTPProxy string `json:"http_proxy,omitempty"`
 }
 
 type ResponsePeer struct {
@@ -193,6 +218,8 @@ func buildState(previous storage.State, privateKey, fallbackToken string, final 
 		ClientID:          strings.TrimSpace(final.Config.ClientID),
 	}
 	state.Account = summarizeAccountStatus(final, state.Token)
+	state.Interface = selectInterface(final.Config.Interface.Addresses, previous.Interface)
+	state.Services = selectServices(storage.Services{HTTPProxy: final.Config.Services.HTTPProxy}, previous.Services)
 	state.SelectedNode = previous.SelectedNode
 	state.NodeCache = cloneNodes(previous.NodeCache)
 
@@ -355,6 +382,27 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func selectInterface(values ...storage.InterfaceAddresses) storage.InterfaceAddresses {
+	for _, value := range values {
+		if strings.TrimSpace(value.V4) != "" || strings.TrimSpace(value.V6) != "" {
+			return storage.InterfaceAddresses{
+				V4: strings.TrimSpace(value.V4),
+				V6: strings.TrimSpace(value.V6),
+			}
+		}
+	}
+	return storage.InterfaceAddresses{}
+}
+
+func selectServices(values ...storage.Services) storage.Services {
+	for _, value := range values {
+		if strings.TrimSpace(value.HTTPProxy) != "" {
+			return storage.Services{HTTPProxy: strings.TrimSpace(value.HTTPProxy)}
+		}
+	}
+	return storage.Services{}
 }
 
 func generateInstallID() string {

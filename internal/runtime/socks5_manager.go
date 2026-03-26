@@ -69,6 +69,7 @@ type SOCKS5Manager struct {
 	udpRelay      UDPAssociateRelay
 	associations  map[string]*udpAssociation
 	streamManager SOCKS5ConnectStreamOpener
+	dialer        contextDialer
 }
 
 type udpAssociation struct {
@@ -136,6 +137,12 @@ func (m *SOCKS5Manager) SetStreamManager(mgr SOCKS5ConnectStreamOpener) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.streamManager = mgr
+}
+
+func (m *SOCKS5Manager) SetDialer(d contextDialer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dialer = d
 }
 
 func (m *SOCKS5Manager) Start(ctx context.Context) error { return m.start(ctx, nil) }
@@ -300,20 +307,39 @@ func (m *SOCKS5Manager) handleConnection(ctx context.Context, conn net.Conn) {
 func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, targetAddr string) error {
 	m.mu.Lock()
 	streamMgr := m.streamManager
+	dialer := m.dialer
 	m.mu.Unlock()
-	if streamMgr == nil {
+
+	var remoteConn net.Conn
+	var err error
+
+	if dialer != nil {
+		// Use direct packet-stack dialer (resolves hostname first)
+		host, port, parseErr := parseSOCKSTargetAddress(targetAddr)
+		if parseErr != nil {
+			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+			return parseErr
+		}
+		address := net.JoinHostPort(host, port)
+		remoteConn, err = dialer.DialContext(ctx, "tcp", address)
+		if err != nil {
+			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+			return err
+		}
+	} else if streamMgr != nil {
+		host, port, parseErr := parseSOCKSTargetAddress(targetAddr)
+		if parseErr != nil {
+			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+			return parseErr
+		}
+		remoteConn, err = streamMgr.OpenStream(ctx, host, port)
+		if err != nil {
+			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+			return err
+		}
+	} else {
 		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-		return fmt.Errorf("stream manager not configured")
-	}
-	host, port, err := parseSOCKSTargetAddress(targetAddr)
-	if err != nil {
-		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-		return err
-	}
-	remoteConn, err := streamMgr.OpenStream(ctx, host, port)
-	if err != nil {
-		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-		return err
+		return fmt.Errorf("no dialer or stream manager configured")
 	}
 	defer remoteConn.Close()
 	if err := writeSOCKSReply(clientConn, socksReplySucceeded, remoteConn.LocalAddr().String()); err != nil {

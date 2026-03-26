@@ -24,9 +24,37 @@ func NewHTTPRuntimeFromBootstrap(cfg config.KernelConfig, connectionManager *ses
 	if err != nil {
 		return nil, err
 	}
-	manager.SetHTTPDialer(dialer)
-	manager.SetStreamManager(dialer.StreamManager())
+	packetDialer, err := session.NewPacketStackDialer(dialer)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.HTTP.UpstreamAddress != "" {
+		manager.SetHTTPDialer(newUpstreamConnectDialer(packetDialer, cfg.HTTP.UpstreamAddress))
+		manager.SetHTTPRoundTripper(newUpstreamHTTPTransport(cfg.HTTP.UpstreamAddress, packetDialer))
+	} else {
+		manager.SetHTTPDialer(newDNSResolvingDialer(packetDialer))
+	}
 	return NewHTTPRuntime(manager), nil
+}
+
+// NewHTTPRuntimeFromSharedDialer wires an HTTP runtime using a pre-built shared dialer.
+func NewHTTPRuntimeFromSharedDialer(cfg config.KernelConfig, d contextDialer) (*HTTPRuntime, error) {
+	manager, err := NewHTTPManager(cfg)
+	if err != nil {
+		return nil, err
+	}
+	manager.SetHTTPDialer(d)
+	return NewHTTPRuntime(manager), nil
+}
+
+// NewSOCKS5RuntimeFromSharedDialer wires a SOCKS5 runtime using a pre-built shared dialer.
+func NewSOCKS5RuntimeFromSharedDialer(cfg *config.KernelConfig, d contextDialer) (*SOCKS5Runtime, error) {
+	manager, err := NewSOCKS5Manager(cfg)
+	if err != nil {
+		return nil, err
+	}
+	manager.SetDialer(d)
+	return NewSOCKS5Runtime(manager), nil
 }
 
 func NewSOCKS5RuntimeFromConfig(cfg *config.KernelConfig) (*SOCKS5Runtime, error) {
@@ -46,7 +74,11 @@ func NewSOCKS5RuntimeFromBootstrap(cfg *config.KernelConfig, connectionManager *
 	if err != nil {
 		return nil, err
 	}
-	manager.SetStreamManager(dialer.StreamManager())
+	packetDialer, err := session.NewPacketStackDialer(dialer)
+	if err != nil {
+		return nil, err
+	}
+	manager.SetDialer(newDNSResolvingDialer(packetDialer))
 	return NewSOCKS5Runtime(manager), nil
 }
 
