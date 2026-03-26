@@ -1,6 +1,8 @@
 # AMZ - 第三方 Cloudflare WARP SDK
 
-[English](./README.md) [中文](./README_zh.md) [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
+[English](./README.md)
+
+[![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 
 这是一个 Go SDK, 你可以用它来在你的应用里嵌入 Cloudflare WARP 代理
 
@@ -94,3 +96,15 @@ if err := client.Run(); err != nil {
 	panic(err)
 }
 ```
+
+### 建链流程
+1. 自动注册 WARP 设备
+2. 获取注册态中的：
+   - `interface.v4`
+   - `interface.v6`
+   - `services.http_proxy`
+3. 建立 QUIC / HTTP3 连接
+4. 建立 CONNECT-IP 会话
+5. 使用 PacketStack 数据面承载代理流量
+6. 提供本地 HTTP / SOCKS5 代理
+7. 通过代理请求 `https://ipwho.is/` 验证出口 IP 变化

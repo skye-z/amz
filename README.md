@@ -1,6 +1,8 @@
 # AMZ - Third-Party Cloudflare WARP SDK
 
-[English](./README.md) [中文](./README_zh.md) [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
+[English](./README.md)
+
+[![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 
 This is a Go SDK that allows you to embed the Cloudflare WARP proxy directly into your application.
 
