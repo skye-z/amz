@@ -4,7 +4,7 @@
 
 [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/skye-z/amz)](https://pkg.go.dev/github.com/skye-z/amz)
-[![Code Coverage](https://img.shields.io/codecov/c/github.com/skye-z/amz/master.svg?style=flat-square)](https://codecov.io/gh/skye-z/amz/)
+[![Code Coverage](https://codecov.io/github/skye-z/amz/graph/badge.svg?token=9BVL8QWS9S)](https://codecov.io/github/skye-z/amz)
 
 这是一个 Go SDK, 你可以用它来在你的应用里嵌入 Cloudflare WARP 代理
 
