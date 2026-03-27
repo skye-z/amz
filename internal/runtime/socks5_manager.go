@@ -598,6 +598,9 @@ func encodeSOCKSAddress(addr string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if portValue < 0 || portValue > 65535 {
+		return nil, fmt.Errorf("port out of range: %d", portValue)
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		if ipv4 := ip.To4(); ipv4 != nil {
 			out := make([]byte, 1+4+2)

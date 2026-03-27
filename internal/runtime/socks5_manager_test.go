@@ -102,3 +102,24 @@ func TestBuildAndParseSOCKSUDPDatagramRoundTrip(t *testing.T) {
 		t.Fatalf("expected payload %q, got %q", string(payload), string(gotPayload))
 	}
 }
+
+func TestEncodeSOCKSAddressRejectsOutOfRangePorts(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"1.2.3.4:-1",
+		"1.2.3.4:65536",
+		"example.com:70000",
+	}
+
+	for _, address := range tests {
+		address := address
+		t.Run(address, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := encodeSOCKSAddress(address); err == nil {
+				t.Fatalf("expected out-of-range port error for %q", address)
+			}
+		})
+	}
+}
