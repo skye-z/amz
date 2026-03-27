@@ -1,6 +1,6 @@
 # AMZ - Third-Party Cloudflare WARP SDK
 
-[English](./README.md)
+[English](./README_zh.md)
 
 [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 
