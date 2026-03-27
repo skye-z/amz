@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -44,8 +45,24 @@ func NewCloudflareCompatLayer(cfg config.KernelConfig) (*CloudflareCompatLayer, 
 	return &CloudflareCompatLayer{snapshot: CloudflareSnapshot{
 		Protocol: ProtocolCFConnectIP,
 		Endpoint: clone.Endpoint,
-		Quirks:   DefaultCloudflareQuirks(),
+		Quirks:   resolveCloudflareQuirks(clone.Endpoint),
 	}}, nil
+}
+
+func resolveCloudflareQuirks(endpoint string) CloudflareQuirks {
+	quirks := DefaultCloudflareQuirks()
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		host = strings.TrimSpace(endpoint)
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		quirks.UseCFConnectIP = false
+		return quirks
+	}
+	if strings.EqualFold(host, "localhost") {
+		quirks.UseCFConnectIP = false
+	}
+	return quirks
 }
 
 func (l *CloudflareCompatLayer) Snapshot() CloudflareSnapshot {

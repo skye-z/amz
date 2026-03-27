@@ -98,13 +98,17 @@ func (d *CoreTunnelDialer) PacketEndpoint() PacketRelayEndpoint {
 
 // 在共享 dialer 拨号前建立并复用核心会话。
 func (d *CoreTunnelDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	if err := d.ensureReady(ctx); err != nil {
+	ensure := d.ensureStreamReady
+	if d.connection != nil && d.connection.cfg.Mode == amzconfig.ModeTUN {
+		ensure = d.ensureReady
+	}
+	if err := ensure(ctx); err != nil {
 		return nil, err
 	}
 	return d.delegate.DialContext(ctx, network, address)
 }
 
-func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
+func (d *CoreTunnelDialer) ensureStreamReady(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -119,6 +123,20 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 		d.streamMgr.BindHTTP3Conn(h3conn)
 		d.streamMgr.SetReady()
 	}
+	if d.session != nil {
+		d.session.BindHTTP3Conn(h3conn)
+	}
+	return nil
+}
+
+func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
+	if err := d.ensureStreamReady(ctx); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	h3conn := d.connection.HTTP3Conn()
 	d.session.BindHTTP3Conn(h3conn)
 	if err := d.session.Open(ctx); err != nil {
 		return fmt.Errorf("ensure connect-ip ready: %w", err)

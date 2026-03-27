@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/internal/config"
 )
@@ -112,6 +113,16 @@ func (s *fakeRequestStream) RemoteAddr() net.Addr {
 	}
 	return stubAddr("remote")
 }
+
+func (s *fakeRequestStream) SendDatagram([]byte) error {
+	return nil
+}
+
+func (s *fakeRequestStream) ReceiveDatagram(context.Context) ([]byte, error) {
+	return nil, io.EOF
+}
+
+func (s *fakeRequestStream) CancelRead(quic.StreamErrorCode) {}
 
 type fakeRequestConn struct {
 	stream    h3RequestStream
@@ -390,17 +401,20 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if got := stream.request.Host; got != "example.com:443" {
 		t.Fatalf("expected request host %q, got %q", "example.com:443", got)
 	}
-	if got := stream.request.Header.Get("X-Masque-Protocol"); got != ProtocolConnectStream {
-		t.Fatalf("expected masque protocol header %q, got %q", ProtocolConnectStream, got)
+	if got := stream.request.Proto; got != ProtocolConnectStream {
+		t.Fatalf("expected connect protocol %q, got %q", ProtocolConnectStream, got)
+	}
+	if got := stream.request.Header.Get("CF-Client-Version"); got == "" {
+		t.Fatal("expected CF-Client-Version header for extended CONNECT")
+	}
+	if got := stream.request.Header.Get("pq-enabled"); got != "true" {
+		t.Fatalf("expected pq-enabled header %q, got %q", "true", got)
 	}
 	if values, ok := stream.request.Header["User-Agent"]; !ok || len(values) != 1 || values[0] != "" {
 		t.Fatalf("expected explicit empty user-agent to suppress quic-go default, got %#v", stream.request.Header["User-Agent"])
 	}
-	if stream.request.Proto != "" {
-		t.Fatalf("expected plain CONNECT request without extended protocol marker, got %q", stream.request.Proto)
-	}
 	if stream.request.ProtoMajor != 0 || stream.request.ProtoMinor != 0 {
-		t.Fatalf("expected plain CONNECT proto version unset, got %d.%d", stream.request.ProtoMajor, stream.request.ProtoMinor)
+		t.Fatalf("expected CONNECT proto version unset, got %d.%d", stream.request.ProtoMajor, stream.request.ProtoMinor)
 	}
 
 	buf := make([]byte, len("server-bytes"))

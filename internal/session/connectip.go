@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -105,10 +106,11 @@ func openCloudflareConnectIPStream(ctx context.Context, h3conn h3ClientConn, opt
 		Method: http.MethodConnect,
 		Proto:  opts.Protocol,
 		Host:   opts.Authority,
-		URL:    &url.URL{Scheme: "http", Host: opts.Authority, Path: "/"},
+		URL:    &url.URL{Scheme: "https", Host: opts.Authority, Path: "/connect-ip"},
 		Header: make(http.Header),
 	}
 	req.Header.Set("cf-client-version", defaultMASQUEClientVersion())
+	req.Header.Set("Capsule-Protocol", "?1")
 	req.Header.Set("pq-enabled", "true")
 
 	if err := rstr.SendRequestHeader(req); err != nil {
@@ -431,11 +433,26 @@ func parseIPAddressRange(r io.Reader) (cloudflareIPRoute, error) {
 }
 
 func BuildConnectIPOptions(h3 HTTP3Options) ConnectIPOptions {
+	authority := defaultCloudflareConnectIPAuthority
+	if isLocalConnectIPEndpoint(h3.Authority) {
+		authority = h3.Authority
+	}
 	return ConnectIPOptions{
-		Authority:       defaultCloudflareConnectIPAuthority,
+		Authority:       authority,
 		Protocol:        ProtocolConnectIP,
 		EnableDatagrams: h3.EnableDatagrams,
 	}
+}
+
+func isLocalConnectIPEndpoint(authority string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(authority))
+	if err != nil {
+		host = strings.TrimSpace(authority)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 func NewConnectIPSessionManager(cfg config.KernelConfig) (*ConnectIPSessionManager, error) {

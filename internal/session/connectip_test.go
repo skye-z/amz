@@ -32,8 +32,8 @@ func TestBuildConnectIPOptionsTableDriven(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			options := BuildConnectIPOptions(tt.h3)
-			if options.Authority != tt.h3.Authority {
-				t.Fatalf("expected authority %q, got %q", tt.h3.Authority, options.Authority)
+			if options.Authority != defaultCloudflareConnectIPAuthority {
+				t.Fatalf("expected authority %q, got %q", defaultCloudflareConnectIPAuthority, options.Authority)
 			}
 			if options.Protocol != ProtocolConnectIP {
 				t.Fatalf("expected protocol %q, got %q", ProtocolConnectIP, options.Protocol)
@@ -51,8 +51,8 @@ func TestBuildConnectIPOptions(t *testing.T) {
 		Authority:       config.DefaultEndpoint,
 		EnableDatagrams: true,
 	})
-	if options.Authority != config.DefaultEndpoint {
-		t.Fatalf("expected authority %q, got %q", config.DefaultEndpoint, options.Authority)
+	if options.Authority != defaultCloudflareConnectIPAuthority {
+		t.Fatalf("expected authority %q, got %q", defaultCloudflareConnectIPAuthority, options.Authority)
 	}
 	if options.Protocol != ProtocolConnectIP {
 		t.Fatalf("expected protocol %q, got %q", ProtocolConnectIP, options.Protocol)
