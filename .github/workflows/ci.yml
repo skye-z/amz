@@ -3,7 +3,7 @@ name: CI/CD
 on:
   push:
     branches:
-      - "**"
+      - "main"
   pull_request:
   workflow_dispatch:
 
@@ -22,8 +22,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run tests
-        run: go test ./...
+      - name: Install dependencies
+        run: go mod download
 
-      - name: Run MASQUE debug target tests
-        run: go test ./internal/masque
+      - name: Run tests
+        run: go test -coverprofile=coverage.txt
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

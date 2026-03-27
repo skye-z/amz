@@ -3,6 +3,8 @@
 [中文](./README_zh.md)
 
 [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/skye-z/amz)](https://pkg.go.dev/github.com/skye-z/amz)
+[![Code Coverage](https://img.shields.io/codecov/c/github.com/skye-z/amz/master.svg?style=flat-square)](https://codecov.io/gh/skye-z/amz/)
 
 This is a Go SDK that allows you to embed the Cloudflare WARP proxy directly into your application.
 

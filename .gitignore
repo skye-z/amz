@@ -18,3 +18,4 @@ coverage.out
 # Editor settings
 .idea/
 .vscode/
+coverage.txt
