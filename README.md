@@ -11,7 +11,7 @@ You only need to integrate it via `amz.NewClient(...)`; the SDK will automatical
 ## Features
 
 - Post-quantum encryption with X25519MLKEM768
-- HTTP, SOCKS5, and TUN proxies
+- HTTP, SOCKS5 proxies
 - L4 transport layer proxy
 - Proxy port reuse
 - Automatic registration
@@ -29,11 +29,12 @@ There are several WARP libraries based on WireGuard in the community—why choos
 
 - High Performance: In internal Cloudflare tests, the QUIC L4 proxy achieves double the download and upload speeds compared to WireGuard, with significantly reduced latency.
 - Small Size: ~1.1MB compiled binary with full implementation of the latest WARP proxy model
-- Multi-Channel: Built-in HTTP, SOCKS5, and TUN proxy channels with excellent extensibility for adding more protocols
+- Multi-Channel: Built-in HTTP, SOCKS5 proxy channels with excellent extensibility for adding more protocols
 - Enhanced Security: Modern hybrid key exchange using X25519 + ML-KEM-768 for quantum-resistant encryption
 
 ## Roadmap
 
+- [ ] TUN
 - [ ] Team WARP
 - [ ] Advanced optimization strategies
 

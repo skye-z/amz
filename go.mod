@@ -2,7 +2,10 @@ module github.com/skye-z/amz
 
 go 1.24.0
 
-require github.com/quic-go/quic-go v0.59.0
+require (
+	github.com/quic-go/quic-go v0.59.0
+	github.com/sagernet/gvisor v0.0.0-20241123041152-536d05261cff
+)
 
 require (
 	github.com/dunglas/httpsfv v1.0.2 // indirect
@@ -15,7 +18,6 @@ require (
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/sagernet/fswatch v0.1.1 // indirect
-	github.com/sagernet/gvisor v0.0.0-20241123041152-536d05261cff // indirect
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a // indirect
 	github.com/sagernet/nftables v0.3.0-beta.4 // indirect
 	github.com/sagernet/sing v0.7.6 // indirect
