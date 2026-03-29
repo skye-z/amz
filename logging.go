@@ -100,10 +100,24 @@ func describeEvent(component, event string) (action string, message string) {
 		return "REGISTER", "failed to prepare registration state"
 	case "managed_runtime:endpoint.select.begin":
 		return "SELECT", "selecting endpoint"
+	case "managed_runtime:endpoint.plan.ready":
+		return "SELECT", "prepared candidate plan"
 	case "managed_runtime:endpoint.select.success":
 		return "SELECT", "selected endpoint"
 	case "managed_runtime:endpoint.select.failed":
 		return "SELECT", "failed to select endpoint"
+	case "managed_runtime:endpoint.probe.begin":
+		return "SELECT", "probing candidate"
+	case "managed_runtime:endpoint.probe.success":
+		return "SELECT", "probe finished"
+	case "managed_runtime:endpoint.probe.failed":
+		return "SELECT", "probe failed"
+	case "managed_runtime:endpoint.warp_check.begin":
+		return "SELECT", "checking warp availability"
+	case "managed_runtime:endpoint.warp_check.success":
+		return "SELECT", "warp availability confirmed"
+	case "managed_runtime:endpoint.warp_check.failed":
+		return "SELECT", "warp availability failed"
 	case "managed_runtime:state.save.begin":
 		return "STATE", "saving runtime state"
 	case "managed_runtime:state.save.success":

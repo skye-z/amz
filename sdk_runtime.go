@@ -345,17 +345,20 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 		return candidate, state.NodeCache, nil
 	}
 
-	input := discovery.Input{
-		Registration: registrationFromState(state),
-		Cache:        cacheFromState(state),
-		Scan: discovery.Scan{
-			Source: "auto",
-			Range4: []string{"162.159.192.0/24"},
-			Range6: []string{"2606:4700:103::/64"},
-		},
-	}
+	ipv6Supported := detectIPv6Support()
+	input := buildDiscoveryInput(state, ipv6Supported)
 
-	prober := discovery.NewRealProber(10*time.Second, discovery.WithWarpStatusChecker(discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
+	preferredCandidates, fallbackCandidates := discovery.BuildVerificationCandidates(input, 443, 4)
+	preferredCandidates = filterCandidatesByIPv6Support(preferredCandidates, ipv6Supported)
+	fallbackCandidates = filterCandidatesByIPv6Support(fallbackCandidates, ipv6Supported)
+	logEvent(m.opts.Logger, "managed_runtime", "endpoint.plan.ready",
+		field("preferred_count", len(preferredCandidates)),
+		field("fallback_count", len(fallbackCandidates)),
+		field("total_count", len(mergeUniqueCandidates(preferredCandidates, fallbackCandidates))),
+		field("ipv6_supported", ipv6Supported),
+	)
+
+	checker := discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
 		kernelCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address, withAction(m.opts.Logger, "SELECT"))
 		connectionManager, err := amzsession.NewConnectionManager(kernelCfg)
 		if err != nil {
@@ -366,9 +369,15 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 			return false, err
 		}
 		return connectionManager.Snapshot().State == amzsession.ConnStateReady, nil
-	})))
+	})
+	prober := discovery.NewRealProber(time.Second,
+		discovery.WithWarpStatusChecker(checker),
+		discovery.WithProbeObserver(newLoggingProbeObserver(m.opts.Logger)),
+		discovery.WithProbeConcurrency(30),
+		discovery.WithProbeBatchTimeout(3*time.Second),
+	)
 
-	result := discovery.Select(input, prober, 443, 4)
+	result := discovery.BatchProbe(prober, mergeUniqueCandidates(preferredCandidates, fallbackCandidates))
 	if !result.OK {
 		return discovery.Candidate{}, state.NodeCache, fmt.Errorf("no available warp candidate")
 	}
