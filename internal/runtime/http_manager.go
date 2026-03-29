@@ -231,8 +231,19 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	dialer := h.manager.currentHTTPDialer()
 	streamMgr := h.manager.currentStreamManager()
 	if streamMgr != nil {
-		h.handleConnectViaStream(w, r, streamMgr)
-		return
+		host, port, err := parseHTTPConnectTarget(r.Host)
+		if err != nil {
+			h.manager.logf("http proxy parse target failed: target=%s err=%v", r.Host, err)
+			http.Error(w, "invalid target host", http.StatusBadRequest)
+			return
+		}
+		started := time.Now()
+		upstream, err := streamMgr.OpenStream(r.Context(), host, port)
+		if err == nil {
+			h.relayHTTPConnect(w, r, upstream, started, masque.ShouldDebugTarget(masqueDebugEnabled(), r.Host))
+			return
+		}
+		h.manager.logf("http proxy connect stream failed: target=%s err=%v; fallback=dialer", r.Host, err)
 	}
 	if dialer == nil {
 		h.manager.logf("http proxy connect dialer unavailable: target=%s", r.Host)
@@ -246,53 +257,7 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "connect upstream failed", http.StatusBadGateway)
 		return
 	}
-	defer upstream.Close()
-	latency := time.Since(started)
-	if latency <= 0 {
-		latency = time.Nanosecond
-	}
-	h.manager.RecordHandshakeLatency(latency)
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		h.manager.logf("http proxy hijack unsupported: target=%s", r.Host)
-		http.Error(w, "proxy hijack unsupported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, rw, err := hijacker.Hijack()
-	if err != nil {
-		h.manager.logf("http proxy hijack failed: target=%s err=%v", r.Host, err)
-		http.Error(w, "proxy hijack failed", http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-	if _, err := rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return
-	}
-	if err := rw.Flush(); err != nil {
-		return
-	}
-	if buffered := rw.Reader.Buffered(); buffered > 0 {
-		peek, err := rw.Reader.Peek(buffered)
-		if err == nil && len(peek) > 0 {
-			written, writeErr := upstream.Write(peek)
-			h.manager.AddTxBytes(written)
-			if writeErr != nil {
-				return
-			}
-			_, _ = rw.Reader.Discard(buffered)
-		}
-	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: upstream, onWrite: h.manager.AddTxBytes}, clientConn)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&countingWriter{writer: clientConn, onWrite: h.manager.AddRxBytes}, upstream)
-	}()
-	wg.Wait()
+	h.relayHTTPConnect(w, r, upstream, started, false)
 }
 
 func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Request, streamMgr HTTPConnectStreamOpener) {
@@ -313,6 +278,10 @@ func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "connect stream failed", http.StatusBadGateway)
 		return
 	}
+	h.relayHTTPConnect(w, r, upstream, started, debug)
+}
+
+func (h *httpHandler) relayHTTPConnect(w http.ResponseWriter, r *http.Request, upstream net.Conn, started time.Time, debug bool) {
 	defer upstream.Close()
 	latency := time.Since(started)
 	if latency <= 0 {
