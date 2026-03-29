@@ -101,5 +101,5 @@ func NewTUNRuntimeFromBootstrap(cfg *config.KernelConfig, connectionManager *ses
 	if err != nil {
 		return nil, err
 	}
-	return NewTUNRuntime(manager), nil
+	return NewTUNRuntimeWithHealth(manager, bootstrap.HealthCheck), nil
 }

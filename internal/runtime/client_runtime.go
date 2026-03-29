@@ -65,15 +65,17 @@ func (r *ClientRuntime) Start(ctx context.Context) error {
 		return nil
 	}
 	if r.http != nil && r.socks5 != nil {
-		mux, err := ListenMux(r.listen)
-		if err != nil {
-			r.mu.Unlock()
-			return err
+		if r.mux == nil {
+			mux, err := ListenMux(r.listen)
+			if err != nil {
+				r.mu.Unlock()
+				return err
+			}
+			r.mux = mux
 		}
-		r.mux = mux
-		r.listen = mux.ListenAddress()
-		r.http.SetListener(mux.HTTPListener())
-		r.socks5.SetListener(mux.SOCKS5Listener())
+		r.listen = r.mux.ListenAddress()
+		r.http.SetListener(r.mux.HTTPListener())
+		r.socks5.SetListener(r.mux.SOCKS5Listener())
 	}
 	httpRuntime := r.http
 	socksRuntime := r.socks5
@@ -121,6 +123,59 @@ func (r *ClientRuntime) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *ClientRuntime) ReuseProxyListenersFrom(prev *ClientRuntime) {
+	if r == nil || prev == nil {
+		return
+	}
+	prev.mu.Lock()
+	mux := prev.mux
+	listen := prev.listen
+	prev.mu.Unlock()
+
+	if mux == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mux = mux
+	r.listen = listen
+	if r.http != nil {
+		r.http.SetListener(mux.HTTPListener())
+	}
+	if r.socks5 != nil {
+		r.socks5.SetListener(mux.SOCKS5Listener())
+	}
+}
+
+func (r *ClientRuntime) ReleaseProxyListeners() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mux = nil
+}
+
+func (r *ClientRuntime) HotSwapProxyBackendsFrom(next *ClientRuntime) bool {
+	if r == nil || next == nil {
+		return false
+	}
+	if r.http == nil || r.socks5 == nil || next.http == nil || next.socks5 == nil {
+		return false
+	}
+	currentHTTP, okHTTPCurrent := r.http.manager.(*HTTPManager)
+	nextHTTP, okHTTPNext := next.http.manager.(*HTTPManager)
+	currentSOCKS, okSOCKSCurrent := r.socks5.manager.(*SOCKS5Manager)
+	nextSOCKS, okSOCKSNext := next.socks5.manager.(*SOCKS5Manager)
+	if !okHTTPCurrent || !okHTTPNext || !okSOCKSCurrent || !okSOCKSNext {
+		return false
+	}
+	currentHTTP.swapBackendFrom(nextHTTP)
+	currentSOCKS.swapBackendFrom(nextSOCKS)
+	return true
+}
+
 func (r *ClientRuntime) Run() error {
 	if err := r.Start(context.Background()); err != nil {
 		return err
@@ -145,6 +200,11 @@ func (r *ClientRuntime) Close() error {
 	r.mu.Unlock()
 
 	var errs []error
+	if mux != nil {
+		if err := mux.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if tunRuntime != nil {
 		if err := tunRuntime.Close(); err != nil {
 			errs = append(errs, err)
@@ -160,15 +220,20 @@ func (r *ClientRuntime) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	if mux != nil {
-		if err := mux.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	r.waitOnce.Do(func() {
 		close(r.waitCh)
 	})
 	return errors.Join(errs...)
+}
+
+func (r *ClientRuntime) HealthCheck(ctx context.Context) error {
+	r.mu.Lock()
+	tunRuntime := r.tun
+	r.mu.Unlock()
+	if tunRuntime != nil {
+		return tunRuntime.HealthCheck(ctx)
+	}
+	return nil
 }
 
 func (r *ClientRuntime) Status() Status {

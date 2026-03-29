@@ -8,8 +8,10 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	amzconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/packet"
 	internaltun "github.com/skye-z/amz/internal/tun"
 )
 
@@ -27,6 +29,9 @@ type CoreTunnelDialer struct {
 	provider        internaltun.PlatformProvider
 	adapter         internaltun.Adapter
 	packetRelay     func(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error
+	healthProbe     func(context.Context) error
+	healthStats     func() packet.Snapshot
+	failureReporter func(error)
 
 	assembly    *internaltun.Assembly
 	relayCancel context.CancelCauseFunc
@@ -59,6 +64,8 @@ func NewCoreTunnelDialer(connection *ConnectionManager, session *ConnectIPSessio
 		streamMgr:       streamMgr,
 		packetIO:        packetIO,
 		assemblyFactory: internaltun.Assemble,
+		healthProbe:     defaultTUNHealthProbe,
+		healthStats:     packetIO.Stats,
 	}, nil
 }
 
@@ -78,6 +85,12 @@ func (d *CoreTunnelDialer) StreamManager() *ConnectStreamManager {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.streamMgr
+}
+
+func (d *CoreTunnelDialer) SetFailureReporter(reporter func(error)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.failureReporter = reporter
 }
 
 // SessionInfo 返回当前核心 CONNECT-IP 会话快照，供上层用户态数据面复用。
@@ -122,10 +135,13 @@ func (d *CoreTunnelDialer) ensureStreamReady(ctx context.Context) error {
 	defer d.mu.Unlock()
 
 	if d.relayErr != nil {
+		d.reportFailure(d.relayErr)
 		return d.relayErr
 	}
 	if err := d.connection.Connect(ctx); err != nil {
-		return fmt.Errorf("ensure quic/http3 ready: %w", err)
+		err = fmt.Errorf("ensure quic/http3 ready: %w", err)
+		d.reportFailure(err)
+		return err
 	}
 	h3conn := d.connection.HTTP3Conn()
 	if d.streamMgr != nil {
@@ -148,7 +164,9 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 	h3conn := d.connection.HTTP3Conn()
 	d.session.BindHTTP3Conn(h3conn)
 	if err := d.session.Open(ctx); err != nil {
-		return fmt.Errorf("ensure connect-ip ready: %w", err)
+		err = fmt.Errorf("ensure connect-ip ready: %w", err)
+		d.reportFailure(err)
+		return err
 	}
 	if d.connection.cfg.Mode != amzconfig.ModeTUN {
 		return nil
@@ -180,6 +198,45 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 		}(d.assembly.Device, d.session.PacketEndpoint())
 	}
 	return nil
+}
+
+func (d *CoreTunnelDialer) HealthCheck(ctx context.Context) error {
+	if d == nil {
+		return nil
+	}
+	if d.connection != nil && d.session != nil {
+		if err := d.ensureReady(ctx); err != nil {
+			return err
+		}
+	}
+	if d.healthProbe == nil || d.healthStats == nil {
+		return nil
+	}
+
+	before := d.healthStats()
+	probeErr := d.healthProbe(ctx)
+	timeout := time.NewTimer(500 * time.Millisecond)
+	defer timeout.Stop()
+
+	for {
+		after := d.healthStats()
+		if after.TxPackets > before.TxPackets || after.RxPackets > before.RxPackets || after.TxBytes > before.TxBytes || after.RxBytes > before.RxBytes {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if probeErr != nil {
+				return fmt.Errorf("tun health check probe failed without relay traffic: %w", probeErr)
+			}
+			return fmt.Errorf("tun health check observed no relay traffic: %w", context.Cause(ctx))
+		case <-timeout.C:
+			if probeErr != nil {
+				return fmt.Errorf("tun health check probe failed without relay traffic: %w", probeErr)
+			}
+			return fmt.Errorf("tun health check observed no relay traffic")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 func (d *CoreTunnelDialer) buildAssembleOptions() internaltun.AssembleOptions {
@@ -252,6 +309,21 @@ func buildEndpointRoutes(endpoint string) []string {
 	return []string{netip.PrefixFrom(addr, 128).String()}
 }
 
+func defaultTUNHealthProbe(ctx context.Context) error {
+	targets := []string{"1.1.1.1:443", "8.8.8.8:443"}
+	var errs []error
+	for _, target := range targets {
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", target)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		_ = conn.Close()
+		return nil
+	}
+	return errors.Join(errs...)
+}
+
 // 关闭核心会话拨号器持有的核心资源。
 func (d *CoreTunnelDialer) Close() error {
 	d.mu.Lock()
@@ -288,4 +360,11 @@ func (d *CoreTunnelDialer) Close() error {
 		closeErr = err
 	}
 	return closeErr
+}
+
+func (d *CoreTunnelDialer) reportFailure(err error) {
+	if err == nil || d.failureReporter == nil {
+		return
+	}
+	go d.failureReporter(err)
 }

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/packet"
 	internaltun "github.com/skye-z/amz/internal/tun"
 )
 
@@ -270,5 +272,56 @@ func TestCoreTunnelDialerHTTPModeDoesNotRequireConnectIP(t *testing.T) {
 	}
 	if err := dialer.Close(); err != nil {
 		t.Fatalf("expected core dialer close success, got %v", err)
+	}
+}
+
+func TestCoreTunnelDialerHealthCheckRequiresPacketActivity(t *testing.T) {
+	t.Parallel()
+
+	var probeCalls atomic.Int32
+	dialer := &CoreTunnelDialer{
+		healthProbe: func(context.Context) error {
+			probeCalls.Add(1)
+			return nil
+		},
+		healthStats: func() packet.Snapshot {
+			return packet.Snapshot{}
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := dialer.HealthCheck(ctx)
+	if err == nil {
+		t.Fatal("expected tun health check failure without packet activity")
+	}
+	if probeCalls.Load() == 0 {
+		t.Fatal("expected health probe to be called")
+	}
+}
+
+func TestCoreTunnelDialerHealthCheckPassesWhenPacketActivityIncreases(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	dialer := &CoreTunnelDialer{
+		healthProbe: func(context.Context) error {
+			calls.Add(1)
+			return nil
+		},
+		healthStats: func() packet.Snapshot {
+			if calls.Load() == 0 {
+				return packet.Snapshot{}
+			}
+			return packet.Snapshot{TxPackets: 1, TxBytes: 64}
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := dialer.HealthCheck(ctx); err != nil {
+		t.Fatalf("expected tun health check success, got %v", err)
 	}
 }

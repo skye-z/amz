@@ -39,11 +39,13 @@ type HTTPManager struct {
 	stats         internalconfig.Stats
 	listen        string
 	listener      net.Listener
+	listenerOwned bool
 	server        *http.Server
 	runWG         sync.WaitGroup
 	dialer        HTTPStreamDialer
 	transport     http.RoundTripper
 	streamManager HTTPConnectStreamOpener
+	failureReport func(error)
 }
 
 type countingReadCloser struct {
@@ -128,6 +130,12 @@ func (m *HTTPManager) SetStreamManager(mgr HTTPConnectStreamOpener) {
 	m.streamManager = mgr
 }
 
+func (m *HTTPManager) SetFailureReporter(reporter func(error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failureReport = reporter
+}
+
 func (m *HTTPManager) SetHTTPRoundTripper(roundTripper http.RoundTripper) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,6 +176,7 @@ func (m *HTTPManager) start(ctx context.Context, provided net.Listener) error {
 	}
 	server := &http.Server{Handler: &httpHandler{manager: m}, BaseContext: func(net.Listener) context.Context { return context.Background() }}
 	m.listener = ln
+	m.listenerOwned = provided == nil
 	m.server = server
 	m.listen = ln.Addr().String()
 	m.state = internalconfig.StateRunning
@@ -197,9 +206,11 @@ func (m *HTTPManager) Stop(context.Context) error {
 	}
 	server := m.server
 	listener := m.listener
+	listenerOwned := m.listenerOwned
 	dialer := m.dialer
 	m.server = nil
 	m.listener = nil
+	m.listenerOwned = false
 	m.state = internalconfig.StateStopped
 	m.stats.StopCount++
 	m.logf("http proxy stop: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
@@ -207,7 +218,7 @@ func (m *HTTPManager) Stop(context.Context) error {
 	if server != nil {
 		_ = server.Close()
 	}
-	if listener != nil {
+	if listenerOwned && listener != nil {
 		_ = listener.Close()
 	}
 	if closer, ok := dialer.(interface{ Close() error }); ok {
@@ -244,6 +255,7 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.manager.logf("http proxy connect stream failed: target=%s err=%v; fallback=dialer", r.Host, err)
+		h.manager.reportFailure(err)
 	}
 	if dialer == nil {
 		h.manager.logf("http proxy connect dialer unavailable: target=%s", r.Host)
@@ -254,6 +266,7 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, err := dialer.DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
 		h.manager.logf("http proxy connect upstream failed: target=%s err=%v", r.Host, err)
+		h.manager.reportFailure(err)
 		http.Error(w, "connect upstream failed", http.StatusBadGateway)
 		return
 	}
@@ -437,6 +450,31 @@ func (m *HTTPManager) currentRoundTripper() http.RoundTripper {
 	return &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, address)
 	}}
+}
+
+func (m *HTTPManager) reportFailure(err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	reporter := m.failureReport
+	m.mu.Unlock()
+	if reporter != nil {
+		go reporter(err)
+	}
+}
+
+func (m *HTTPManager) swapBackendFrom(other *HTTPManager) {
+	if m == nil || other == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.Endpoint = other.cfg.Endpoint
+	m.dialer = other.dialer
+	m.transport = other.transport
+	m.streamManager = other.streamManager
+	m.failureReport = other.failureReport
 }
 
 func copyHeaders(dst, src http.Header) {

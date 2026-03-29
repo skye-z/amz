@@ -47,8 +47,9 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 			SOCKS5Enabled: true,
 		},
 	}
-	mr.selectFn = func(context.Context, storage.State) (discovery.Candidate, []storage.Node, error) {
-		return discovery.Candidate{Address: "162.159.198.2:443", Source: discovery.SourceFixed}, authState.NodeCache, nil
+	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
+		candidate := discovery.Candidate{Address: "162.159.198.2:443", Source: discovery.SourceFixed, Available: true, WarpEnabled: true}
+		return endpointSelection{Primary: candidate, Candidates: []discovery.Candidate{candidate}}, authState.NodeCache, nil
 	}
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		return runtime, nil

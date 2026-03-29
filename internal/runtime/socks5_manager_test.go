@@ -2,9 +2,15 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"io"
 	"net"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/skye-z/amz/internal/config"
 )
 
 func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
@@ -122,4 +128,121 @@ func TestEncodeSOCKSAddressRejectsOutOfRangePorts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSOCKS5ManagerStopClosesActiveTCPConnections(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("expected manager start success, got %v", err)
+	}
+
+	conn, err := net.Dial("tcp", manager.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected socks dial success, got %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
+		t.Fatalf("expected greeting write success, got %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("expected auth reply success, got %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Stop(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected stop success, got %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		_ = conn.Close()
+		err := <-done
+		if err != nil {
+			t.Fatalf("expected stop success after unblock, got %v", err)
+		}
+		t.Fatal("expected Stop to return promptly without waiting for client-side close")
+	}
+}
+
+func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	manager.SetDialer(&failingContextDialer{err: io.EOF})
+	var reported atomic.Bool
+	manager.SetFailureReporter(func(error) {
+		reported.Store(true)
+	})
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("expected manager start success, got %v", err)
+	}
+	defer manager.Close()
+
+	conn, err := net.Dial("tcp", manager.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected socks dial success, got %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
+		t.Fatalf("expected greeting write success, got %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("expected greeting read success, got %v", err)
+	}
+	connectRequest := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}, []byte("example.com")...)
+	connectRequest = append(connectRequest, 0x01, 0xbb)
+	if _, err := conn.Write(connectRequest); err != nil {
+		t.Fatalf("expected connect request write success, got %v", err)
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadAtLeast(conn, resp, 2); err != nil {
+		t.Fatalf("expected connect response, got %v", err)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) && !reported.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !reported.Load() {
+		t.Fatal("expected upstream dial failure to be reported")
+	}
+}
+
+type failingContextDialer struct {
+	err error
+}
+
+func (d *failingContextDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, d.err
 }

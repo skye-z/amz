@@ -99,6 +99,22 @@ func TestBatchProbe(t *testing.T) {
 	}
 }
 
+func TestAvailableCandidatesPreservesRankedAvailableOrder(t *testing.T) {
+	ranked := []discovery.Candidate{
+		{Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+		{Address: "down.example:443", Available: false, WarpEnabled: false, Reason: "timeout"},
+		{Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
+	}
+
+	available := discovery.AvailableCandidates(ranked)
+	if len(available) != 2 {
+		t.Fatalf("expected 2 available candidates, got %+v", available)
+	}
+	if available[0].Address != "fast.example:443" || available[1].Address != "slow.example:443" {
+		t.Fatalf("expected available candidates to preserve ranked order, got %+v", available)
+	}
+}
+
 func TestBuildVerificationCandidatesAddsObservedWarpProxyEndpoint(t *testing.T) {
 	preferred, _ := discovery.BuildVerificationCandidates(discovery.Input{
 		Registration: discovery.Registration{

@@ -63,13 +63,16 @@ type SOCKS5Manager struct {
 	stats         internalconfig.Stats
 	listen        string
 	listener      net.Listener
+	listenerOwned bool
 	udpPacketConn net.PacketConn
 	runCancel     context.CancelFunc
 	runWG         sync.WaitGroup
 	udpRelay      UDPAssociateRelay
 	associations  map[string]*udpAssociation
+	activeTCP     map[net.Conn]struct{}
 	streamManager SOCKS5ConnectStreamOpener
 	dialer        contextDialer
+	failureReport func(error)
 }
 
 type udpAssociation struct {
@@ -145,6 +148,12 @@ func (m *SOCKS5Manager) SetDialer(d contextDialer) {
 	m.dialer = d
 }
 
+func (m *SOCKS5Manager) SetFailureReporter(reporter func(error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failureReport = reporter
+}
+
 func (m *SOCKS5Manager) Start(ctx context.Context) error { return m.start(ctx, nil) }
 
 func (m *SOCKS5Manager) StartWithListener(ctx context.Context, listener net.Listener) error {
@@ -195,6 +204,7 @@ func (m *SOCKS5Manager) start(ctx context.Context, provided net.Listener) error 
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.listener = ln
+	m.listenerOwned = provided == nil
 	m.udpPacketConn = packetConn
 	m.listen = actualListen
 	m.runCancel = cancel
@@ -202,6 +212,9 @@ func (m *SOCKS5Manager) start(ctx context.Context, provided net.Listener) error 
 	m.stats.StartCount++
 	if m.associations == nil {
 		m.associations = make(map[string]*udpAssociation)
+	}
+	if m.activeTCP == nil {
+		m.activeTCP = make(map[net.Conn]struct{})
 	}
 	m.logf("socks manager start: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
 	m.runWG.Add(1)
@@ -221,16 +234,23 @@ func (m *SOCKS5Manager) Stop(context.Context) error {
 		return nil
 	}
 	listener := m.listener
+	listenerOwned := m.listenerOwned
 	packetConn := m.udpPacketConn
 	cancel := m.runCancel
 	associations := make([]*udpAssociation, 0, len(m.associations))
 	for _, assoc := range m.associations {
 		associations = append(associations, assoc)
 	}
+	activeTCP := make([]net.Conn, 0, len(m.activeTCP))
+	for conn := range m.activeTCP {
+		activeTCP = append(activeTCP, conn)
+	}
 	m.listener = nil
+	m.listenerOwned = false
 	m.udpPacketConn = nil
 	m.runCancel = nil
 	m.associations = nil
+	m.activeTCP = nil
 	m.state = internalconfig.StateStopped
 	m.stats.StopCount++
 	m.logf("socks manager stop: listen=%s endpoint=%s", m.listen, m.cfg.Endpoint)
@@ -238,7 +258,7 @@ func (m *SOCKS5Manager) Stop(context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
-	if listener != nil {
+	if listenerOwned && listener != nil {
 		_ = listener.Close()
 	}
 	if packetConn != nil {
@@ -247,6 +267,11 @@ func (m *SOCKS5Manager) Stop(context.Context) error {
 	for _, assoc := range associations {
 		if assoc != nil && assoc.conn != nil {
 			_ = assoc.conn.Close()
+		}
+	}
+	for _, conn := range activeTCP {
+		if conn != nil {
+			_ = conn.Close()
 		}
 	}
 	m.runWG.Wait()
@@ -269,6 +294,7 @@ func (m *SOCKS5Manager) acceptLoop(ctx context.Context) {
 			}
 			continue
 		}
+		m.trackActiveTCPConn(conn)
 		m.runWG.Add(1)
 		go func() { defer m.runWG.Done(); m.handleConnection(ctx, conn) }()
 	}
@@ -276,6 +302,7 @@ func (m *SOCKS5Manager) acceptLoop(ctx context.Context) {
 
 func (m *SOCKS5Manager) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	defer m.untrackActiveTCPConn(conn)
 	started := time.Now()
 	if err := m.negotiate(conn); err != nil {
 		return
@@ -323,6 +350,7 @@ func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, 
 		address := net.JoinHostPort(host, port)
 		remoteConn, err = dialer.DialContext(ctx, "tcp", address)
 		if err != nil {
+			m.reportFailure(err)
 			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
 			return err
 		}
@@ -334,6 +362,7 @@ func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, 
 		}
 		remoteConn, err = streamMgr.OpenStream(ctx, host, port)
 		if err != nil {
+			m.reportFailure(err)
 			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
 			return err
 		}
@@ -427,6 +456,55 @@ func (m *SOCKS5Manager) handleUserPassAuth(conn net.Conn) error {
 	}
 	_, err := conn.Write([]byte{socksAuthVersion, 0x00})
 	return err
+}
+
+func (m *SOCKS5Manager) reportFailure(err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	reporter := m.failureReport
+	m.mu.Unlock()
+	if reporter != nil {
+		go reporter(err)
+	}
+}
+
+func (m *SOCKS5Manager) swapBackendFrom(other *SOCKS5Manager) {
+	if m == nil || other == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.Endpoint = other.cfg.Endpoint
+	m.udpRelay = other.udpRelay
+	m.streamManager = other.streamManager
+	m.dialer = other.dialer
+	m.failureReport = other.failureReport
+}
+
+func (m *SOCKS5Manager) trackActiveTCPConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeTCP == nil {
+		m.activeTCP = make(map[net.Conn]struct{})
+	}
+	m.activeTCP[conn] = struct{}{}
+}
+
+func (m *SOCKS5Manager) untrackActiveTCPConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeTCP == nil {
+		return
+	}
+	delete(m.activeTCP, conn)
 }
 
 func (m *SOCKS5Manager) handleUDPAssociate(ctx context.Context, conn net.Conn) error {

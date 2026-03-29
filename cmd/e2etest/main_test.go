@@ -21,3 +21,43 @@ func TestBuildClientOptionsInjectsLoggerAndEndpoint(t *testing.T) {
 		t.Fatalf("expected http and socks5 to be enabled, got %+v", opts)
 	}
 }
+
+func TestBuildClientOptionsCanEnableTUNOnly(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newAMZLogger(&buf)
+
+	opts := buildClientOptionsForModes("127.0.0.1:19811", "./state.json", "", logger, false, false, true)
+
+	if !opts.TUN.Enabled {
+		t.Fatal("expected tun to be enabled")
+	}
+	if opts.HTTP.Enabled || opts.SOCKS5.Enabled {
+		t.Fatalf("expected http/socks5 to be disabled, got %+v", opts)
+	}
+}
+
+func TestShouldRunModeFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		skipHTTP  bool
+		skipSOCKS bool
+		skipTUN   bool
+		http      bool
+		socks     bool
+		tun       bool
+	}{
+		{name: "run all", http: true, socks: true, tun: true},
+		{name: "skip tun", skipTUN: true, http: true, socks: true, tun: false},
+		{name: "skip http", skipHTTP: true, http: false, socks: true, tun: true},
+		{name: "skip socks", skipSOCKS: true, http: true, socks: false, tun: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			http, socks, tun := shouldRunModes(tt.skipHTTP, tt.skipSOCKS, tt.skipTUN)
+			if http != tt.http || socks != tt.socks || tun != tt.tun {
+				t.Fatalf("expected (%v,%v,%v), got (%v,%v,%v)", tt.http, tt.socks, tt.tun, http, socks, tun)
+			}
+		})
+	}
+}

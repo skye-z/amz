@@ -71,6 +71,18 @@ func PickBestCandidate(candidates []Candidate) (Candidate, bool) {
 	return Candidate{}, false
 }
 
+// AvailableCandidates returns the ranked available candidates while preserving order.
+func AvailableCandidates(ranked []Candidate) []Candidate {
+	available := make([]Candidate, 0, len(ranked))
+	for _, candidate := range ranked {
+		if !candidate.Available {
+			continue
+		}
+		available = append(available, candidate)
+	}
+	return available
+}
+
 // BuildVerificationCandidates 构建 SDK 内部使用的优先/回退候选列表。
 func BuildVerificationCandidates(input Input, port, limit int) ([]Candidate, []Candidate) {
 	if explicit := strings.TrimSpace(input.ExplicitEndpoint); explicit != "" {

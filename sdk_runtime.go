@@ -2,6 +2,7 @@ package amz
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -31,8 +32,17 @@ type managedRuntime struct {
 	status     Status
 	registered bool
 	endpoint   string
-	selectFn   func(context.Context, storage.State) (discovery.Candidate, []storage.Node, error)
+	selectFn   func(context.Context, storage.State) (endpointSelection, []storage.Node, error)
 	buildFn    func(string, storage.State) (sdkRuntime, error)
+	selection  endpointSelection
+	activeIdx  int
+	lastState  storage.State
+	switching  bool
+}
+
+type endpointSelection struct {
+	Primary    discovery.Candidate
+	Candidates []discovery.Candidate
 }
 
 type probeProfile struct {
@@ -184,7 +194,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		field("cache_nodes", len(state.NodeCache)),
 		field("fixed_endpoint", strings.TrimSpace(m.opts.Transport.Endpoint)),
 	)
-	candidate, cache, err := m.selectFn(ctx, state)
+	selection, cache, err := m.selectFn(ctx, state)
 	if err != nil {
 		logEvent(logger, "managed_runtime", "endpoint.select.failed",
 			field("error", err),
@@ -197,97 +207,151 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	if len(selection.Candidates) == 0 {
+		err := fmt.Errorf("no available endpoint candidates")
+		logEvent(logger, "managed_runtime", "endpoint.select.failed",
+			field("error", err),
+			field("cache_nodes", len(state.NodeCache)),
+			durationField("duration", time.Since(selectStarted)),
+		)
+		logEvent(logger, "managed_runtime", "start.failed",
+			field("error", err),
+			durationField("duration", time.Since(started)),
+		)
+		return err
+	}
 	logEvent(logger, "managed_runtime", "endpoint.select.success",
-		field("endpoint", candidate.Address),
-		field("source", candidate.Source),
+		field("endpoint", selection.Primary.Address),
+		field("source", selection.Primary.Source),
+		field("candidate_count", len(selection.Candidates)),
 		field("cache_nodes", len(cache)),
 		durationField("duration", time.Since(selectStarted)),
 	)
-	state.SelectedNode = candidate.Address
-	state.NodeCache = cache
-	saveStarted := time.Now()
-	logEvent(logger, "managed_runtime", "state.save.begin",
-		field("selected_node", state.SelectedNode),
-		field("cache_nodes", len(state.NodeCache)),
-	)
-	if saveErr := m.store.Save(state); saveErr != nil {
-		logEvent(logger, "managed_runtime", "state.save.failed",
-			field("selected_node", state.SelectedNode),
-			field("error", saveErr),
-			durationField("duration", time.Since(saveStarted)),
-		)
-		logEvent(logger, "managed_runtime", "start.failed",
-			field("error", saveErr),
-			durationField("duration", time.Since(started)),
-		)
-		return saveErr
-	}
-	logEvent(logger, "managed_runtime", "state.save.success",
-		field("selected_node", state.SelectedNode),
-		field("cache_nodes", len(state.NodeCache)),
-		durationField("duration", time.Since(saveStarted)),
-	)
+	var endpointErrors []error
+	for idx, candidate := range selection.Candidates {
+		if idx > 0 {
+			logEvent(logger, "managed_runtime", "endpoint.failover",
+				field("failed_endpoint", selection.Candidates[idx-1].Address),
+				field("next_endpoint", candidate.Address),
+				field("attempt", idx+1),
+				field("total", len(selection.Candidates)),
+			)
+		}
 
-	buildStarted := time.Now()
-	logEvent(logger, "managed_runtime", "runtime.build.begin",
-		field("endpoint", candidate.Address),
-		field("http_enabled", m.opts.HTTP.Enabled),
-		field("socks5_enabled", m.opts.SOCKS5.Enabled),
-		field("tun_enabled", m.opts.TUN.Enabled),
-	)
-	runtime, err := m.buildFn(candidate.Address, state)
-	if err != nil {
-		logEvent(logger, "managed_runtime", "runtime.build.failed",
+		buildStarted := time.Now()
+		logEvent(logger, "managed_runtime", "runtime.build.begin",
 			field("endpoint", candidate.Address),
-			field("error", err),
+			field("http_enabled", m.opts.HTTP.Enabled),
+			field("socks5_enabled", m.opts.SOCKS5.Enabled),
+			field("tun_enabled", m.opts.TUN.Enabled),
+		)
+		runtime, buildErr := m.buildFn(candidate.Address, state)
+		if buildErr != nil {
+			logEvent(logger, "managed_runtime", "runtime.build.failed",
+				field("endpoint", candidate.Address),
+				field("error", buildErr),
+				durationField("duration", time.Since(buildStarted)),
+			)
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s build failed: %w", candidate.Address, buildErr))
+			continue
+		}
+		logEvent(logger, "managed_runtime", "runtime.build.success",
+			field("endpoint", candidate.Address),
 			durationField("duration", time.Since(buildStarted)),
 		)
-		logEvent(logger, "managed_runtime", "start.failed",
-			field("error", err),
-			durationField("duration", time.Since(started)),
-		)
-		return err
-	}
-	logEvent(logger, "managed_runtime", "runtime.build.success",
-		field("endpoint", candidate.Address),
-		durationField("duration", time.Since(buildStarted)),
-	)
-	runtimeStartStarted := time.Now()
-	logEvent(logger, "managed_runtime", "runtime.start.begin",
-		field("endpoint", candidate.Address),
-	)
-	if err := runtime.Start(ctx); err != nil {
-		logEvent(logger, "managed_runtime", "runtime.start.failed",
+
+		runtimeStartStarted := time.Now()
+		logEvent(logger, "managed_runtime", "runtime.start.begin",
 			field("endpoint", candidate.Address),
-			field("error", err),
+		)
+		if startErr := runtime.Start(ctx); startErr != nil {
+			logEvent(logger, "managed_runtime", "runtime.start.failed",
+				field("endpoint", candidate.Address),
+				field("error", startErr),
+				durationField("duration", time.Since(runtimeStartStarted)),
+			)
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
+			if closeErr := runtime.Close(); closeErr != nil {
+				logEvent(logger, "managed_runtime", "runtime.close.failed",
+					field("endpoint", candidate.Address),
+					field("error", closeErr),
+				)
+			}
+			continue
+		}
+		logEvent(logger, "managed_runtime", "runtime.start.success",
+			field("endpoint", candidate.Address),
 			durationField("duration", time.Since(runtimeStartStarted)),
 		)
-		logEvent(logger, "managed_runtime", "start.failed",
-			field("error", err),
+		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
+			logEvent(logger, "managed_runtime", "runtime.health.failed",
+				field("endpoint", candidate.Address),
+				field("error", healthErr),
+			)
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
+			if closeErr := runtime.Close(); closeErr != nil {
+				logEvent(logger, "managed_runtime", "runtime.close.failed",
+					field("endpoint", candidate.Address),
+					field("error", closeErr),
+				)
+			}
+			continue
+		}
+
+		persistedState := state
+		persistedState.SelectedNode = candidate.Address
+		persistedState.NodeCache = cache
+		saveStarted := time.Now()
+		logEvent(logger, "managed_runtime", "state.save.begin",
+			field("selected_node", persistedState.SelectedNode),
+			field("cache_nodes", len(persistedState.NodeCache)),
+		)
+		if saveErr := m.store.Save(persistedState); saveErr != nil {
+			logEvent(logger, "managed_runtime", "state.save.failed",
+				field("selected_node", persistedState.SelectedNode),
+				field("error", saveErr),
+				durationField("duration", time.Since(saveStarted)),
+			)
+			_ = runtime.Close()
+			logEvent(logger, "managed_runtime", "start.failed",
+				field("error", saveErr),
+				durationField("duration", time.Since(started)),
+			)
+			return saveErr
+		}
+		logEvent(logger, "managed_runtime", "state.save.success",
+			field("selected_node", persistedState.SelectedNode),
+			field("cache_nodes", len(persistedState.NodeCache)),
+			durationField("duration", time.Since(saveStarted)),
+		)
+
+		m.mu.Lock()
+		m.runtime = runtime
+		m.registered = true
+		m.endpoint = candidate.Address
+		m.selection = selection
+		m.activeIdx = idx
+		m.lastState = persistedState
+		m.switching = false
+		m.refreshStatusLocked(runtime)
+		status := m.status
+		m.mu.Unlock()
+		logEvent(logger, "managed_runtime", "start.success",
+			field("endpoint", status.Endpoint),
+			field("listen_address", status.ListenAddress),
+			field("registered", status.Registered),
+			field("running", status.Running),
 			durationField("duration", time.Since(started)),
 		)
-		return err
+		return nil
 	}
-	logEvent(logger, "managed_runtime", "runtime.start.success",
-		field("endpoint", candidate.Address),
-		durationField("duration", time.Since(runtimeStartStarted)),
-	)
 
-	m.mu.Lock()
-	m.runtime = runtime
-	m.registered = true
-	m.endpoint = candidate.Address
-	m.refreshStatusLocked(runtime)
-	status := m.status
-	m.mu.Unlock()
-	logEvent(logger, "managed_runtime", "start.success",
-		field("endpoint", status.Endpoint),
-		field("listen_address", status.ListenAddress),
-		field("registered", status.Registered),
-		field("running", status.Running),
+	err = fmt.Errorf("all candidate endpoints failed: %w", errors.Join(endpointErrors...))
+	logEvent(logger, "managed_runtime", "start.failed",
+		field("error", err),
 		durationField("duration", time.Since(started)),
 	)
-	return nil
+	return err
 }
 
 func (m *managedRuntime) Run() error {
@@ -354,10 +418,207 @@ func (m *managedRuntime) Close() error {
 	return err
 }
 
+func (m *managedRuntime) runRuntimeHealthCheck(endpoint string, runtime sdkRuntime) error {
+	if runtime == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return runtime.HealthCheck(ctx)
+}
+
+func (m *managedRuntime) reportEndpointFailure(endpoint string, err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.switching || !m.status.Running || strings.TrimSpace(endpoint) == "" || endpoint != m.endpoint {
+		m.mu.Unlock()
+		return
+	}
+	if m.activeIdx+1 >= len(m.selection.Candidates) {
+		m.mu.Unlock()
+		return
+	}
+	selection := m.selection
+	state := m.lastState
+	runtime := m.runtime
+	logger := m.opts.Logger
+	m.switching = true
+	m.mu.Unlock()
+
+	logEvent(logger, "managed_runtime", "runtime.failover.begin",
+		field("endpoint", endpoint),
+		field("error", err),
+	)
+
+	go m.failoverRuntime(endpoint, err, selection, state, runtime)
+}
+
+func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error, selection endpointSelection, state storage.State, current sdkRuntime) {
+	logger := m.opts.Logger
+	if current != nil {
+		if err := current.Close(); err != nil {
+			logEvent(logger, "managed_runtime", "runtime.close.failed",
+				field("endpoint", failedEndpoint),
+				field("error", err),
+			)
+		}
+	}
+
+	var endpointErrors []error
+	for idx := m.nextCandidateIndex(selection, failedEndpoint); idx < len(selection.Candidates); idx++ {
+		candidate := selection.Candidates[idx]
+		logEvent(logger, "managed_runtime", "endpoint.failover",
+			field("failed_endpoint", failedEndpoint),
+			field("next_endpoint", candidate.Address),
+			field("attempt", idx+1),
+			field("total", len(selection.Candidates)),
+		)
+
+		runtime, err := m.buildFn(candidate.Address, state)
+		if err != nil {
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s build failed: %w", candidate.Address, err))
+			logEvent(logger, "managed_runtime", "runtime.build.failed",
+				field("endpoint", candidate.Address),
+				field("error", err),
+			)
+			continue
+		}
+		if m.tryHotSwapRuntime(current, runtime, candidate.Address, state, selection, idx, triggerErr) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		startErr := runtime.Start(ctx)
+		cancel()
+		if startErr != nil {
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
+			logEvent(logger, "managed_runtime", "runtime.start.failed",
+				field("endpoint", candidate.Address),
+				field("error", startErr),
+			)
+			_ = runtime.Close()
+			continue
+		}
+		if current != nil {
+			if err := current.Close(); err != nil {
+				logEvent(logger, "managed_runtime", "runtime.close.failed",
+					field("endpoint", failedEndpoint),
+					field("error", err),
+				)
+			}
+			current = nil
+		}
+		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
+			logEvent(logger, "managed_runtime", "runtime.health.failed",
+				field("endpoint", candidate.Address),
+				field("error", healthErr),
+			)
+			_ = runtime.Close()
+			continue
+		}
+
+		persistedState := state
+		persistedState.SelectedNode = candidate.Address
+		if saveErr := m.store.Save(persistedState); saveErr != nil {
+			logEvent(logger, "managed_runtime", "state.save.failed",
+				field("selected_node", persistedState.SelectedNode),
+				field("error", saveErr),
+			)
+			_ = runtime.Close()
+			endpointErrors = append(endpointErrors, fmt.Errorf("%s save failed: %w", candidate.Address, saveErr))
+			continue
+		}
+
+		m.mu.Lock()
+		m.runtime = runtime
+		m.endpoint = candidate.Address
+		m.selection = selection
+		m.activeIdx = idx
+		m.lastState = persistedState
+		m.switching = false
+		m.registered = true
+		m.refreshStatusLocked(runtime)
+		m.mu.Unlock()
+		logEvent(logger, "managed_runtime", "runtime.failover.success",
+			field("endpoint", candidate.Address),
+			field("trigger_error", triggerErr),
+		)
+		return
+	}
+
+	m.mu.Lock()
+	m.runtime = nil
+	m.status.Running = false
+	m.switching = false
+	m.mu.Unlock()
+	logEvent(logger, "managed_runtime", "runtime.failover.failed",
+		field("endpoint", failedEndpoint),
+		field("error", errors.Join(endpointErrors...)),
+	)
+}
+
+func (m *managedRuntime) nextCandidateIndex(selection endpointSelection, failedEndpoint string) int {
+	address := strings.TrimSpace(failedEndpoint)
+	for idx, candidate := range selection.Candidates {
+		if strings.TrimSpace(candidate.Address) == address {
+			return idx + 1
+		}
+	}
+	return 0
+}
+
+func (m *managedRuntime) tryHotSwapRuntime(current sdkRuntime, next sdkRuntime, endpoint string, state storage.State, selection endpointSelection, idx int, triggerErr error) bool {
+	currentAdapter, okCurrent := current.(*runtimeAdapter)
+	nextAdapter, okNext := next.(*runtimeAdapter)
+	if !okCurrent || !okNext || currentAdapter == nil || nextAdapter == nil || currentAdapter.runtime == nil || nextAdapter.runtime == nil {
+		return false
+	}
+	if !currentAdapter.runtime.HotSwapProxyBackendsFrom(nextAdapter.runtime) {
+		return false
+	}
+	persistedState := state
+	persistedState.SelectedNode = endpoint
+	if saveErr := m.store.Save(persistedState); saveErr != nil {
+		logEvent(m.opts.Logger, "managed_runtime", "state.save.failed",
+			field("selected_node", persistedState.SelectedNode),
+			field("error", saveErr),
+		)
+		return false
+	}
+	m.mu.Lock()
+	m.runtime = current
+	m.endpoint = endpoint
+	m.selection = selection
+	m.activeIdx = idx
+	m.lastState = persistedState
+	m.switching = false
+	m.registered = true
+	m.refreshStatusLocked(current)
+	m.mu.Unlock()
+	logEvent(m.opts.Logger, "managed_runtime", "runtime.failover.success",
+		field("endpoint", endpoint),
+		field("hot_swap", true),
+		field("trigger_error", triggerErr),
+	)
+	return true
+}
+
 func (m *managedRuntime) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.status
+}
+
+func (m *managedRuntime) HealthCheck(ctx context.Context) error {
+	m.mu.Lock()
+	runtime := m.runtime
+	m.mu.Unlock()
+	if runtime == nil {
+		return nil
+	}
+	return runtime.HealthCheck(ctx)
 }
 
 func (m *managedRuntime) ListenAddress() string {
@@ -412,7 +673,7 @@ func (m *managedRuntime) newCandidateChecker(state storage.State) discovery.Warp
 	})
 }
 
-func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State) (discovery.Candidate, []storage.Node, error) {
+func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State) (endpointSelection, []storage.Node, error) {
 	if endpoint := strings.TrimSpace(m.opts.Transport.Endpoint); endpoint != "" {
 		candidate := discovery.Candidate{
 			Address:     endpoint,
@@ -420,7 +681,7 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 			Available:   true,
 			WarpEnabled: true,
 		}
-		return candidate, state.NodeCache, nil
+		return newEndpointSelection(candidate, []discovery.Candidate{candidate}), state.NodeCache, nil
 	}
 
 	ipv6Supported := detectIPv6Support()
@@ -460,9 +721,9 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 
 	result := discovery.BatchProbe(prober, prepareCandidatesForProbe(mergeUniqueCandidates(preferredCandidates, fallbackCandidates)))
 	if !result.OK {
-		return discovery.Candidate{}, state.NodeCache, fmt.Errorf("no available warp candidate")
+		return endpointSelection{}, state.NodeCache, fmt.Errorf("no available warp candidate")
 	}
-	return result.Best, state.NodeCache, nil
+	return newEndpointSelection(result.Best, discovery.AvailableCandidates(result.Ranked)), state.NodeCache, nil
 }
 
 func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdkRuntime, error) {
@@ -488,6 +749,9 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 		if err != nil {
 			return nil, err
 		}
+		sharedDialer.SetFailureReporter(func(err error) {
+			m.reportEndpointFailure(endpoint, err)
+		})
 		sharedPacketDialer, err := amzsession.NewPacketStackDialer(sharedDialer)
 		if err != nil {
 			return nil, err
@@ -502,6 +766,9 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			if err != nil {
 				return nil, err
 			}
+			runtime.SetFailureReporter(func(err error) {
+				m.reportEndpointFailure(endpoint, err)
+			})
 			httpRT = runtime
 		}
 
@@ -513,6 +780,9 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			if err != nil {
 				return nil, err
 			}
+			runtime.SetFailureReporter(func(err error) {
+				m.reportEndpointFailure(endpoint, err)
+			})
 			socksRT = runtime
 		}
 	}
@@ -528,11 +798,18 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			return nil, err
 		}
 		connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
-		runtime, err := iruntime.NewTUNRuntimeFromBootstrap(&tunCfg, connectionManager, connectIPManager, &net.Dialer{Timeout: tunCfg.ConnectTimeout})
+		bootstrap, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, &net.Dialer{Timeout: tunCfg.ConnectTimeout})
 		if err != nil {
 			return nil, err
 		}
-		tunRT = runtime
+		bootstrap.SetFailureReporter(func(err error) {
+			m.reportEndpointFailure(endpoint, err)
+		})
+		manager, err := iruntime.NewBootstrapTUNManager(&tunCfg, bootstrap)
+		if err != nil {
+			return nil, err
+		}
+		tunRT = iruntime.NewTUNRuntimeWithHealth(manager, bootstrap.HealthCheck)
 	}
 
 	runtime, err := iruntime.NewClientRuntime(iruntime.ClientRuntimeOptions{
@@ -554,7 +831,13 @@ type runtimeAdapter struct {
 func (r *runtimeAdapter) Start(ctx context.Context) error { return r.runtime.Start(ctx) }
 func (r *runtimeAdapter) Run() error                      { return r.runtime.Run() }
 func (r *runtimeAdapter) Close() error                    { return r.runtime.Close() }
-func (r *runtimeAdapter) ListenAddress() string           { return r.runtime.ListenAddress() }
+func (r *runtimeAdapter) HealthCheck(ctx context.Context) error {
+	if r == nil || r.runtime == nil {
+		return nil
+	}
+	return r.runtime.HealthCheck(ctx)
+}
+func (r *runtimeAdapter) ListenAddress() string { return r.runtime.ListenAddress() }
 
 func (r *runtimeAdapter) Status() Status {
 	if r == nil || r.runtime == nil {
@@ -714,6 +997,32 @@ func sessionInfoFromState(state storage.State) amzsession.SessionInfo {
 		info.Routes = append(info.Routes, "::/0")
 	}
 	return info
+}
+
+func newEndpointSelection(primary discovery.Candidate, candidates []discovery.Candidate) endpointSelection {
+	ordered := make([]discovery.Candidate, 0, len(candidates)+1)
+	seen := make(map[string]bool, len(candidates)+1)
+	appendCandidate := func(candidate discovery.Candidate) {
+		address := strings.TrimSpace(candidate.Address)
+		if address == "" || seen[address] {
+			return
+		}
+		seen[address] = true
+		candidate.Address = address
+		ordered = append(ordered, candidate)
+	}
+
+	appendCandidate(primary)
+	for _, candidate := range candidates {
+		appendCandidate(candidate)
+	}
+	if strings.TrimSpace(primary.Address) == "" && len(ordered) > 0 {
+		primary = ordered[0]
+	}
+	return endpointSelection{
+		Primary:    primary,
+		Candidates: ordered,
+	}
 }
 
 type authEnsurer interface {

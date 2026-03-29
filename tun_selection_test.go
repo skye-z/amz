@@ -130,12 +130,18 @@ func TestSelectEndpointUsesTUNTimingProfile(t *testing.T) {
 		}
 	}
 
-	candidate, _, err := mr.selectEndpoint(context.Background(), state)
+	selection, _, err := mr.selectEndpoint(context.Background(), state)
 	if err != nil {
 		t.Fatalf("expected tun select success, got %v", err)
 	}
-	if candidate.Address == "" {
+	if selection.Primary.Address == "" {
 		t.Fatal("expected selected candidate")
+	}
+	if len(selection.Candidates) == 0 {
+		t.Fatal("expected ordered candidate list")
+	}
+	if selection.Candidates[0].Address != selection.Primary.Address {
+		t.Fatalf("expected primary candidate to lead ordered list, got primary=%q list=%+v", selection.Primary.Address, selection.Candidates)
 	}
 
 	output := logger.String()

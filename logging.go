@@ -108,6 +108,8 @@ func describeEvent(component, event string) (action string, message string) {
 		return "SELECT", "selected endpoint"
 	case "managed_runtime:endpoint.select.failed":
 		return "SELECT", "failed to select endpoint"
+	case "managed_runtime:endpoint.failover":
+		return "SELECT", "failing over to next endpoint"
 	case "managed_runtime:endpoint.probe.begin":
 		return "SELECT", "probing candidate"
 	case "managed_runtime:endpoint.probe.success":
@@ -138,6 +140,16 @@ func describeEvent(component, event string) (action string, message string) {
 		return "CONNECT", "runtime connected"
 	case "managed_runtime:runtime.start.failed":
 		return "CONNECT", "runtime connection failed"
+	case "managed_runtime:runtime.health.failed":
+		return "HEALTH", "runtime health check failed"
+	case "managed_runtime:runtime.close.failed":
+		return "CLOSE", "failed to close runtime"
+	case "managed_runtime:runtime.failover.begin":
+		return "FAILOVER", "starting runtime failover"
+	case "managed_runtime:runtime.failover.success":
+		return "FAILOVER", "runtime failover succeeded"
+	case "managed_runtime:runtime.failover.failed":
+		return "FAILOVER", "runtime failover failed"
 	case "managed_runtime:run.begin":
 		return "RUN", "running managed runtime"
 	case "managed_runtime:run.success":

@@ -78,3 +78,12 @@ func (r *HTTPRuntime) Stats() internalconfig.Stats {
 	}
 	return r.manager.Stats()
 }
+
+func (r *HTTPRuntime) SetFailureReporter(reporter func(error)) {
+	if r == nil {
+		return
+	}
+	if manager, ok := r.manager.(*HTTPManager); ok {
+		manager.SetFailureReporter(reporter)
+	}
+}

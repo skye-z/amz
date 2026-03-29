@@ -78,3 +78,12 @@ func (r *SOCKS5Runtime) Stats() internalconfig.Stats {
 	}
 	return r.manager.Stats()
 }
+
+func (r *SOCKS5Runtime) SetFailureReporter(reporter func(error)) {
+	if r == nil {
+		return
+	}
+	if manager, ok := r.manager.(*SOCKS5Manager); ok {
+		manager.SetFailureReporter(reporter)
+	}
+}

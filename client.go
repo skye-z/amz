@@ -9,6 +9,7 @@ type sdkRuntime interface {
 	Start(context.Context) error
 	Run() error
 	Close() error
+	HealthCheck(context.Context) error
 	Status() Status
 	ListenAddress() string
 }
@@ -144,5 +145,8 @@ type noopRuntime struct {
 func (n *noopRuntime) Start(context.Context) error { return nil }
 func (n *noopRuntime) Run() error                  { return nil }
 func (n *noopRuntime) Close() error                { return nil }
-func (n *noopRuntime) Status() Status              { return n.status }
-func (n *noopRuntime) ListenAddress() string       { return n.status.ListenAddress }
+func (n *noopRuntime) HealthCheck(context.Context) error {
+	return nil
+}
+func (n *noopRuntime) Status() Status        { return n.status }
+func (n *noopRuntime) ListenAddress() string { return n.status.ListenAddress }

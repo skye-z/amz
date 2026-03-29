@@ -1,13 +1,7 @@
 // Command e2etest performs a full-chain integration test of the amz SDK.
 //
-// It verifies: registration -> node selection -> WARP connect -> HTTP proxy -> SOCKS5 proxy
-// by comparing the exit IP before and after proxying through WARP.
-//
-// This binary is NOT included in production library builds.
-//
-// Usage:
-//
-//	go run ./cmd/e2etest [-listen 127.0.0.1:19811] [-state ./e2etest_state.json] [-timeout 120s]
+// It verifies: registration -> node selection -> WARP connect -> HTTP proxy -> SOCKS5 proxy -> TUN
+// by comparing the exit IP before and after proxying / tunneling through WARP.
 package main
 
 import (
@@ -34,6 +28,7 @@ const (
 	tagDirect = "DIRECT"
 	tagHTTP   = "HTTP_PROXY"
 	tagSOCKS5 = "SOCKS5_PROXY"
+	tagTUN    = "TUN"
 )
 
 func main() {
@@ -41,13 +36,18 @@ func main() {
 	statePath := flag.String("state", "./e2etest_state.json", "path for amz state file")
 	endpoint := flag.String("endpoint", "", "override WARP endpoint (e.g. 162.159.198.1:443)")
 	timeout := flag.Duration("timeout", 120*time.Second, "total test timeout")
+	skipHTTP := flag.Bool("skip-http", false, "skip http proxy verification")
+	skipSOCKS5 := flag.Bool("skip-socks5", false, "skip socks5 proxy verification")
+	skipTUN := flag.Bool("skip-tun", false, "skip tun verification")
 	flag.Parse()
+
+	runHTTP, runSOCKS5, runTUN := shouldRunModes(*skipHTTP, *skipSOCKS5, *skipTUN)
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
 	passed := true
-	var httpProxyIP, socksProxyIP string
+	var httpProxyIP, socksProxyIP, tunIP string
 
 	printBanner("AMZ Full-Chain E2E Test")
 
@@ -60,7 +60,7 @@ func main() {
 	printIPInfo(tagDirect, directIP, directRaw)
 
 	logger := newAMZLogger(os.Stdout)
-	opts := buildClientOptions(*listen, *statePath, *endpoint, logger)
+	opts := buildClientOptionsForModes(*listen, *statePath, *endpoint, logger, runHTTP, runSOCKS5, false)
 	if *endpoint != "" {
 		printInfo("  Using fixed endpoint: %s", *endpoint)
 	}
@@ -87,6 +87,7 @@ func main() {
 	printInfo("  Registered:      %v", status.Registered)
 	printInfo("  HTTP enabled:    %v", status.HTTPEnabled)
 	printInfo("  SOCKS5 enabled:  %v", status.SOCKS5Enabled)
+	printInfo("  TUN enabled:     %v", status.TUNEnabled)
 
 	if !status.Running {
 		printFail("Client is not running after Start()")
@@ -100,42 +101,85 @@ func main() {
 
 	time.Sleep(500 * time.Millisecond)
 
-	printStep(3, "Fetching exit IP via HTTP proxy")
-	httpTransport := httpProxyTransport(proxyAddr)
-	ip, raw, err := fetchIP(ctx, httpTransport)
-	if err != nil {
-		printFail("HTTP proxy request failed: %v", err)
-		passed = false
-	} else {
-		httpProxyIP = ip
-		printIPInfo(tagHTTP, ip, raw)
-		if ip == directIP {
-			printFail("HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
-			passed = false
-		} else {
-			printPass("HTTP proxy IP (%s) differs from direct IP (%s)", ip, directIP)
-		}
-	}
-
-	printStep(4, "Fetching exit IP via SOCKS5 proxy")
-	socksTransport, err := socks5ProxyTransport(proxyAddr)
-	if err != nil {
-		printFail("Failed to create SOCKS5 transport: %v", err)
-		passed = false
-	} else {
-		ip, raw, err := fetchIP(ctx, socksTransport)
+	step := 3
+	if runHTTP {
+		printStep(step, "Fetching exit IP via HTTP proxy")
+		httpTransport := httpProxyTransport(proxyAddr)
+		ip, raw, err := fetchIP(ctx, httpTransport)
 		if err != nil {
-			printFail("SOCKS5 proxy request failed: %v", err)
+			printFail("HTTP proxy request failed: %v", err)
 			passed = false
 		} else {
-			socksProxyIP = ip
-			printIPInfo(tagSOCKS5, ip, raw)
+			httpProxyIP = ip
+			printIPInfo(tagHTTP, ip, raw)
 			if ip == directIP {
-				printFail("SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
+				printFail("HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
 				passed = false
 			} else {
-				printPass("SOCKS5 proxy IP (%s) differs from direct IP (%s)", ip, directIP)
+				printPass("HTTP proxy IP (%s) differs from direct IP (%s)", ip, directIP)
 			}
+		}
+		step++
+	}
+
+	if runSOCKS5 {
+		printStep(step, "Fetching exit IP via SOCKS5 proxy")
+		socksTransport, err := socks5ProxyTransport(proxyAddr)
+		if err != nil {
+			printFail("Failed to create SOCKS5 transport: %v", err)
+			passed = false
+		} else {
+			ip, raw, err := fetchIP(ctx, socksTransport)
+			if err != nil {
+				printFail("SOCKS5 proxy request failed: %v", err)
+				passed = false
+			} else {
+				socksProxyIP = ip
+				printIPInfo(tagSOCKS5, ip, raw)
+				if ip == directIP {
+					printFail("SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
+					passed = false
+				} else {
+					printPass("SOCKS5 proxy IP (%s) differs from direct IP (%s)", ip, directIP)
+				}
+			}
+		}
+		step++
+	}
+
+	if runTUN {
+		printStep(step, "Fetching exit IP via TUN")
+		_ = client.Close()
+
+		tunOpts := buildClientOptionsForModes("", *statePath+".tun", *endpoint, logger, false, false, true)
+		tunClient, err := amz.NewClient(tunOpts)
+		if err != nil {
+			printFail("Failed to create TUN client: %v", err)
+			passed = false
+		} else {
+			func() {
+				defer tunClient.Close()
+				if err := tunClient.Start(ctx); err != nil {
+					printFail("TUN start failed: %v", err)
+					passed = false
+					return
+				}
+				time.Sleep(2 * time.Second)
+				ip, raw, err := fetchIP(ctx, nil)
+				if err != nil {
+					printFail("TUN request failed: %v", err)
+					passed = false
+					return
+				}
+				tunIP = ip
+				printIPInfo(tagTUN, ip, raw)
+				if ip == directIP {
+					printFail("TUN IP is the same as direct IP (%s) -- tunnel not working!", ip)
+					passed = false
+				} else {
+					printPass("TUN IP (%s) differs from direct IP (%s)", ip, directIP)
+				}
+			}()
 		}
 	}
 
@@ -146,6 +190,9 @@ func main() {
 	}
 	if socksProxyIP != "" {
 		fmt.Printf("  SOCKS5 IP:  %s\n", socksProxyIP)
+	}
+	if tunIP != "" {
+		fmt.Printf("  TUN IP:     %s\n", tunIP)
 	}
 	fmt.Println()
 
@@ -220,17 +267,26 @@ func socks5ProxyTransport(proxyAddr string) (*http.Transport, error) {
 }
 
 func buildClientOptions(listen, statePath, endpoint string, logger amz.Logger) amz.Options {
+	return buildClientOptionsForModes(listen, statePath, endpoint, logger, true, true, false)
+}
+
+func buildClientOptionsForModes(listen, statePath, endpoint string, logger amz.Logger, httpEnabled, socksEnabled, tunEnabled bool) amz.Options {
 	opts := amz.Options{
 		Storage: amz.StorageOptions{Path: statePath},
 		Listen:  amz.ListenOptions{Address: listen},
-		HTTP:    amz.HTTPOptions{Enabled: true},
-		SOCKS5:  amz.SOCKS5Options{Enabled: true},
+		HTTP:    amz.HTTPOptions{Enabled: httpEnabled},
+		SOCKS5:  amz.SOCKS5Options{Enabled: socksEnabled},
+		TUN:     amz.TUNOptions{Enabled: tunEnabled},
 		Logger:  logger,
 	}
 	if endpoint != "" {
 		opts.Transport = amz.TransportOptions{Endpoint: endpoint}
 	}
 	return opts
+}
+
+func shouldRunModes(skipHTTP, skipSOCKS5, skipTUN bool) (bool, bool, bool) {
+	return !skipHTTP, !skipSOCKS5, !skipTUN
 }
 
 func newAMZLogger(w io.Writer) amz.Logger {

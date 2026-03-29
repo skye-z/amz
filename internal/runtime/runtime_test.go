@@ -193,6 +193,122 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	}
 }
 
+func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
+	t.Parallel()
+
+	httpManager1, err := internalruntime.NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected http manager creation success, got %v", err)
+	}
+	httpManager1.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("old"))}, nil
+	}))
+	socksManager1, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected socks manager creation success, got %v", err)
+	}
+	socksManager1.SetStreamManager(echoStreamOpener{})
+
+	runtime1, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		ListenAddress: "127.0.0.1:0",
+		HTTP:          internalruntime.NewHTTPRuntime(httpManager1),
+		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager1),
+	})
+	if err != nil {
+		t.Fatalf("expected first runtime creation success, got %v", err)
+	}
+	defer runtime1.Close()
+	if err := runtime1.Start(context.Background()); err != nil {
+		t.Fatalf("expected first runtime start success, got %v", err)
+	}
+	listenAddress := runtime1.ListenAddress()
+
+	httpManager2, err := internalruntime.NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected second http manager creation success, got %v", err)
+	}
+	httpManager2.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("new"))}, nil
+	}))
+	socksManager2, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected second socks manager creation success, got %v", err)
+	}
+	socksManager2.SetStreamManager(echoStreamOpener{})
+
+	runtime2, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		ListenAddress: "127.0.0.1:0",
+		HTTP:          internalruntime.NewHTTPRuntime(httpManager2),
+		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager2),
+	})
+	if err != nil {
+		t.Fatalf("expected second runtime creation success, got %v", err)
+	}
+	defer runtime2.Close()
+
+	if ok := runtime1.HotSwapProxyBackendsFrom(runtime2); !ok {
+		t.Fatal("expected hot swap to succeed")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	if err != nil {
+		t.Fatalf("expected request construction success, got %v", err)
+	}
+	httpConn, err := net.Dial("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf("expected reused http dial success, got %v", err)
+	}
+	if err := req.Write(httpConn); err != nil {
+		_ = httpConn.Close()
+		t.Fatalf("expected request write success, got %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(httpConn), req)
+	_ = httpConn.Close()
+	if err != nil {
+		t.Fatalf("expected http response read success, got %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("expected http response body read success, got %v", err)
+	}
+	if string(body) != "new" {
+		t.Fatalf("expected hot swap response body %q, got %q", "new", string(body))
+	}
+}
+
 func TestNewClientRuntimeRejectsEmptyConfig(t *testing.T) {
 	t.Parallel()
 
