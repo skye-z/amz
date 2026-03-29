@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,51 @@ type managedRuntime struct {
 	endpoint   string
 	selectFn   func(context.Context, storage.State) (discovery.Candidate, []storage.Node, error)
 	buildFn    func(string, storage.State) (sdkRuntime, error)
+}
+
+type probeProfile struct {
+	name                string
+	perCandidateTimeout time.Duration
+	batchTimeout        time.Duration
+	concurrency         int
+}
+
+var defaultProbeProfile = probeProfile{
+	name:                "default",
+	perCandidateTimeout: time.Second,
+	batchTimeout:        3 * time.Second,
+	concurrency:         30,
+}
+
+var tunProbeProfile = probeProfile{
+	name:                "tun",
+	perCandidateTimeout: 7 * time.Second,
+	batchTimeout:        10 * time.Second,
+	concurrency:         4,
+}
+
+var validateTUNCandidateForSelection = func(ctx context.Context, opts Options, state storage.State, candidate discovery.Candidate) error {
+	tunCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(opts.Transport.SNI), amzconfig.ModeTUN, "", withAction(opts.Logger, "SELECT"))
+	connectionManager, err := amzsession.NewConnectionManager(tunCfg)
+	if err != nil {
+		return err
+	}
+	defer connectionManager.Close()
+	if err := connectionManager.Connect(ctx); err != nil {
+		return err
+	}
+
+	connectIPManager, err := amzsession.NewConnectIPSessionManager(tunCfg)
+	if err != nil {
+		return err
+	}
+	defer connectIPManager.Close()
+	connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
+	connectIPManager.BindHTTP3Conn(connectionManager.HTTP3Conn())
+	if err := connectIPManager.Open(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func newManagedRuntime(opts Options) (sdkRuntime, error) {
@@ -334,6 +380,38 @@ func (m *managedRuntime) refreshStatusLocked(runtime sdkRuntime) {
 	m.status.Registered = m.registered
 }
 
+func (m *managedRuntime) newCandidateChecker(state storage.State) discovery.WarpStatusChecker {
+	if m.opts.TUN.Enabled && !m.opts.HTTP.Enabled && !m.opts.SOCKS5.Enabled {
+		return discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
+			done := make(chan error, 1)
+			go func() {
+				done <- validateTUNCandidateForSelection(ctx, m.opts, state, candidate)
+			}()
+			select {
+			case <-ctx.Done():
+				return false, context.Cause(ctx)
+			case err := <-done:
+				if err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+		})
+	}
+	return discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
+		kernelCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address, withAction(m.opts.Logger, "SELECT"))
+		connectionManager, err := amzsession.NewConnectionManager(kernelCfg)
+		if err != nil {
+			return false, err
+		}
+		defer connectionManager.Close()
+		if err := connectionManager.Connect(ctx); err != nil {
+			return false, err
+		}
+		return connectionManager.Snapshot().State == amzsession.ConnStateReady, nil
+	})
+}
+
 func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State) (discovery.Candidate, []storage.Node, error) {
 	if endpoint := strings.TrimSpace(m.opts.Transport.Endpoint); endpoint != "" {
 		candidate := discovery.Candidate{
@@ -351,6 +429,10 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 	preferredCandidates, fallbackCandidates := discovery.BuildVerificationCandidates(input, 443, 4)
 	preferredCandidates = filterCandidatesByIPv6Support(preferredCandidates, ipv6Supported)
 	fallbackCandidates = filterCandidatesByIPv6Support(fallbackCandidates, ipv6Supported)
+	if m.opts.TUN.Enabled && !m.opts.HTTP.Enabled && !m.opts.SOCKS5.Enabled {
+		preferredCandidates = prioritizeTUNCandidates(preferredCandidates)
+		fallbackCandidates = prioritizeTUNCandidates(fallbackCandidates)
+	}
 	logEvent(m.opts.Logger, "managed_runtime", "endpoint.plan.ready",
 		field("preferred_count", len(preferredCandidates)),
 		field("fallback_count", len(fallbackCandidates)),
@@ -358,26 +440,25 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 		field("ipv6_supported", ipv6Supported),
 	)
 
-	checker := discovery.WarpStatusFunc(func(ctx context.Context, candidate discovery.Candidate) (bool, error) {
-		kernelCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address, withAction(m.opts.Logger, "SELECT"))
-		connectionManager, err := amzsession.NewConnectionManager(kernelCfg)
-		if err != nil {
-			return false, err
-		}
-		defer connectionManager.Close()
-		if err := connectionManager.Connect(ctx); err != nil {
-			return false, err
-		}
-		return connectionManager.Snapshot().State == amzsession.ConnStateReady, nil
-	})
-	prober := discovery.NewRealProber(time.Second,
+	checker := m.newCandidateChecker(state)
+	profile := defaultProbeProfile
+	if m.opts.TUN.Enabled && !m.opts.HTTP.Enabled && !m.opts.SOCKS5.Enabled {
+		profile = tunProbeProfile
+	}
+	logEvent(m.opts.Logger, "managed_runtime", "endpoint.probe_profile",
+		field("probe_profile", profile.name),
+		field("per_candidate_timeout", profile.perCandidateTimeout),
+		field("batch_timeout", profile.batchTimeout),
+		field("concurrency", profile.concurrency),
+	)
+	prober := discovery.NewRealProber(profile.perCandidateTimeout,
 		discovery.WithWarpStatusChecker(checker),
 		discovery.WithProbeObserver(newLoggingProbeObserver(m.opts.Logger)),
-		discovery.WithProbeConcurrency(30),
-		discovery.WithProbeBatchTimeout(3*time.Second),
+		discovery.WithProbeConcurrency(profile.concurrency),
+		discovery.WithProbeBatchTimeout(profile.batchTimeout),
 	)
 
-	result := discovery.BatchProbe(prober, mergeUniqueCandidates(preferredCandidates, fallbackCandidates))
+	result := discovery.BatchProbe(prober, prepareCandidatesForProbe(mergeUniqueCandidates(preferredCandidates, fallbackCandidates)))
 	if !result.OK {
 		return discovery.Candidate{}, state.NodeCache, fmt.Errorf("no available warp candidate")
 	}
@@ -645,3 +726,68 @@ type stateStore interface {
 }
 
 var newDefaultAuthService = auth.NewDefaultService
+
+func prepareCandidatesForProbe(candidates []discovery.Candidate) []discovery.Candidate {
+	prepared := make([]discovery.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate.Available = false
+		candidate.WarpEnabled = false
+		candidate.Latency = 0
+		candidate.Reason = "not_probed"
+		prepared = append(prepared, candidate)
+	}
+	return prepared
+}
+
+func prioritizeTUNCandidates(candidates []discovery.Candidate) []discovery.Candidate {
+	prioritized := append([]discovery.Candidate(nil), candidates...)
+	sort.SliceStable(prioritized, func(i, j int) bool {
+		left := tunCandidatePriority(prioritized[i].Address, prioritized[i].Source)
+		right := tunCandidatePriority(prioritized[j].Address, prioritized[j].Source)
+		return left < right
+	})
+	return prioritized
+}
+
+func tunCandidatePriority(address, source string) int {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		host = strings.TrimSpace(address)
+		port = ""
+	}
+	host = strings.Trim(host, "[]")
+
+	hostRank := 100
+	switch host {
+	case "162.159.198.2":
+		hostRank = 0
+	case "162.159.198.1":
+		hostRank = 10
+	case "engage.cloudflareclient.com":
+		hostRank = 20
+	default:
+		if strings.TrimSpace(source) == discovery.SourceAuto {
+			hostRank = 30
+		}
+	}
+
+	portRank := 100
+	switch port {
+	case "4500":
+		portRank = 0
+	case "500":
+		portRank = 1
+	case "1701":
+		portRank = 2
+	case "443":
+		portRank = 3
+	case "8443":
+		portRank = 4
+	case "8095":
+		portRank = 5
+	case "4443":
+		portRank = 6
+	}
+
+	return hostRank*10 + portRank
+}

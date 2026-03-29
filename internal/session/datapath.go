@@ -2,9 +2,13 @@ package session
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
@@ -23,9 +27,14 @@ type PacketRelayEndpoint interface {
 
 // 描述数据面的最小包收发骨架。
 type PacketIO struct {
-	mtu   int
-	pool  *packet.BufferPool
-	stats *packet.Stats
+	mtu    int
+	pool   *packet.BufferPool
+	stats  *packet.Stats
+	logger config.Logger
+
+	traceLimit        int
+	uplinkTraceSeen   int
+	downlinkTraceSeen int
 }
 
 // 创建带缓冲池和统计的最小数据面对象。
@@ -34,9 +43,10 @@ func NewPacketIO(mtu int) *PacketIO {
 		mtu = config.DefaultMTU
 	}
 	return &PacketIO{
-		mtu:   mtu,
-		pool:  packet.NewBufferPool(maxPacketBufferSize),
-		stats: packet.NewStats(),
+		mtu:        mtu,
+		pool:       packet.NewBufferPool(maxPacketBufferSize),
+		stats:      packet.NewStats(),
+		traceLimit: packetTraceLimitFromEnv(),
 	}
 }
 
@@ -48,6 +58,10 @@ func (p *PacketIO) MTU() int {
 // 返回当前数据面的最小统计信息。
 func (p *PacketIO) Stats() packet.Snapshot {
 	return p.stats.Snapshot()
+}
+
+func (p *PacketIO) SetLogger(logger config.Logger) {
+	p.logger = logger
 }
 
 // Relay 启动双向收发循环，并在上下文结束时关闭远端数据面。
@@ -62,6 +76,11 @@ func (p *PacketIO) Relay(ctx context.Context, dev TUNDevice, endpoint PacketRela
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	defer func() { _ = endpoint.Close() }()
+	p.logf("packet relay started device=%q mtu=%d", dev.Name(), p.mtu)
+	defer func() {
+		stats := p.stats.Snapshot()
+		p.logf("packet relay stopped rx_packets=%d tx_packets=%d rx_bytes=%d tx_bytes=%d", stats.RxPackets, stats.TxPackets, stats.RxBytes, stats.TxBytes)
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -119,6 +138,10 @@ func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint Pa
 			p.pool.Put(buf)
 			continue
 		}
+		if p.stats.Snapshot().TxPackets == 0 {
+			p.logf("first uplink packet observed bytes=%d device=%q %s", n, dev.Name(), packetSummary(buf.Data[:n]))
+		}
+		p.tracePacket("uplink", n, dev.Name(), buf.Data[:n])
 
 		fragments := splitPacketByMTU(buf.Data[:n], p.mtu)
 		for _, fragment := range fragments {
@@ -175,6 +198,10 @@ func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndp
 			p.pool.Put(buf)
 			continue
 		}
+		if p.stats.Snapshot().RxPackets == 0 {
+			p.logf("first downlink packet observed bytes=%d device=%q %s", n, dev.Name(), packetSummary(buf.Data[:n]))
+		}
+		p.tracePacket("downlink", n, dev.Name(), buf.Data[:n])
 
 		written, err := dev.WritePacket(ctx, buf.Data[:n])
 		p.pool.Put(buf)
@@ -185,6 +212,95 @@ func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndp
 			return fmt.Errorf("downlink write packet: %w", io.ErrShortWrite)
 		}
 		p.stats.AddRx(n)
+	}
+}
+
+func (p *PacketIO) logf(format string, args ...any) {
+	if p == nil || p.logger == nil {
+		return
+	}
+	p.logger.Printf(format, args...)
+}
+
+func (p *PacketIO) tracePacket(direction string, n int, device string, packet []byte) {
+	if p == nil || p.traceLimit <= 0 {
+		return
+	}
+	switch direction {
+	case "uplink":
+		if p.uplinkTraceSeen >= p.traceLimit {
+			return
+		}
+		p.uplinkTraceSeen++
+		p.logf("%s packet #%d bytes=%d device=%q %s", direction, p.uplinkTraceSeen, n, device, packetSummary(packet))
+	case "downlink":
+		if p.downlinkTraceSeen >= p.traceLimit {
+			return
+		}
+		p.downlinkTraceSeen++
+		p.logf("%s packet #%d bytes=%d device=%q %s", direction, p.downlinkTraceSeen, n, device, packetSummary(packet))
+	}
+}
+
+func packetTraceLimitFromEnv() int {
+	value := os.Getenv("AMZ_TUN_TRACE_PACKETS")
+	if value == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 1
+	}
+	return n
+}
+
+func packetSummary(packet []byte) string {
+	if len(packet) < 1 {
+		return "packet=empty"
+	}
+	version := packet[0] >> 4
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return "packet=ipv4_truncated"
+		}
+		src := netip.AddrFrom4([4]byte{packet[12], packet[13], packet[14], packet[15]})
+		dst := netip.AddrFrom4([4]byte{packet[16], packet[17], packet[18], packet[19]})
+		proto := ipProtocolName(packet[9])
+		totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+		if totalLen == 0 {
+			totalLen = len(packet)
+		}
+		return fmt.Sprintf("version=4 src=%s dst=%s proto=%s total_len=%d", src, dst, proto, totalLen)
+	case 6:
+		if len(packet) < 40 {
+			return "packet=ipv6_truncated"
+		}
+		var srcRaw, dstRaw [16]byte
+		copy(srcRaw[:], packet[8:24])
+		copy(dstRaw[:], packet[24:40])
+		src := netip.AddrFrom16(srcRaw)
+		dst := netip.AddrFrom16(dstRaw)
+		proto := ipProtocolName(packet[6])
+		payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+		return fmt.Sprintf("version=6 src=%s dst=%s proto=%s payload_len=%d", src, dst, proto, payloadLen)
+	default:
+		return fmt.Sprintf("packet=unknown_version_%d", version)
+	}
+}
+
+func ipProtocolName(proto byte) string {
+	switch proto {
+	case 1:
+		return "icmp"
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	case 58:
+		return "icmpv6"
+	default:
+		return fmt.Sprintf("%d", proto)
 	}
 }
 

@@ -13,13 +13,21 @@ import (
 type fakeNativeTun struct {
 	options      []singtun.Options
 	failUpdateAt int
+	startCalls   int
+	startErr     error
+	startedWith  singtun.Options
+	createdWith  singtun.Options
 }
 
 func (f *fakeNativeTun) Read([]byte) (int, error)    { return 0, io.EOF }
 func (f *fakeNativeTun) Write(p []byte) (int, error) { return len(p), nil }
 func (f *fakeNativeTun) Name() (string, error)       { return "amz0", nil }
-func (f *fakeNativeTun) Start() error                { return nil }
-func (f *fakeNativeTun) Close() error                { return nil }
+func (f *fakeNativeTun) Start() error {
+	f.startCalls++
+	f.startedWith = f.createdWith
+	return f.startErr
+}
+func (f *fakeNativeTun) Close() error { return nil }
 func (f *fakeNativeTun) UpdateRouteOptions(o singtun.Options) error {
 	f.options = append(f.options, o)
 	if f.failUpdateAt > 0 && len(f.options) == f.failUpdateAt {
@@ -32,9 +40,10 @@ func (f *fakeNativeTun) UpdateRouteOptions(o singtun.Options) error {
 func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 	nativeTun := &fakeNativeTun{}
 	device := &singDevice{
-		tun:  nativeTun,
-		name: "amz0",
-		mtu:  1400,
+		tun:     nativeTun,
+		name:    "amz0",
+		mtu:     1400,
+		started: false,
 		options: singtun.Options{
 			Name:      "amz0",
 			MTU:       1400,
@@ -59,10 +68,10 @@ func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 		t.Fatalf("expected apply routes success, got %v", err)
 	}
 
-	if len(nativeTun.options) != 2 {
-		t.Fatalf("expected config and route updates, got %d", len(nativeTun.options))
+	if len(nativeTun.options) != 0 {
+		t.Fatalf("expected no native updates before start, got %d", len(nativeTun.options))
 	}
-	got := nativeTun.options[1]
+	got := device.options
 	if got.AutoRoute {
 		t.Fatalf("expected split mode to keep autoroute disabled, got %+v", got)
 	}
@@ -90,9 +99,10 @@ func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
 	nativeTun := &fakeNativeTun{failUpdateAt: 2}
 	device := &singDevice{
-		tun:  nativeTun,
-		name: "amz0",
-		mtu:  1400,
+		tun:     nativeTun,
+		name:    "amz0",
+		mtu:     1400,
+		started: true,
 		options: singtun.Options{
 			Name:      "amz0",
 			MTU:       1400,
@@ -132,11 +142,9 @@ func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
 func TestSingProviderOpenInjectsInterfaceMonitor(t *testing.T) {
 	t.Parallel()
 
-	var captured singtun.Options
 	provider := &singProvider{
 		platform: "windows",
 		factory: func(options singtun.Options) (singtun.Tun, error) {
-			captured = options
 			return &fakeNativeTun{}, nil
 		},
 	}
@@ -148,7 +156,64 @@ func TestSingProviderOpenInjectsInterfaceMonitor(t *testing.T) {
 	if dev == nil {
 		t.Fatal("expected device")
 	}
-	if captured.InterfaceMonitor == nil {
+	singDev, ok := dev.(*singDevice)
+	if !ok {
+		t.Fatalf("expected singDevice, got %T", dev)
+	}
+	if singDev.options.InterfaceMonitor == nil {
 		t.Fatal("expected InterfaceMonitor to be injected into sing-tun options")
+	}
+	if singDev.tun != nil {
+		t.Fatal("expected tun creation to be delayed until StartDevice")
+	}
+}
+
+func TestAssembleStartsSingTunAfterConfigAndRoutes(t *testing.T) {
+	t.Parallel()
+
+	nativeTun := &fakeNativeTun{}
+	provider := &singProvider{
+		platform: "windows",
+		factory: func(options singtun.Options) (singtun.Tun, error) {
+			nativeTun.createdWith = options
+			return nativeTun, nil
+		},
+	}
+
+	assembled, err := Assemble(AssembleOptions{
+		Platform: "windows",
+		Device: DeviceConfig{
+			Name: "amz0",
+			MTU:  1400,
+		},
+		Config: Config{
+			Device: DeviceConfig{Name: "amz0", MTU: 1400},
+			Addresses: []Address{
+				{CIDR: "172.16.0.2/32"},
+				{CIDR: "2606:4700:110:8d36::2/128"},
+			},
+		},
+		Routes: RoutePlan{
+			Mode:           RouteModeGlobal,
+			Routes:         []string{"0.0.0.0/0", "::/0"},
+			EndpointRoutes: []string{"162.159.198.2/32"},
+		},
+		Provider: provider,
+		Adapter:  NewSystemAdapter(),
+	})
+	if err != nil {
+		t.Fatalf("expected assemble success, got %v", err)
+	}
+	defer assembled.Close()
+
+	if nativeTun.startCalls != 1 {
+		t.Fatalf("expected sing-tun start once, got %d", nativeTun.startCalls)
+	}
+	got := nativeTun.startedWith
+	if !got.AutoRoute {
+		t.Fatalf("expected start options to enable autoroute, got %+v", got)
+	}
+	if len(got.Inet4Address) == 0 || len(got.Inet6Address) == 0 {
+		t.Fatalf("expected start options to include addresses, got %+v", got)
 	}
 }

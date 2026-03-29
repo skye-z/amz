@@ -53,31 +53,10 @@ func (p *singProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, erro
 		return nil, err
 	}
 
-	nativeTun, err := p.factory(singtun.Options{
-		Name:             cfg.Name,
-		MTU:              uint32(cfg.MTU),
-		AutoRoute:        false,
-		InterfaceMonitor: noOpDefaultInterfaceMonitor{},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open sing-tun device: %w", err)
-	}
-	if starter, ok := any(nativeTun).(interface{ Start() error }); ok {
-		if err := starter.Start(); err != nil {
-			_ = nativeTun.Close()
-			return nil, fmt.Errorf("start sing-tun device: %w", err)
-		}
-	}
-
-	deviceName, err := nativeTun.Name()
-	if err != nil || strings.TrimSpace(deviceName) == "" {
-		deviceName = cfg.Name
-	}
-
 	device := &singDevice{
-		tun:  nativeTun,
-		name: deviceName,
-		mtu:  cfg.MTU,
+		creator: p.factory,
+		name:    cfg.Name,
+		mtu:     cfg.MTU,
 		options: singtun.Options{
 			Name:             cfg.Name,
 			MTU:              uint32(cfg.MTU),
@@ -121,10 +100,12 @@ type systemRouteConfigurableDevice interface {
 }
 
 type singDevice struct {
+	creator nativeTunFactory
 	tun     singtun.Tun
 	name    string
 	mtu     int
 	options singtun.Options
+	started bool
 }
 
 func (d *singDevice) Name() string {
@@ -139,6 +120,9 @@ func (d *singDevice) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
+	if d.tun == nil {
+		return 0, io.ErrClosedPipe
+	}
 	return d.tun.Read(dst)
 }
 
@@ -146,11 +130,43 @@ func (d *singDevice) WritePacket(ctx context.Context, packet []byte) (int, error
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
+	if d.tun == nil {
+		return 0, io.ErrClosedPipe
+	}
 	return d.tun.Write(packet)
 }
 
 func (d *singDevice) Close() error {
+	if d.tun == nil {
+		return nil
+	}
 	return d.tun.Close()
+}
+
+func (d *singDevice) StartDevice() error {
+	if d.started {
+		return nil
+	}
+	if d.creator != nil {
+		nativeTun, err := d.creator(d.options)
+		if err != nil {
+			return fmt.Errorf("open sing-tun device: %w", err)
+		}
+		d.tun = nativeTun
+		if deviceName, err := nativeTun.Name(); err == nil && strings.TrimSpace(deviceName) != "" {
+			d.name = deviceName
+		}
+	}
+	if d.tun == nil {
+		return fmt.Errorf("open sing-tun device: %w", io.ErrClosedPipe)
+	}
+	if starter, ok := any(d.tun).(interface{ Start() error }); ok {
+		if err := starter.Start(); err != nil {
+			return fmt.Errorf("start sing-tun device: %w", err)
+		}
+	}
+	d.started = true
+	return nil
 }
 
 func (d *singDevice) ApplyTUNConfig(cfg Config) error {
@@ -170,8 +186,10 @@ func (d *singDevice) ApplyTUNConfig(cfg Config) error {
 			options.Inet6Address = append(options.Inet6Address, prefix)
 		}
 	}
-	if err := d.tun.UpdateRouteOptions(options); err != nil {
-		return fmt.Errorf("update sing-tun route options: %w", err)
+	if d.started {
+		if err := d.tun.UpdateRouteOptions(options); err != nil {
+			return fmt.Errorf("update sing-tun route options: %w", err)
+		}
 	}
 	d.options = options
 	d.name = cfg.Device.Name
@@ -211,15 +229,17 @@ func (d *singDevice) ApplyTUNRoutes(plan RoutePlan) error {
 		}
 	}
 
-	if err := d.tun.UpdateRouteOptions(next); err != nil {
-		rollbackErr := d.tun.UpdateRouteOptions(previous)
-		if rollbackErr != nil {
-			return errors.Join(
-				fmt.Errorf("update sing-tun route options: %w", err),
-				fmt.Errorf("rollback sing-tun route options: %w", rollbackErr),
-			)
+	if d.started {
+		if err := d.tun.UpdateRouteOptions(next); err != nil {
+			rollbackErr := d.tun.UpdateRouteOptions(previous)
+			if rollbackErr != nil {
+				return errors.Join(
+					fmt.Errorf("update sing-tun route options: %w", err),
+					fmt.Errorf("rollback sing-tun route options: %w", rollbackErr),
+				)
+			}
+			return fmt.Errorf("update sing-tun route options: %w", err)
 		}
-		return fmt.Errorf("update sing-tun route options: %w", err)
 	}
 	d.options = next
 	return nil
@@ -232,8 +252,10 @@ func (d *singDevice) ResetTUNRoutes() error {
 	next.Inet6RouteAddress = nil
 	next.Inet4RouteExcludeAddress = nil
 	next.Inet6RouteExcludeAddress = nil
-	if err := d.tun.UpdateRouteOptions(next); err != nil {
-		return fmt.Errorf("reset sing-tun route options: %w", err)
+	if d.started {
+		if err := d.tun.UpdateRouteOptions(next); err != nil {
+			return fmt.Errorf("reset sing-tun route options: %w", err)
+		}
 	}
 	d.options = next
 	return nil

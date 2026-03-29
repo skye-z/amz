@@ -49,12 +49,15 @@ func NewCoreTunnelDialer(connection *ConnectionManager, session *ConnectIPSessio
 	if err != nil {
 		return nil, fmt.Errorf("connect stream manager: %w", err)
 	}
+	packetIO := NewPacketIO(connection.cfg.MTU)
+	packetIO.SetLogger(connection.cfg.Logger)
+
 	return &CoreTunnelDialer{
 		connection:      connection,
 		session:         session,
 		delegate:        delegate,
 		streamMgr:       streamMgr,
-		packetIO:        NewPacketIO(connection.cfg.MTU),
+		packetIO:        packetIO,
 		assemblyFactory: internaltun.Assemble,
 	}, nil
 }

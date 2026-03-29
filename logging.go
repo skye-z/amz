@@ -102,6 +102,8 @@ func describeEvent(component, event string) (action string, message string) {
 		return "SELECT", "selecting endpoint"
 	case "managed_runtime:endpoint.plan.ready":
 		return "SELECT", "prepared candidate plan"
+	case "managed_runtime:endpoint.probe_profile":
+		return "SELECT", "using endpoint probe profile"
 	case "managed_runtime:endpoint.select.success":
 		return "SELECT", "selected endpoint"
 	case "managed_runtime:endpoint.select.failed":

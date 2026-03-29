@@ -38,6 +38,10 @@ type Assembly struct {
 	Adapter  Adapter
 }
 
+type startableDevice interface {
+	StartDevice() error
+}
+
 // 返回当前装配结果仍仅包含占位实现的结构化错误。
 func (a *Assembly) PlaceholderError() error {
 	if a == nil {
@@ -114,6 +118,12 @@ func Assemble(opts AssembleOptions) (*Assembly, error) {
 		if err := adapter.ApplyRoutes(context.Background(), device, opts.Routes); err != nil {
 			_ = provider.Close()
 			return nil, fmt.Errorf("apply placeholder tun routes: %w", err)
+		}
+	}
+	if startable, ok := device.(startableDevice); ok {
+		if err := startable.StartDevice(); err != nil {
+			_ = provider.Close()
+			return nil, err
 		}
 	}
 
