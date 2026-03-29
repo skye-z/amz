@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/netip"
@@ -125,5 +126,29 @@ func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
 	}
 	if len(rollback.Inet4RouteAddress) != 0 || len(rollback.Inet6RouteAddress) != 0 {
 		t.Fatalf("expected rollback to restore empty route sets, got %+v", rollback)
+	}
+}
+
+func TestSingProviderOpenInjectsInterfaceMonitor(t *testing.T) {
+	t.Parallel()
+
+	var captured singtun.Options
+	provider := &singProvider{
+		platform: "windows",
+		factory: func(options singtun.Options) (singtun.Tun, error) {
+			captured = options
+			return &fakeNativeTun{}, nil
+		},
+	}
+
+	dev, err := provider.Open(context.Background(), DeviceConfig{Name: "amz0", MTU: 1400})
+	if err != nil {
+		t.Fatalf("expected open success, got %v", err)
+	}
+	if dev == nil {
+		t.Fatal("expected device")
+	}
+	if captured.InterfaceMonitor == nil {
+		t.Fatal("expected InterfaceMonitor to be injected into sing-tun options")
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	singtun "github.com/sagernet/sing-tun"
+	"github.com/sagernet/sing/common/control"
+	"github.com/sagernet/sing/common/x/list"
 )
 
 type nativeTunFactory func(singtun.Options) (singtun.Tun, error)
@@ -52,9 +54,10 @@ func (p *singProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, erro
 	}
 
 	nativeTun, err := p.factory(singtun.Options{
-		Name:      cfg.Name,
-		MTU:       uint32(cfg.MTU),
-		AutoRoute: false,
+		Name:             cfg.Name,
+		MTU:              uint32(cfg.MTU),
+		AutoRoute:        false,
+		InterfaceMonitor: noOpDefaultInterfaceMonitor{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open sing-tun device: %w", err)
@@ -76,9 +79,10 @@ func (p *singProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, erro
 		name: deviceName,
 		mtu:  cfg.MTU,
 		options: singtun.Options{
-			Name:      cfg.Name,
-			MTU:       uint32(cfg.MTU),
-			AutoRoute: false,
+			Name:             cfg.Name,
+			MTU:              uint32(cfg.MTU),
+			AutoRoute:        false,
+			InterfaceMonitor: noOpDefaultInterfaceMonitor{},
 		},
 	}
 
@@ -234,3 +238,19 @@ func (d *singDevice) ResetTUNRoutes() error {
 	d.options = next
 	return nil
 }
+
+type noOpDefaultInterfaceMonitor struct{}
+
+func (noOpDefaultInterfaceMonitor) Start() error { return nil }
+func (noOpDefaultInterfaceMonitor) Close() error { return nil }
+func (noOpDefaultInterfaceMonitor) DefaultInterface() *control.Interface {
+	return nil
+}
+func (noOpDefaultInterfaceMonitor) OverrideAndroidVPN() bool { return false }
+func (noOpDefaultInterfaceMonitor) AndroidVPNEnabled() bool  { return false }
+func (noOpDefaultInterfaceMonitor) RegisterCallback(func(*control.Interface, int)) *list.Element[func(*control.Interface, int)] {
+	return nil
+}
+func (noOpDefaultInterfaceMonitor) UnregisterCallback(*list.Element[func(*control.Interface, int)]) {}
+func (noOpDefaultInterfaceMonitor) RegisterMyInterface(string)                                      {}
+func (noOpDefaultInterfaceMonitor) MyInterface() string                                             { return "" }
