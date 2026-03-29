@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -50,7 +51,6 @@ func main() {
 
 	printBanner("AMZ Full-Chain E2E Test")
 
-	// ── Step 1: Get direct (pre-proxy) IP ──────────────────────────
 	printStep(1, "Fetching direct exit IP (no proxy)")
 	directIP, directRaw, err := fetchIP(ctx, nil)
 	if err != nil {
@@ -59,16 +59,10 @@ func main() {
 	}
 	printIPInfo(tagDirect, directIP, directRaw)
 
-	// ── Step 2: Create and start amz client ────────────────────────
 	printStep(2, "Creating amz client (HTTP + SOCKS5)")
-	opts := amz.Options{
-		Storage: amz.StorageOptions{Path: *statePath},
-		Listen:  amz.ListenOptions{Address: *listen},
-		HTTP:    amz.HTTPOptions{Enabled: true},
-		SOCKS5:  amz.SOCKS5Options{Enabled: true},
-	}
+	logger := newAMZLogger(os.Stdout)
+	opts := buildClientOptions(*listen, *statePath, *endpoint, logger)
 	if *endpoint != "" {
-		opts.Transport = amz.TransportOptions{Endpoint: *endpoint}
 		printInfo("  Using fixed endpoint: %s", *endpoint)
 	}
 	client, err := amz.NewClient(opts)
@@ -105,10 +99,8 @@ func main() {
 		proxyAddr = *listen
 	}
 
-	// Give a brief moment for listeners to be ready
 	time.Sleep(500 * time.Millisecond)
 
-	// ── Step 4: Test HTTP proxy ────────────────────────────────────
 	printStep(4, "Fetching exit IP via HTTP proxy")
 	httpTransport := httpProxyTransport(proxyAddr)
 	ip, raw, err := fetchIP(ctx, httpTransport)
@@ -126,7 +118,6 @@ func main() {
 		}
 	}
 
-	// ── Step 5: Test SOCKS5 proxy ──────────────────────────────────
 	printStep(5, "Fetching exit IP via SOCKS5 proxy")
 	socksTransport, err := socks5ProxyTransport(proxyAddr)
 	if err != nil {
@@ -149,7 +140,6 @@ func main() {
 		}
 	}
 
-	// ── Summary ────────────────────────────────────────────────────
 	printBanner("Test Summary")
 	fmt.Printf("  Direct IP:  %s\n", directIP)
 	if httpProxyIP != "" {
@@ -167,8 +157,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-// ── IP fetching ────────────────────────────────────────────────────
 
 func fetchIP(ctx context.Context, transport http.RoundTripper) (string, map[string]any, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
@@ -207,8 +195,6 @@ func fetchIP(ctx context.Context, transport http.RoundTripper) (string, map[stri
 	return ipStr, data, nil
 }
 
-// ── Proxy transports ──────────────────────────────────────────────
-
 func httpProxyTransport(proxyAddr string) *http.Transport {
 	proxyURL, _ := url.Parse("http://" + proxyAddr)
 	return &http.Transport{
@@ -234,7 +220,23 @@ func socks5ProxyTransport(proxyAddr string) (*http.Transport, error) {
 	}, nil
 }
 
-// ── Print helpers ──────────────────────────────────────────────────
+func buildClientOptions(listen, statePath, endpoint string, logger amz.Logger) amz.Options {
+	opts := amz.Options{
+		Storage: amz.StorageOptions{Path: statePath},
+		Listen:  amz.ListenOptions{Address: listen},
+		HTTP:    amz.HTTPOptions{Enabled: true},
+		SOCKS5:  amz.SOCKS5Options{Enabled: true},
+		Logger:  logger,
+	}
+	if endpoint != "" {
+		opts.Transport = amz.TransportOptions{Endpoint: endpoint}
+	}
+	return opts
+}
+
+func newAMZLogger(w io.Writer) amz.Logger {
+	return log.New(w, "", 0)
+}
 
 func printBanner(title string) {
 	line := strings.Repeat("=", 60)

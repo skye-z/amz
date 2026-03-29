@@ -30,12 +30,31 @@ type Client struct {
 func NewClient(opts Options) (*Client, error) {
 	normalized := opts.normalized()
 	if !normalized.HTTP.Enabled && !normalized.SOCKS5.Enabled && !normalized.TUN.Enabled {
+		logEvent(normalized.Logger, "client", "new.failed",
+			field("reason", ErrNoRuntimeEnabled),
+			field("http_enabled", normalized.HTTP.Enabled),
+			field("socks5_enabled", normalized.SOCKS5.Enabled),
+			field("tun_enabled", normalized.TUN.Enabled),
+		)
 		return nil, ErrNoRuntimeEnabled
 	}
 	runtime, err := buildSDKRuntime(normalized)
 	if err != nil {
+		logEvent(normalized.Logger, "client", "new.failed",
+			field("error", err),
+			field("http_enabled", normalized.HTTP.Enabled),
+			field("socks5_enabled", normalized.SOCKS5.Enabled),
+			field("tun_enabled", normalized.TUN.Enabled),
+			field("listen_address", normalized.Listen.Address),
+		)
 		return nil, err
 	}
+	logEvent(normalized.Logger, "client", "new.success",
+		field("http_enabled", normalized.HTTP.Enabled),
+		field("socks5_enabled", normalized.SOCKS5.Enabled),
+		field("tun_enabled", normalized.TUN.Enabled),
+		field("listen_address", normalized.Listen.Address),
+	)
 	return &Client{
 		opts:    normalized,
 		runtime: runtime,
@@ -44,30 +63,66 @@ func NewClient(opts Options) (*Client, error) {
 
 func (c *Client) Start(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
+		logEvent(c.opts.Logger, "client", "start.failed", field("error", ErrClientClosed))
 		return ErrClientClosed
 	}
-	return c.runtime.Start(ctx)
+	runtime := c.runtime
+	logger := c.opts.Logger
+	c.mu.Unlock()
+
+	logEvent(logger, "client", "start.begin")
+	if err := runtime.Start(ctx); err != nil {
+		logEvent(logger, "client", "start.failed", field("error", err))
+		return err
+	}
+	logEvent(logger, "client", "start.success",
+		field("listen_address", c.ListenAddress()),
+		field("running", c.Status().Running),
+	)
+	return nil
 }
 
 func (c *Client) Run() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
+		logEvent(c.opts.Logger, "client", "run.failed", field("error", ErrClientClosed))
 		return ErrClientClosed
 	}
-	return c.runtime.Run()
+	runtime := c.runtime
+	logger := c.opts.Logger
+	c.mu.Unlock()
+
+	logEvent(logger, "client", "run.begin")
+	if err := runtime.Run(); err != nil {
+		logEvent(logger, "client", "run.failed", field("error", err))
+		return err
+	}
+	logEvent(logger, "client", "run.success")
+	return nil
 }
 
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
+		logEvent(c.opts.Logger, "client", "close.skipped", field("reason", "already_closed"))
 		return nil
 	}
 	c.closed = true
-	return c.runtime.Close()
+	runtime := c.runtime
+	logger := c.opts.Logger
+	c.mu.Unlock()
+
+	logEvent(logger, "client", "close.begin")
+	if err := runtime.Close(); err != nil {
+		logEvent(logger, "client", "close.failed", field("error", err))
+		return err
+	}
+	logEvent(logger, "client", "close.success")
+	return nil
 }
 
 func (c *Client) Status() Status {

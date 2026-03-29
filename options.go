@@ -7,6 +7,7 @@ type Options struct {
 	HTTP      HTTPOptions
 	SOCKS5    SOCKS5Options
 	TUN       TUNOptions
+	Logger    Logger
 }
 
 type StorageOptions struct {

@@ -4,6 +4,8 @@ e2etest_state.json
 *.test
 *.out
 coverage.out
+.gomodcache
+.gocache
 
 # Compiled binaries and shared objects
 *.exe
