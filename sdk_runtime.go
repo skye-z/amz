@@ -417,7 +417,7 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			httpCfg := baseCfg
 			httpCfg.Mode = amzconfig.ModeHTTP
 			httpCfg.HTTP.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewHTTPRuntimeFromSharedDialer(httpCfg, sharedDNSDialer)
+			runtime, err := iruntime.NewHTTPRuntimeFromSharedDialer(httpCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
 			if err != nil {
 				return nil, err
 			}

@@ -24,6 +24,7 @@ func NewHTTPRuntimeFromBootstrap(cfg config.KernelConfig, connectionManager *ses
 	if err != nil {
 		return nil, err
 	}
+	manager.SetStreamManager(session.NewPreparedProxyStreamOpener(dialer, dialer.StreamManager()))
 	packetDialer, err := session.NewPacketStackDialer(dialer)
 	if err != nil {
 		return nil, err
@@ -38,12 +39,13 @@ func NewHTTPRuntimeFromBootstrap(cfg config.KernelConfig, connectionManager *ses
 }
 
 // NewHTTPRuntimeFromSharedDialer wires an HTTP runtime using a pre-built shared dialer.
-func NewHTTPRuntimeFromSharedDialer(cfg config.KernelConfig, d contextDialer) (*HTTPRuntime, error) {
+func NewHTTPRuntimeFromSharedDialer(cfg config.KernelConfig, d contextDialer, streamMgr HTTPConnectStreamOpener) (*HTTPRuntime, error) {
 	manager, err := NewHTTPManager(cfg)
 	if err != nil {
 		return nil, err
 	}
 	manager.SetHTTPDialer(d)
+	manager.SetStreamManager(streamMgr)
 	return NewHTTPRuntime(manager), nil
 }
 

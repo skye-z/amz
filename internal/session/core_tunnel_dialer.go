@@ -64,6 +64,12 @@ func (d *CoreTunnelDialer) Prepare(ctx context.Context) error {
 	return d.ensureReady(ctx)
 }
 
+// PrepareStream ensures the shared QUIC / HTTP3 / CONNECT-STREAM path is ready
+// before a proxy opens a tunneled CONNECT stream.
+func (d *CoreTunnelDialer) PrepareStream(ctx context.Context) error {
+	return d.ensureStreamReady(ctx)
+}
+
 // StreamManager 返回与当前核心会话绑定的 CONNECT stream manager。
 func (d *CoreTunnelDialer) StreamManager() *ConnectStreamManager {
 	d.mu.Lock()
