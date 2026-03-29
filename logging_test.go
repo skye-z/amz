@@ -107,6 +107,21 @@ func TestLogEventUsesReadableActionFormat(t *testing.T) {
 	}
 }
 
+func TestPhaseLoggerPrintsTimestampBeforeAction(t *testing.T) {
+	t.Parallel()
+
+	logger := &capturingLogger{}
+	withAction(logger, "INIT").Printf("initialized")
+
+	output := logger.String()
+	if !strings.Contains(output, " [INIT] initialized") {
+		t.Fatalf("expected timestamp before action prefix, got %q", output)
+	}
+	if strings.HasPrefix(output, "[INIT]") {
+		t.Fatalf("expected log line to start with timestamp, got %q", output)
+	}
+}
+
 func TestBaseKernelConfigFromStateCarriesPhaseLogger(t *testing.T) {
 	t.Parallel()
 

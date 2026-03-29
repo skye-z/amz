@@ -51,15 +51,14 @@ func main() {
 
 	printBanner("AMZ Full-Chain E2E Test")
 
-	printStep(1, "Fetching direct exit IP (no proxy)")
 	directIP, directRaw, err := fetchIP(ctx, nil)
 	if err != nil {
 		printFail("Failed to get direct IP: %v", err)
 		os.Exit(1)
 	}
+	printStep(1, "Fetching direct exit IP (no proxy)")
 	printIPInfo(tagDirect, directIP, directRaw)
 
-	printStep(2, "Creating amz client (HTTP + SOCKS5)")
 	logger := newAMZLogger(os.Stdout)
 	opts := buildClientOptions(*listen, *statePath, *endpoint, logger)
 	if *endpoint != "" {
@@ -72,7 +71,6 @@ func main() {
 	}
 	defer client.Close()
 
-	printStep(3, "Starting amz client (register -> node select -> connect WARP)")
 	startTime := time.Now()
 	if err := client.Start(ctx); err != nil {
 		printFail("Failed to start client: %v", err)
@@ -80,6 +78,7 @@ func main() {
 	}
 	elapsed := time.Since(startTime)
 
+	printStep(2, "Starting amz client (register -> node select -> connect WARP)")
 	status := client.Status()
 	printInfo("  Started in:      %s", elapsed.Round(time.Millisecond))
 	printInfo("  Running:         %v", status.Running)
@@ -101,7 +100,7 @@ func main() {
 
 	time.Sleep(500 * time.Millisecond)
 
-	printStep(4, "Fetching exit IP via HTTP proxy")
+	printStep(3, "Fetching exit IP via HTTP proxy")
 	httpTransport := httpProxyTransport(proxyAddr)
 	ip, raw, err := fetchIP(ctx, httpTransport)
 	if err != nil {
@@ -118,7 +117,7 @@ func main() {
 		}
 	}
 
-	printStep(5, "Fetching exit IP via SOCKS5 proxy")
+	printStep(4, "Fetching exit IP via SOCKS5 proxy")
 	socksTransport, err := socks5ProxyTransport(proxyAddr)
 	if err != nil {
 		printFail("Failed to create SOCKS5 transport: %v", err)

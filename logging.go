@@ -49,7 +49,7 @@ func (l *phaseLogger) Printf(format string, args ...any) {
 		return
 	}
 	message := fmt.Sprintf(format, args...)
-	l.base.Printf("[%s] %s %s", normalizeAction(l.action), currentLogTimestamp(), message)
+	l.base.Printf("%s [%s] %s", currentLogTimestamp(), normalizeAction(l.action), message)
 }
 
 func logEvent(logger Logger, component, event string, fields ...logField) {
