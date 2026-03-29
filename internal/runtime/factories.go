@@ -91,3 +91,15 @@ func NewTUNRuntimeFromConfig(cfg *config.KernelConfig) (*TUNRuntime, error) {
 	}
 	return NewTUNRuntime(runtime), nil
 }
+
+func NewTUNRuntimeFromBootstrap(cfg *config.KernelConfig, connectionManager *session.ConnectionManager, connectIPManager *session.ConnectIPSessionManager, delegate *net.Dialer) (*TUNRuntime, error) {
+	bootstrap, err := session.NewBootstrapDialer(connectionManager, connectIPManager, delegate)
+	if err != nil {
+		return nil, err
+	}
+	manager, err := NewBootstrapTUNManager(cfg, bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	return NewTUNRuntime(manager), nil
+}

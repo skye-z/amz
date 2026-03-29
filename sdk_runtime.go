@@ -438,7 +438,16 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 
 	if m.opts.TUN.Enabled {
 		tunCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeTUN, "", withAction(m.opts.Logger, "TUN"))
-		runtime, err := iruntime.NewTUNRuntimeFromConfig(&tunCfg)
+		connectionManager, err := amzsession.NewConnectionManager(tunCfg)
+		if err != nil {
+			return nil, err
+		}
+		connectIPManager, err := amzsession.NewConnectIPSessionManager(tunCfg)
+		if err != nil {
+			return nil, err
+		}
+		connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
+		runtime, err := iruntime.NewTUNRuntimeFromBootstrap(&tunCfg, connectionManager, connectIPManager, &net.Dialer{Timeout: tunCfg.ConnectTimeout})
 		if err != nil {
 			return nil, err
 		}
