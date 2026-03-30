@@ -457,14 +457,6 @@ func (m *managedRuntime) reportEndpointFailure(endpoint string, err error) {
 
 func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error, selection endpointSelection, state storage.State, current sdkRuntime) {
 	logger := m.opts.Logger
-	if current != nil {
-		if err := current.Close(); err != nil {
-			logEvent(logger, "managed_runtime", "runtime.close.failed",
-				field("endpoint", failedEndpoint),
-				field("error", err),
-			)
-		}
-	}
 
 	var endpointErrors []error
 	for idx := m.nextCandidateIndex(selection, failedEndpoint); idx < len(selection.Candidates); idx++ {
@@ -549,8 +541,6 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 	}
 
 	m.mu.Lock()
-	m.runtime = nil
-	m.status.Running = false
 	m.switching = false
 	m.mu.Unlock()
 	logEvent(logger, "managed_runtime", "runtime.failover.failed",

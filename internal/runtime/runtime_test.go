@@ -307,6 +307,22 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 	if string(body) != "new" {
 		t.Fatalf("expected hot swap response body %q, got %q", "new", string(body))
 	}
+
+	socksConn, err := net.Dial("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf("expected socks dial success after hot swap, got %v", err)
+	}
+	defer socksConn.Close()
+	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("expected socks greeting write success, got %v", err)
+	}
+	greetingReply := make([]byte, 2)
+	if _, err := io.ReadFull(socksConn, greetingReply); err != nil {
+		t.Fatalf("expected socks greeting reply success after hot swap, got %v", err)
+	}
+	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
+		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
+	}
 }
 
 func TestNewClientRuntimeRejectsEmptyConfig(t *testing.T) {
