@@ -3,18 +3,20 @@ package main
 import (
 	"bytes"
 	"testing"
+
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestBuildClientOptionsInjectsLoggerAndEndpoint(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newAMZLogger(&buf)
 
-	opts := buildClientOptions("127.0.0.1:19811", "./state.json", "162.159.198.1:443", logger)
+	opts := buildClientOptions(testkit.LocalListenSDK, "./state.json", testkit.WarpIPv4Primary443, logger)
 
 	if opts.Logger == nil {
 		t.Fatal("expected logger to be injected into amz options")
 	}
-	if opts.Transport.Endpoint != "162.159.198.1:443" {
+	if opts.Transport.Endpoint != testkit.WarpIPv4Primary443 {
 		t.Fatalf("expected endpoint override to be kept, got %q", opts.Transport.Endpoint)
 	}
 	if !opts.HTTP.Enabled || !opts.SOCKS5.Enabled {
@@ -26,7 +28,7 @@ func TestBuildClientOptionsCanEnableTUNOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newAMZLogger(&buf)
 
-	opts := buildClientOptionsForModes("127.0.0.1:19811", "./state.json", "", logger, false, false, true)
+	opts := buildClientOptionsForModes(testkit.LocalListenSDK, "./state.json", "", logger, false, false, true)
 
 	if !opts.TUN.Enabled {
 		t.Fatal("expected tun to be enabled")

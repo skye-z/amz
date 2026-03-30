@@ -11,6 +11,7 @@ import (
 	singtun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/x/list"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 type fakeNativeTun struct {
@@ -57,16 +58,16 @@ func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 	if err := device.ApplyTUNConfig(Config{
 		Device: DeviceConfig{Name: "amz0", MTU: 1400},
 		Addresses: []Address{
-			{CIDR: "172.16.0.2/32"},
-			{CIDR: "2606:4700:110:8d36::2/128"},
+			{CIDR: testkit.TunIPv4CIDR},
+			{CIDR: testkit.TunIPv6CIDR},
 		},
 	}); err != nil {
 		t.Fatalf("expected apply config success, got %v", err)
 	}
 	if err := device.ApplyTUNRoutes(RoutePlan{
 		Mode:           RouteModeSplit,
-		Routes:         []string{"100.64.0.0/10", "2606:4700::/64"},
-		EndpointRoutes: []string{"162.159.198.1/32", "2606:4700:d0::a29f:c001/128"},
+		Routes:         []string{testkit.RouteSplitV4, testkit.RouteSplitV6},
+		EndpointRoutes: []string{testkit.EndpointRouteV4, testkit.EndpointRouteV6},
 	}); err != nil {
 		t.Fatalf("expected apply routes success, got %v", err)
 	}
@@ -78,22 +79,22 @@ func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 	if got.AutoRoute {
 		t.Fatalf("expected split mode to keep autoroute disabled, got %+v", got)
 	}
-	if len(got.Inet4Address) != 1 || got.Inet4Address[0] != netip.MustParsePrefix("172.16.0.2/32") {
+	if len(got.Inet4Address) != 1 || got.Inet4Address[0] != netip.MustParsePrefix(testkit.TunIPv4CIDR) {
 		t.Fatalf("unexpected inet4 address options: %+v", got.Inet4Address)
 	}
-	if len(got.Inet6Address) != 1 || got.Inet6Address[0] != netip.MustParsePrefix("2606:4700:110:8d36::2/128") {
+	if len(got.Inet6Address) != 1 || got.Inet6Address[0] != netip.MustParsePrefix(testkit.TunIPv6CIDR) {
 		t.Fatalf("unexpected inet6 address options: %+v", got.Inet6Address)
 	}
-	if len(got.Inet4RouteAddress) != 1 || got.Inet4RouteAddress[0] != netip.MustParsePrefix("100.64.0.0/10") {
+	if len(got.Inet4RouteAddress) != 1 || got.Inet4RouteAddress[0] != netip.MustParsePrefix(testkit.RouteSplitV4) {
 		t.Fatalf("unexpected inet4 route options: %+v", got.Inet4RouteAddress)
 	}
-	if len(got.Inet6RouteAddress) != 1 || got.Inet6RouteAddress[0] != netip.MustParsePrefix("2606:4700::/64") {
+	if len(got.Inet6RouteAddress) != 1 || got.Inet6RouteAddress[0] != netip.MustParsePrefix(testkit.RouteSplitV6) {
 		t.Fatalf("unexpected inet6 route options: %+v", got.Inet6RouteAddress)
 	}
-	if len(got.Inet4RouteExcludeAddress) != 1 || got.Inet4RouteExcludeAddress[0] != netip.MustParsePrefix("162.159.198.1/32") {
+	if len(got.Inet4RouteExcludeAddress) != 1 || got.Inet4RouteExcludeAddress[0] != netip.MustParsePrefix(testkit.EndpointRouteV4) {
 		t.Fatalf("unexpected inet4 route exclude options: %+v", got.Inet4RouteExcludeAddress)
 	}
-	if len(got.Inet6RouteExcludeAddress) != 1 || got.Inet6RouteExcludeAddress[0] != netip.MustParsePrefix("2606:4700:d0::a29f:c001/128") {
+	if len(got.Inet6RouteExcludeAddress) != 1 || got.Inet6RouteExcludeAddress[0] != netip.MustParsePrefix(testkit.EndpointRouteV6) {
 		t.Fatalf("unexpected inet6 route exclude options: %+v", got.Inet6RouteExcludeAddress)
 	}
 }
@@ -116,7 +117,7 @@ func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
 	if err := device.ApplyTUNConfig(Config{
 		Device: DeviceConfig{Name: "amz0", MTU: 1400},
 		Addresses: []Address{
-			{CIDR: "172.16.0.2/32"},
+			{CIDR: testkit.TunIPv4CIDR},
 		},
 	}); err != nil {
 		t.Fatalf("expected apply config success, got %v", err)
@@ -124,8 +125,8 @@ func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
 
 	err := device.ApplyTUNRoutes(RoutePlan{
 		Mode:           RouteModeGlobal,
-		Routes:         []string{"0.0.0.0/0", "::/0"},
-		EndpointRoutes: []string{"162.159.198.1/32", "2606:4700:d0::a29f:c001/128"},
+		Routes:         []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
+		EndpointRoutes: []string{testkit.EndpointRouteV4, testkit.EndpointRouteV6},
 	})
 	if err == nil {
 		t.Fatal("expected route update error")
@@ -260,14 +261,14 @@ func TestAssembleStartsSingTunAfterConfigAndRoutes(t *testing.T) {
 		Config: Config{
 			Device: DeviceConfig{Name: "amz0", MTU: 1400},
 			Addresses: []Address{
-				{CIDR: "172.16.0.2/32"},
-				{CIDR: "2606:4700:110:8d36::2/128"},
+				{CIDR: testkit.TunIPv4CIDR},
+				{CIDR: testkit.TunIPv6CIDR},
 			},
 		},
 		Routes: RoutePlan{
 			Mode:           RouteModeGlobal,
-			Routes:         []string{"0.0.0.0/0", "::/0"},
-			EndpointRoutes: []string{"162.159.198.2/32"},
+			Routes:         []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
+			EndpointRoutes: []string{testkit.EndpointRouteV4Alt},
 		},
 		Provider: provider,
 		Adapter:  NewSystemAdapter(),

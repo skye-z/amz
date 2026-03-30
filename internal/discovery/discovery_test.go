@@ -8,6 +8,15 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/discovery"
+	"github.com/skye-z/amz/internal/testkit"
+)
+
+const (
+	localProbeEndpoint443  = testkit.LocalhostIPv4 + ":443"
+	localProbeEndpoint500  = testkit.LocalhostIPv4 + ":500"
+	localProbeEndpoint1701 = testkit.LocalhostIPv4 + ":1701"
+	localProbeEndpoint4500 = testkit.LocalhostIPv4 + ":4500"
+	testWarpIPv6Range126   = "2606:4700:103::/126"
 )
 
 func TestParseSource(t *testing.T) {
@@ -17,8 +26,8 @@ func TestParseSource(t *testing.T) {
 		wantKind  string
 		wantValue string
 	}{
-		{name: "fixed ip endpoint", input: "162.159.198.1:443", wantKind: discovery.SourceFixed, wantValue: "162.159.198.1:443"},
-		{name: "domain endpoint", input: "engage.cloudflareclient.com:443", wantKind: discovery.SourceDomain, wantValue: "engage.cloudflareclient.com:443"},
+		{name: "fixed ip endpoint", input: testkit.WarpIPv4Primary443, wantKind: discovery.SourceFixed, wantValue: testkit.WarpIPv4Primary443},
+		{name: "domain endpoint", input: testkit.WarpHostProxy443, wantKind: discovery.SourceDomain, wantValue: testkit.WarpHostProxy443},
 		{name: "auto endpoint", input: "auto", wantKind: discovery.SourceAuto, wantValue: "auto"},
 	}
 
@@ -41,15 +50,15 @@ func TestParseSource(t *testing.T) {
 func TestBuildCandidatesFromPlanDeduplicatesAddresses(t *testing.T) {
 	plan := discovery.Plan{
 		Source:  discovery.Source{Kind: discovery.SourceAuto, Value: "auto"},
-		Range6:  []string{"2606:4700:103::/126"},
-		Fixed:   []string{"[2606:4700:103::1]:443"},
-		Domains: []string{"engage.cloudflareclient.com:443"},
+		Range6:  []string{testWarpIPv6Range126},
+		Fixed:   []string{testkit.WarpIPv6Primary443},
+		Domains: []string{testkit.WarpHostProxy443},
 	}
 
 	candidates := discovery.BuildCandidatesFromPlan(plan, 443, 4)
 	count := 0
 	for _, candidate := range candidates {
-		if candidate.Address == "[2606:4700:103::1]:443" {
+		if candidate.Address == testkit.WarpIPv6Primary443 {
 			count++
 		}
 	}
@@ -60,16 +69,16 @@ func TestBuildCandidatesFromPlanDeduplicatesAddresses(t *testing.T) {
 
 func TestPickBestCandidatePrefersPreferredWarpProxyPort(t *testing.T) {
 	candidates := []discovery.Candidate{
-		{Address: "162.159.198.2:1701", Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 1 * time.Millisecond},
-		{Address: "162.159.198.2:500", Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 2 * time.Millisecond},
-		{Address: "162.159.198.2:443", Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 200 * time.Millisecond},
+		{Address: testkit.WarpIPv4Alt1701, Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 1 * time.Millisecond},
+		{Address: testkit.WarpIPv4Alt500, Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 2 * time.Millisecond},
+		{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 200 * time.Millisecond},
 	}
 
 	chosen, ok := discovery.PickBestCandidate(candidates)
 	if !ok {
 		t.Fatal("expected candidate selection")
 	}
-	if chosen.Address != "162.159.198.2:443" {
+	if chosen.Address != testkit.WarpIPv4Alt443 {
 		t.Fatalf("expected preferred port 443 candidate, got %q", chosen.Address)
 	}
 }
@@ -118,7 +127,7 @@ func TestAvailableCandidatesPreservesRankedAvailableOrder(t *testing.T) {
 func TestBuildVerificationCandidatesAddsObservedWarpProxyEndpoint(t *testing.T) {
 	preferred, _ := discovery.BuildVerificationCandidates(discovery.Input{
 		Registration: discovery.Registration{
-			EndpointV4:    "162.159.198.1:443",
+			EndpointV4:    testkit.WarpIPv4Primary443,
 			EndpointPorts: []uint16{443},
 		},
 		Scan: discovery.Scan{},
@@ -128,8 +137,8 @@ func TestBuildVerificationCandidatesAddsObservedWarpProxyEndpoint(t *testing.T) 
 	for _, candidate := range preferred {
 		addresses = append(addresses, candidate.Address)
 	}
-	if !containsCandidateAddress(addresses, "162.159.198.2:443") {
-		t.Fatalf("expected observed proxy endpoint fallback 162.159.198.2:443, got %+v", addresses)
+	if !containsCandidateAddress(addresses, testkit.WarpIPv4Alt443) {
+		t.Fatalf("expected observed proxy endpoint fallback %s, got %+v", testkit.WarpIPv4Alt443, addresses)
 	}
 }
 
@@ -149,7 +158,7 @@ func TestBuildVerificationCandidatesPrefersCacheReuse(t *testing.T) {
 			},
 		},
 		Registration: discovery.Registration{
-			EndpointV4:    "162.159.198.1:443",
+			EndpointV4:    testkit.WarpIPv4Primary443,
 			EndpointPorts: []uint16{443},
 		},
 		Scan: discovery.Scan{
@@ -168,17 +177,17 @@ func TestBuildVerificationCandidatesPrefersCacheReuse(t *testing.T) {
 func TestSelectFallsBackToScannedCandidate(t *testing.T) {
 	result := discovery.Select(discovery.Input{
 		Registration: discovery.Registration{
-			EndpointV4:    "162.159.198.1:443",
+			EndpointV4:    testkit.WarpIPv4Primary443,
 			EndpointPorts: []uint16{443},
 		},
 		Scan: discovery.Scan{
 			Fixed: []string{"slow.example:443", "fast.example:443"},
 		},
 	}, discovery.NewStaticProber(map[string]discovery.ProbeResult{
-		"162.159.198.1:443": {Address: "162.159.198.1:443", Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
-		"162.159.198.2:443": {Address: "162.159.198.2:443", Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
-		"slow.example:443":  {Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 40 * time.Millisecond},
-		"fast.example:443":  {Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+		testkit.WarpIPv4Primary443: {Address: testkit.WarpIPv4Primary443, Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
+		testkit.WarpIPv4Alt443:     {Address: testkit.WarpIPv4Alt443, Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
+		"slow.example:443":         {Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 40 * time.Millisecond},
+		"fast.example:443":         {Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
 	}), 443, 4)
 
 	if !result.OK {
@@ -215,23 +224,23 @@ func TestRealProberSelectsNetworkByPort(t *testing.T) {
 	})))
 
 	_ = prober.Probe([]discovery.Candidate{
-		{Address: "127.0.0.1:443"},
-		{Address: "127.0.0.1:500"},
-		{Address: "127.0.0.1:1701"},
-		{Address: "127.0.0.1:4500"},
+		{Address: localProbeEndpoint443},
+		{Address: localProbeEndpoint500},
+		{Address: localProbeEndpoint1701},
+		{Address: localProbeEndpoint4500},
 	})
 
 	joined := strings.Join(seen, " | ")
-	if !strings.Contains(joined, "tcp 127.0.0.1:443") {
+	if !strings.Contains(joined, "tcp "+localProbeEndpoint443) {
 		t.Fatalf("expected tcp probe for 443, got %q", joined)
 	}
-	if !strings.Contains(joined, "udp 127.0.0.1:500") {
+	if !strings.Contains(joined, "udp "+localProbeEndpoint500) {
 		t.Fatalf("expected udp probe for 500, got %q", joined)
 	}
-	if !strings.Contains(joined, "udp 127.0.0.1:1701") {
+	if !strings.Contains(joined, "udp "+localProbeEndpoint1701) {
 		t.Fatalf("expected udp probe for 1701, got %q", joined)
 	}
-	if !strings.Contains(joined, "udp 127.0.0.1:4500") {
+	if !strings.Contains(joined, "udp "+localProbeEndpoint4500) {
 		t.Fatalf("expected udp probe for 4500, got %q", joined)
 	}
 }

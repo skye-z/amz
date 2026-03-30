@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 // 验证 TLS 配置会装配客户端证书材料。
@@ -57,7 +58,7 @@ func TestBuildTLSConfigUsesDefaultSNIWhenUnset(t *testing.T) {
 
 func TestBuildTLSConfigUsesPinnedMASQUEVerificationForAltPorts(t *testing.T) {
 	tlsCfg := buildTLSConfig(QUICOptions{
-		Endpoint:          "162.159.198.2:500",
+		Endpoint:          testkit.WarpIPv4Alt500,
 		ServerName:        config.DefaultSNI,
 		PeerPublicKey:     testMASQUEPeerPublicKeyPEM,
 		ClientPrivateKey:  testClientPrivateKeyBase64,

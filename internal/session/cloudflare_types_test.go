@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	internalcloudflare "github.com/skye-z/amz/internal/cloudflare"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestDefaultCloudflareQuirksUsesInternalAlias(t *testing.T) {
@@ -17,7 +18,7 @@ func TestDefaultCloudflareQuirksUsesInternalAlias(t *testing.T) {
 }
 
 func TestCloudflareSnapshotUsesInternalAlias(t *testing.T) {
-	snapshot := CloudflareSnapshot{Protocol: ProtocolCFConnectIP, Endpoint: "162.159.198.2:443"}
+	snapshot := CloudflareSnapshot{Protocol: ProtocolCFConnectIP, Endpoint: testkit.WarpIPv4Alt443}
 	if _, ok := any(snapshot).(internalcloudflare.Snapshot); !ok {
 		t.Fatalf("expected cloudflare snapshot to use internal alias, got %T", snapshot)
 	}

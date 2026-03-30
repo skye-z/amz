@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T) {
@@ -23,7 +24,7 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	}, failingSharedDialer{}, echoHTTPStreamOpener{})
 	if err != nil {
 		t.Fatalf("expected shared http runtime creation success, got %v", err)
@@ -39,7 +40,7 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 	}
 	defer conn.Close()
 
-	if _, err := fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"); err != nil {
+	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
 		t.Fatalf("expected connect request write success, got %v", err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
@@ -49,15 +50,15 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
 	}
-	if _, err := conn.Write([]byte("ping")); err != nil {
+	if _, err := conn.Write([]byte(echoPayload)); err != nil {
 		t.Fatalf("expected payload write success, got %v", err)
 	}
-	reply := make([]byte, 4)
+	reply := make([]byte, len(echoPayload))
 	if _, err := io.ReadFull(conn, reply); err != nil {
 		t.Fatalf("expected payload echo success, got %v", err)
 	}
-	if got := string(reply); got != "ping" {
-		t.Fatalf("expected echo payload %q, got %q", "ping", got)
+	if got := string(reply); got != echoPayload {
+		t.Fatalf("expected echo payload %q, got %q", echoPayload, got)
 	}
 }
 

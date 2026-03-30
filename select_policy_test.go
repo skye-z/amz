@@ -5,6 +5,7 @@ import (
 
 	"github.com/skye-z/amz/internal/discovery"
 	"github.com/skye-z/amz/internal/storage"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestBuildDiscoveryInputDropsIPv6WhenUnavailable(t *testing.T) {
@@ -12,9 +13,9 @@ func TestBuildDiscoveryInputDropsIPv6WhenUnavailable(t *testing.T) {
 
 	state := storage.State{
 		NodeCache: []storage.Node{{
-			Host:       "engage.cloudflareclient.com:2408",
-			EndpointV4: "162.159.198.1:443",
-			EndpointV6: "[2606:4700:103::1]:443",
+			Host:       testkit.WarpHostPrimary,
+			EndpointV4: testkit.WarpIPv4Primary443,
+			EndpointV6: testkit.WarpIPv6Primary443,
 			Ports:      []uint16{443, 500},
 		}},
 	}
@@ -32,16 +33,16 @@ func TestFilterCandidatesByIPv6Support(t *testing.T) {
 	t.Parallel()
 
 	filtered := filterCandidatesByIPv6Support([]discovery.Candidate{
-		{Address: "162.159.198.2:443", Source: discovery.SourceFixed},
-		{Address: "[2606:4700:103::1]:443", Source: discovery.SourceFixed},
-		{Address: "engage.cloudflareclient.com:443", Source: discovery.SourceDomain},
+		{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed},
+		{Address: testkit.WarpIPv6Primary443, Source: discovery.SourceFixed},
+		{Address: testkit.WarpHostProxy443, Source: discovery.SourceDomain},
 	}, false)
 
 	if len(filtered) != 2 {
 		t.Fatalf("expected only ipv4/domain candidates to remain, got %+v", filtered)
 	}
 	for _, candidate := range filtered {
-		if candidate.Address == "[2606:4700:103::1]:443" {
+		if candidate.Address == testkit.WarpIPv6Primary443 {
 			t.Fatalf("expected ipv6 literal candidate to be filtered, got %+v", filtered)
 		}
 	}

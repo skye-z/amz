@@ -5,7 +5,13 @@
 [![CI/CD](https://github.com/skye-z/amz/actions/workflows/ci.yml/badge.svg)](https://github.com/skye-z/amz/actions/workflows/ci.yml)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/skye-z/amz)](https://pkg.go.dev/github.com/skye-z/amz)
 [![Code Coverage](https://codecov.io/github/skye-z/amz/graph/badge.svg?token=9BVL8QWS9S)](https://codecov.io/github/skye-z/amz)
-[![](https://ldo.betax.dev/badge/community)](https://linux.do/)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=skye-z_amz&metric=bugs)](https://sonarcloud.io/summary/new_code?id=skye-z_amz)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=skye-z_amz&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=skye-z_amz)
+[![LDO](https://ldo.betax.dev/badge/community)](https://linux.do/)
+
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=skye-z_amz&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=skye-z_amz)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=skye-z_amz&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=skye-z_amz)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=skye-z_amz&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=skye-z_amz)
 
 这是一个 Go SDK, 你可以用它来在你的应用里嵌入 Cloudflare WARP 代理
 

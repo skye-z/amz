@@ -7,7 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/skye-z/amz/internal/testkit"
 )
+
+const localProbeAddress443 = testkit.LocalhostIPv4 + ":443"
 
 func TestRealProberUsesConfiguredConcurrencyAndPerCandidateTimeout(t *testing.T) {
 	t.Parallel()
@@ -35,7 +39,7 @@ func TestRealProberUsesConfiguredConcurrencyAndPerCandidateTimeout(t *testing.T)
 
 	candidates := make([]Candidate, 35)
 	for i := range candidates {
-		candidates[i] = Candidate{Address: "127.0.0.1:443"}
+		candidates[i] = Candidate{Address: localProbeAddress443}
 	}
 
 	started := time.Now()
@@ -72,7 +76,7 @@ func TestRealProberStopsWhenBatchTimeoutExpires(t *testing.T) {
 
 	candidates := make([]Candidate, 35)
 	for i := range candidates {
-		candidates[i] = Candidate{Address: "127.0.0.1:443"}
+		candidates[i] = Candidate{Address: localProbeAddress443}
 	}
 
 	started := time.Now()

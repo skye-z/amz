@@ -15,12 +15,26 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 type stubAddr string
 
 func (a stubAddr) Network() string { return "test" }
 func (a stubAddr) String() string  { return string(a) }
+
+const (
+	connectStreamTestTargetHost      = testkit.TestDomain
+	connectStreamTestHTTPSPort       = "443"
+	connectStreamTestAltHTTPSPort    = "8443"
+	connectStreamTestPrivateHTTPPort = "8080"
+	connectStreamTestMissingHost     = "nonexistent." + testkit.TestDomain
+	connectStreamTestTargetEndpoint  = connectStreamTestTargetHost + ":" + connectStreamTestHTTPSPort
+	connectStreamTestAltHTTPSURL     = "https://" + connectStreamTestTargetHost + ":" + connectStreamTestAltHTTPSPort
+	connectStreamTestHTTPURL         = "http://" + connectStreamTestTargetHost
+	connectStreamTestPrivateEndpoint = testkit.TestIPv4Private + ":" + connectStreamTestPrivateHTTPPort
+	connectStreamTestMasqueAuthority = "masque.example:443"
+)
 
 type fakeRequestStream struct {
 	readData        []byte
@@ -170,20 +184,20 @@ func (c *fakeBoundH3Client) RequestConn() h3RequestConn { return c.requestConn }
 
 func TestBuildConnectStreamOptions(t *testing.T) {
 	h3 := HTTP3Options{
-		Authority:       "162.159.197.1:443",
+		Authority:       testkit.WarpIPv4Legacy443,
 		EnableDatagrams: true,
 	}
 
-	opts := BuildConnectStreamOptions(h3, "example.com", "443")
+	opts := BuildConnectStreamOptions(h3, connectStreamTestTargetHost, connectStreamTestHTTPSPort)
 
-	if opts.Authority != "162.159.197.1:443" {
-		t.Errorf("expected authority %q, got %q", "162.159.197.1:443", opts.Authority)
+	if opts.Authority != testkit.WarpIPv4Legacy443 {
+		t.Errorf("expected authority %q, got %q", testkit.WarpIPv4Legacy443, opts.Authority)
 	}
-	if opts.TargetHost != "example.com" {
-		t.Errorf("expected target host %q, got %q", "example.com", opts.TargetHost)
+	if opts.TargetHost != connectStreamTestTargetHost {
+		t.Errorf("expected target host %q, got %q", connectStreamTestTargetHost, opts.TargetHost)
 	}
-	if opts.TargetPort != "443" {
-		t.Errorf("expected target port %q, got %q", "443", opts.TargetPort)
+	if opts.TargetPort != connectStreamTestHTTPSPort {
+		t.Errorf("expected target port %q, got %q", connectStreamTestHTTPSPort, opts.TargetPort)
 	}
 	if opts.Protocol != ProtocolConnectStream {
 		t.Errorf("expected protocol %q, got %q", ProtocolConnectStream, opts.Protocol)
@@ -193,7 +207,7 @@ func TestBuildConnectStreamOptions(t *testing.T) {
 func TestConnectStreamManager_StateTransitions(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()
@@ -226,7 +240,7 @@ func TestConnectStreamManager_StateTransitions(t *testing.T) {
 func TestConnectStreamManager_Stats(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()
@@ -258,11 +272,11 @@ func TestParseConnectTarget(t *testing.T) {
 		wantHost string
 		wantPort string
 	}{
-		{"example.com:443", "example.com", "443"},
-		{"https://example.com:8443", "example.com", "8443"},
-		{"http://example.com", "example.com", "443"},
-		{"example.com", "example.com", "443"},
-		{"192.168.1.1:8080", "192.168.1.1", "8080"},
+		{connectStreamTestTargetEndpoint, connectStreamTestTargetHost, connectStreamTestHTTPSPort},
+		{connectStreamTestAltHTTPSURL, connectStreamTestTargetHost, connectStreamTestAltHTTPSPort},
+		{connectStreamTestHTTPURL, connectStreamTestTargetHost, connectStreamTestHTTPSPort},
+		{connectStreamTestTargetHost, connectStreamTestTargetHost, connectStreamTestHTTPSPort},
+		{connectStreamTestPrivateEndpoint, testkit.TestIPv4Private, connectStreamTestPrivateHTTPPort},
 	}
 
 	for _, tt := range tests {
@@ -283,11 +297,11 @@ func TestParseConnectTarget(t *testing.T) {
 func TestActiveStream_ReadWrite(t *testing.T) {
 	stream := &activeStream{
 		info: StreamInfo{
-			RemoteAddr: "example.com:443",
+			RemoteAddr: connectStreamTestTargetEndpoint,
 			Protocol:   ProtocolConnectStream,
 		},
-		local:  "127.0.0.1:40000",
-		remote: "example.com:443",
+		local:  testkit.LocalAddrAltDiag,
+		remote: connectStreamTestTargetEndpoint,
 	}
 
 	if stream.conn != nil {
@@ -308,7 +322,7 @@ func TestActiveStream_ReadWrite(t *testing.T) {
 func TestConnectStreamManager_OpenStream_NotReady(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()
@@ -321,7 +335,7 @@ func TestConnectStreamManager_OpenStream_NotReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err = mgr.OpenStream(ctx, "example.com", "443")
+	_, err = mgr.OpenStream(ctx, connectStreamTestTargetHost, connectStreamTestHTTPSPort)
 	if err == nil {
 		t.Error("expected error when opening stream in idle state")
 	}
@@ -330,7 +344,7 @@ func TestConnectStreamManager_OpenStream_NotReady(t *testing.T) {
 func TestConnectStreamManager_StreamEndpoint_NotFound(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()
@@ -342,7 +356,7 @@ func TestConnectStreamManager_StreamEndpoint_NotFound(t *testing.T) {
 
 	mgr.SetReady()
 
-	endpoint := mgr.StreamEndpoint("nonexistent.example.com", "443")
+	endpoint := mgr.StreamEndpoint(connectStreamTestMissingHost, connectStreamTestHTTPSPort)
 	if endpoint != nil {
 		t.Error("expected nil endpoint for nonexistent stream")
 	}
@@ -351,7 +365,7 @@ func TestConnectStreamManager_StreamEndpoint_NotFound(t *testing.T) {
 func TestConnectStreamManager_CloseStream_NotFound(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()
@@ -361,7 +375,7 @@ func TestConnectStreamManager_CloseStream_NotFound(t *testing.T) {
 		t.Fatalf("failed to create manager: %v", err)
 	}
 
-	err = mgr.CloseStream("nonexistent.example.com", "443")
+	err = mgr.CloseStream(connectStreamTestMissingHost, connectStreamTestHTTPSPort)
 	if err != nil {
 		t.Errorf("expected no error when closing nonexistent stream: %v", err)
 	}
@@ -371,17 +385,17 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	stream := &fakeRequestStream{
 		readData:   []byte("server-bytes"),
 		response:   &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))},
-		localAddr:  stubAddr("127.0.0.1:4444"),
-		remoteAddr: stubAddr("example.com:443"),
+		localAddr:  stubAddr(testkit.LocalAddrHTTPDiag),
+		remoteAddr: stubAddr(connectStreamTestTargetEndpoint),
 	}
 	client := &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}
 
 	conn, rsp, latency, err := realStreamDialer{}.DialStream(
 		context.Background(),
 		client,
-		QUICOptions{Endpoint: "127.0.0.1:4444"},
-		HTTP3Options{Authority: "masque.example:443"},
-		ConnectStreamOptions{TargetHost: "example.com", TargetPort: "443", Protocol: ProtocolConnectStream},
+		QUICOptions{Endpoint: testkit.LocalAddrHTTPDiag},
+		HTTP3Options{Authority: connectStreamTestMasqueAuthority},
+		ConnectStreamOptions{TargetHost: connectStreamTestTargetHost, TargetPort: connectStreamTestHTTPSPort, Protocol: ProtocolConnectStream},
 	)
 	if err != nil {
 		t.Fatalf("DialStream returned error: %v", err)
@@ -398,8 +412,8 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if stream.request.Method != http.MethodConnect {
 		t.Fatalf("expected CONNECT method, got %q", stream.request.Method)
 	}
-	if got := stream.request.Host; got != "example.com:443" {
-		t.Fatalf("expected request host %q, got %q", "example.com:443", got)
+	if got := stream.request.Host; got != connectStreamTestTargetEndpoint {
+		t.Fatalf("expected request host %q, got %q", connectStreamTestTargetEndpoint, got)
 	}
 	if got := stream.request.Proto; got != ProtocolConnectStream {
 		t.Fatalf("expected connect protocol %q, got %q", ProtocolConnectStream, got)
@@ -435,11 +449,11 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if stream.bodyClosed {
 		t.Fatal("expected successful CONNECT response body to remain open for stream relay")
 	}
-	if got := conn.LocalAddr().String(); got != "127.0.0.1:4444" {
-		t.Fatalf("expected local addr %q, got %q", "127.0.0.1:4444", got)
+	if got := conn.LocalAddr().String(); got != testkit.LocalAddrHTTPDiag {
+		t.Fatalf("expected local addr %q, got %q", testkit.LocalAddrHTTPDiag, got)
 	}
-	if got := conn.RemoteAddr().String(); got != "example.com:443" {
-		t.Fatalf("expected remote addr %q, got %q", "example.com:443", got)
+	if got := conn.RemoteAddr().String(); got != connectStreamTestTargetEndpoint {
+		t.Fatalf("expected remote addr %q, got %q", connectStreamTestTargetEndpoint, got)
 	}
 
 	deadline := time.Now().Add(time.Second)
@@ -475,9 +489,9 @@ func TestConnectStreamDialerReturnsErrorForNon2xxResponse(t *testing.T) {
 	conn, rsp, latency, err := realStreamDialer{}.DialStream(
 		context.Background(),
 		&fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}},
-		QUICOptions{Endpoint: "127.0.0.1:4444"},
-		HTTP3Options{Authority: "masque.example:443"},
-		ConnectStreamOptions{TargetHost: "example.com", TargetPort: "443", Protocol: ProtocolConnectStream},
+		QUICOptions{Endpoint: testkit.LocalAddrHTTPDiag},
+		HTTP3Options{Authority: connectStreamTestMasqueAuthority},
+		ConnectStreamOptions{TargetHost: connectStreamTestTargetHost, TargetPort: connectStreamTestHTTPSPort, Protocol: ProtocolConnectStream},
 	)
 	if err == nil {
 		t.Fatal("expected error for non-2xx CONNECT response")
@@ -524,7 +538,7 @@ func TestHTTP3StreamConnWithoutStreamFailsCleanly(t *testing.T) {
 
 func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	tlsServerCfg, rootPool := newTestTLSConfig(t)
-	tlsListener, err := tls.Listen("tcp", "127.0.0.1:0", tlsServerCfg)
+	tlsListener, err := tls.Listen("tcp", testkit.LocalListenZero, tlsServerCfg)
 	if err != nil {
 		t.Fatalf("expected tls listener success, got %v", err)
 	}
@@ -548,7 +562,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	}()
 
 	h3TLS, h3Pool := newTestTLSConfig(t)
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(testkit.LocalhostIPv4).To4(), Port: 0})
 	if err != nil {
 		t.Fatalf("expected udp listen success, got %v", err)
 	}
@@ -582,10 +596,10 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	go func() { _ = server.Serve(udpConn) }()
 	defer server.Close()
 
-	endpoint := net.JoinHostPort("localhost", fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
+	endpoint := net.JoinHostPort(testkit.LocalhostName, fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
 	manager, err := NewConnectionManager(config.KernelConfig{
 		Endpoint:       endpoint,
-		SNI:            "localhost",
+		SNI:            testkit.LocalhostName,
 		MTU:            config.DefaultMTU,
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
@@ -595,7 +609,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected connection manager creation success, got %v", err)
 	}
-	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: "localhost", RootCAs: h3Pool, NextProtos: []string{http3.NextProtoH3}}}
+	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: testkit.LocalhostName, RootCAs: h3Pool, NextProtos: []string{http3.NextProtoH3}}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -605,7 +619,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 
 	streamMgr, err := NewConnectStreamManager(config.KernelConfig{
 		Endpoint:       endpoint,
-		SNI:            "localhost",
+		SNI:            testkit.LocalhostName,
 		MTU:            config.DefaultMTU,
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
@@ -629,7 +643,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 	}
 	defer tunneledConn.Close()
 
-	clientTLS := tls.Client(tunneledConn, &tls.Config{ServerName: "localhost", RootCAs: rootPool})
+	clientTLS := tls.Client(tunneledConn, &tls.Config{ServerName: testkit.LocalhostName, RootCAs: rootPool})
 	if err := clientTLS.HandshakeContext(ctx); err != nil {
 		t.Fatalf("expected tls handshake over connect stream success, got %v", err)
 	}

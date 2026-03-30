@@ -9,6 +9,7 @@ import (
 
 	"github.com/skye-z/amz/internal/discovery"
 	"github.com/skye-z/amz/internal/storage"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
@@ -27,15 +28,15 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 			ClientID:          "client-id-123",
 		},
 		NodeCache: []storage.Node{
-			{ID: "node-1", EndpointV4: "162.159.198.2:443"},
+			{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443},
 		},
 	}
 	runtime := &stubClientRuntimeAdapter{
-		status: runtimeStatus("127.0.0.1:9811", "162.159.198.2:443", true, true, false),
+		status: runtimeStatus(testkit.LocalListenSDK, testkit.WarpIPv4Alt443, true, true, false),
 	}
 	mr := &managedRuntime{
 		opts: Options{
-			Listen: ListenOptions{Address: "127.0.0.1:9811"},
+			Listen: ListenOptions{Address: testkit.LocalListenSDK},
 			HTTP:   HTTPOptions{Enabled: true},
 			SOCKS5: SOCKS5Options{Enabled: true},
 			Logger: logger,
@@ -48,7 +49,7 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 		},
 	}
 	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
-		candidate := discovery.Candidate{Address: "162.159.198.2:443", Source: discovery.SourceFixed, Available: true, WarpEnabled: true}
+		candidate := discovery.Candidate{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true}
 		return endpointSelection{Primary: candidate, Candidates: []discovery.Candidate{candidate}}, authState.NodeCache, nil
 	}
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
@@ -63,6 +64,8 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 	}
 
 	output := logger.String()
+	expectedEndpoint := fmt.Sprintf("endpoint=%q", testkit.WarpIPv4Alt443)
+	expectedListen := fmt.Sprintf("listen_address=%q", testkit.LocalListenSDK)
 	for _, want := range []string{
 		"[START]",
 		"[REGISTER]",
@@ -74,8 +77,8 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 		"starting managed runtime",
 		"registration state ready",
 		"selected endpoint",
-		"endpoint=\"162.159.198.2:443\"",
-		"listen_address=\"127.0.0.1:9811\"",
+		expectedEndpoint,
+		expectedListen,
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, output)
@@ -88,15 +91,16 @@ func TestLogEventUsesReadableActionFormat(t *testing.T) {
 
 	logger := &capturingLogger{}
 	logEvent(logger, "managed_runtime", "endpoint.select.success",
-		field("endpoint", "162.159.198.2:443"),
+		field("endpoint", testkit.WarpIPv4Alt443),
 		field("source", "fixed"),
 	)
 
 	output := logger.String()
+	expectedEndpoint := fmt.Sprintf("endpoint=%q", testkit.WarpIPv4Alt443)
 	for _, want := range []string{
 		"[SELECT]",
 		"selected endpoint",
-		"endpoint=\"162.159.198.2:443\"",
+		expectedEndpoint,
 		"source=\"fixed\"",
 	} {
 		if !strings.Contains(output, want) {
@@ -127,12 +131,12 @@ func TestBaseKernelConfigFromStateCarriesPhaseLogger(t *testing.T) {
 	t.Parallel()
 
 	logger := &capturingLogger{}
-	cfg := baseKernelConfigFromState(storage.State{}, "162.159.198.2:443", "warp.cloudflare.com", "http", "127.0.0.1:9811", withAction(logger, "PROXY"))
+	cfg := baseKernelConfigFromState(storage.State{}, testkit.WarpIPv4Alt443, "warp.cloudflare.com", "http", testkit.LocalListenSDK, withAction(logger, "PROXY"))
 	if cfg.Logger == nil {
 		t.Fatal("expected base kernel config to carry logger")
 	}
 
-	cfg.Logger.Printf("http proxy start: listen=%s endpoint=%s", "127.0.0.1:9811", "162.159.198.2:443")
+	cfg.Logger.Printf("http proxy start: listen=%s endpoint=%s", testkit.LocalListenSDK, testkit.WarpIPv4Alt443)
 	output := logger.String()
 	if !strings.Contains(output, "[PROXY]") {
 		t.Fatalf("expected proxy phase prefix, got %q", output)

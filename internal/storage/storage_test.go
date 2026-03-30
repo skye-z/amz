@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestDefaultPathUsesAMZStateJSON(t *testing.T) {
@@ -39,17 +41,17 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 		NodeCache: []Node{
 			{
 				ID:         "node-1",
-				Host:       "engage.cloudflareclient.com:2408",
-				EndpointV4: "162.159.198.1:443",
-				EndpointV6: "[2606:4700:103::1]:443",
+				Host:       testkit.WarpHostPrimary,
+				EndpointV4: testkit.WarpIPv4Primary443,
+				EndpointV6: testkit.WarpIPv6Primary443,
 				PublicKey:  "peer-1",
 				Ports:      []uint16{443, 500},
 			},
 			{
 				ID:         "node-2",
-				Host:       "engage.cloudflareclient.com:500",
-				EndpointV4: "162.159.198.2:500",
-				EndpointV6: "[2606:4700:103::2]:500",
+				Host:       testkit.WarpHostProxy500,
+				EndpointV4: testkit.WarpIPv4Alt500,
+				EndpointV6: testkit.WarpIPv6Alt500,
 				PublicKey:  "peer-2",
 				Ports:      []uint16{500},
 			},

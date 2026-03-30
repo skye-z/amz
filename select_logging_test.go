@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/discovery"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
@@ -14,8 +15,8 @@ func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
 
 	logger := &capturingLogger{}
 	base := discovery.NewStaticProber(map[string]discovery.ProbeResult{
-		"162.159.198.2:443": {
-			Address:     "162.159.198.2:443",
+		testkit.WarpIPv4Alt443: {
+			Address:     testkit.WarpIPv4Alt443,
 			Latency:     5 * time.Millisecond,
 			Available:   true,
 			WarpEnabled: true,
@@ -24,7 +25,7 @@ func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
 
 	wrapped := newLoggingProber(logger, base)
 	results := wrapped.Probe([]discovery.Candidate{
-		{Address: "162.159.198.2:443", Source: discovery.SourceFixed},
+		{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed},
 	})
 	if len(results) != 1 {
 		t.Fatalf("expected one result, got %d", len(results))
@@ -35,7 +36,7 @@ func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
 		"[SELECT]",
 		"probing candidate",
 		"probe finished",
-		"candidate=\"162.159.198.2:443\"",
+		"candidate=\"" + testkit.WarpIPv4Alt443 + "\"",
 		"source=\"fixed\"",
 	} {
 		if !strings.Contains(output, want) {
@@ -54,7 +55,7 @@ func TestLoggingWarpStatusCheckerEmitsDiagnostics(t *testing.T) {
 
 	wrapped := newLoggingWarpStatusChecker(logger, base)
 	ok, err := wrapped.CheckWarp(context.Background(), discovery.Candidate{
-		Address: "162.159.198.2:443",
+		Address: testkit.WarpIPv4Alt443,
 		Source:  discovery.SourceFixed,
 	})
 	if err != nil {
@@ -69,7 +70,7 @@ func TestLoggingWarpStatusCheckerEmitsDiagnostics(t *testing.T) {
 		"[SELECT]",
 		"checking warp availability",
 		"warp availability confirmed",
-		"candidate=\"162.159.198.2:443\"",
+		"candidate=\"" + testkit.WarpIPv4Alt443 + "\"",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, output)

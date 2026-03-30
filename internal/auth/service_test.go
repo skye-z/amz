@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/storage"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
@@ -34,9 +35,9 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 					PublicKey: "peer-public-key-123",
 					Endpoint: ResponseEndpoint{
 						ResponseEndpointObject: ResponseEndpointObject{
-							Host:  "engage.cloudflareclient.com:2408",
-							V4:    "162.159.198.10",
-							V6:    "2606:4700:103::10",
+							Host:  testkit.WarpHostPrimary,
+							V4:    testkit.WarpIPv4Enroll10,
+							V6:    testkit.WarpIPv6Enroll10,
 							Ports: []uint16{443},
 						},
 					},
@@ -123,8 +124,8 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 			NodeCache: []storage.Node{
 				{
 					ID:         "node-keep",
-					Host:       "engage.cloudflareclient.com:2408",
-					EndpointV4: "162.159.198.1:443",
+					Host:       testkit.WarpHostPrimary,
+					EndpointV4: testkit.WarpIPv4Primary443,
 					PublicKey:  "peer-old",
 				},
 			},
@@ -145,9 +146,9 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 					PublicKey: "peer-new",
 					Endpoint: ResponseEndpoint{
 						ResponseEndpointObject: ResponseEndpointObject{
-							Host:  "engage.cloudflareclient.com:2408",
-							V4:    "162.159.198.20:0",
-							V6:    "[2606:4700:103::20]:0",
+							Host:  testkit.WarpHostPrimary,
+							V4:    testkit.WarpIPv4Enroll20,
+							V6:    testkit.WarpIPv6Enroll20,
 							Ports: []uint16{443, 500},
 						},
 					},

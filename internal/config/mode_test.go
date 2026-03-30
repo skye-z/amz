@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 func TestKernelConfigFillDefaultsTrimWhitespaceMode(t *testing.T) {
@@ -39,7 +40,7 @@ func TestKernelConfigValidateByMode(t *testing.T) {
 		{name: "tun requires name", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive}, wantErr: true},
 		{name: "socks requires listen address", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeSOCKS, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive}, wantErr: true},
 		{name: "http requires listen address", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeHTTP, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive}, wantErr: true},
-		{name: "valid socks config", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeSOCKS, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, SOCKS: config.SOCKSConfig{ListenAddress: "127.0.0.1:1080"}}, wantErr: false},
+		{name: "valid socks config", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeSOCKS, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, SOCKS: config.SOCKSConfig{ListenAddress: testkit.LocalListenSOCKS}}, wantErr: false},
 		{name: "valid tun config", cfg: config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: "igara0"}}, wantErr: false},
 	}
 	for _, tt := range tests {

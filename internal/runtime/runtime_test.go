@@ -14,6 +14,12 @@ import (
 	"github.com/skye-z/amz/internal/config"
 	internalruntime "github.com/skye-z/amz/internal/runtime"
 	"github.com/skye-z/amz/internal/session"
+	"github.com/skye-z/amz/internal/testkit"
+)
+
+const (
+	clientRuntimeHTTPResourceURL = "http://" + testkit.TestDomain + "/resource"
+	clientRuntimeEchoPayload     = "ping"
 )
 
 func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
@@ -26,7 +32,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected http manager creation success, got %v", err)
@@ -46,7 +52,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected socks manager creation success, got %v", err)
@@ -54,7 +60,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	socksManager.SetStreamManager(echoStreamOpener{})
 
 	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: "127.0.0.1:0",
+		ListenAddress: testkit.LocalListenZero,
 		HTTP:          internalruntime.NewHTTPRuntime(httpManager),
 		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager),
 	})
@@ -68,11 +74,11 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	}
 
 	listenAddress := runtime.ListenAddress()
-	if listenAddress == "" || listenAddress == "127.0.0.1:0" {
+	if listenAddress == "" || listenAddress == testkit.LocalListenZero {
 		t.Fatalf("expected resolved listen address, got %q", listenAddress)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	req, err := http.NewRequest(http.MethodGet, clientRuntimeHTTPResourceURL, nil)
 	if err != nil {
 		t.Fatalf("expected request construction success, got %v", err)
 	}
@@ -113,8 +119,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
 		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
 	}
-	connectRequest := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}, []byte("example.com")...)
-	connectRequest = append(connectRequest, 0x00, 0x50)
+	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
 	if _, err := socksConn.Write(connectRequest); err != nil {
 		t.Fatalf("expected socks connect request write success, got %v", err)
 	}
@@ -125,15 +130,15 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	if connectReply[1] != 0x00 {
 		t.Fatalf("expected socks connect success reply, got %v", connectReply)
 	}
-	if _, err := socksConn.Write([]byte("ping")); err != nil {
+	if _, err := socksConn.Write([]byte(clientRuntimeEchoPayload)); err != nil {
 		t.Fatalf("expected socks payload write success, got %v", err)
 	}
-	echoReply := make([]byte, 4)
+	echoReply := make([]byte, len(clientRuntimeEchoPayload))
 	if _, err := io.ReadFull(socksConn, echoReply); err != nil {
 		t.Fatalf("expected socks payload echo success, got %v", err)
 	}
-	if string(echoReply) != "ping" {
-		t.Fatalf("expected echo payload %q, got %q", "ping", string(echoReply))
+	if string(echoReply) != clientRuntimeEchoPayload {
+		t.Fatalf("expected echo payload %q, got %q", clientRuntimeEchoPayload, string(echoReply))
 	}
 }
 
@@ -147,7 +152,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected http manager creation success, got %v", err)
@@ -167,7 +172,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	}
 
 	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: "127.0.0.1:0",
+		ListenAddress: testkit.LocalListenZero,
 		HTTP:          internalruntime.NewHTTPRuntime(httpManager),
 		TUN:           internalruntime.NewTUNRuntime(tunnel),
 	})
@@ -205,7 +210,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected http manager creation success, got %v", err)
@@ -217,7 +222,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected socks manager creation success, got %v", err)
@@ -254,7 +259,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 	})
 
 	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: "127.0.0.1:0",
+		ListenAddress: testkit.LocalListenZero,
 		HTTP:          httpRuntime,
 		SOCKS5:        socksRuntime,
 		TUN:           tunRuntime,
@@ -274,8 +279,8 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 func TestClientRuntimeHealthCheckReturnsFirstComponentError(t *testing.T) {
 	t.Parallel()
 
-	httpRuntime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: "127.0.0.1:9811", state: config.StateIdle})
-	socksRuntime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: "127.0.0.1:1080", state: config.StateIdle})
+	httpRuntime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: testkit.LocalListenSDK, state: config.StateIdle})
+	socksRuntime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: testkit.LocalListenSOCKS, state: config.StateIdle})
 	tunRuntime := internalruntime.NewTUNRuntime(stubTunnel{state: config.StateIdle})
 	httpRuntime.SetHealthCheck(func(context.Context) error { return errors.New("http unhealthy") })
 	socksRuntime.SetHealthCheck(func(context.Context) error { return nil })
@@ -305,7 +310,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected http manager creation success, got %v", err)
@@ -320,7 +325,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected socks manager creation success, got %v", err)
@@ -328,7 +333,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 	socksManager1.SetStreamManager(echoStreamOpener{})
 
 	runtime1, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: "127.0.0.1:0",
+		ListenAddress: testkit.LocalListenZero,
 		HTTP:          internalruntime.NewHTTPRuntime(httpManager1),
 		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager1),
 	})
@@ -348,7 +353,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected second http manager creation success, got %v", err)
@@ -363,7 +368,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected second socks manager creation success, got %v", err)
@@ -371,7 +376,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 	socksManager2.SetStreamManager(echoStreamOpener{})
 
 	runtime2, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: "127.0.0.1:0",
+		ListenAddress: testkit.LocalListenZero,
 		HTTP:          internalruntime.NewHTTPRuntime(httpManager2),
 		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager2),
 	})
@@ -384,7 +389,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		t.Fatal("expected hot swap to succeed")
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	req, err := http.NewRequest(http.MethodGet, clientRuntimeHTTPResourceURL, nil)
 	if err != nil {
 		t.Fatalf("expected request construction success, got %v", err)
 	}
@@ -446,7 +451,7 @@ func TestNewHTTPRuntimeFromConfig(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected http runtime factory success, got %v", err)
@@ -483,7 +488,7 @@ func TestNewSOCKS5RuntimeFromBootstrap(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	}, connectionManager, connectIPManager, &net.Dialer{Timeout: config.DefaultConnectTimeout})
 	if err != nil {
 		t.Fatalf("expected socks runtime factory success, got %v", err)
@@ -516,7 +521,7 @@ func TestNewTUNRuntimeFromConfig(t *testing.T) {
 func TestNewHTTPRuntimeAcceptsInterfaceManager(t *testing.T) {
 	t.Parallel()
 
-	runtime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: "127.0.0.1:9811", state: config.StateIdle})
+	runtime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: testkit.LocalListenSDK, state: config.StateIdle})
 	if runtime == nil {
 		t.Fatal("expected http runtime from interface manager")
 	}
@@ -525,7 +530,7 @@ func TestNewHTTPRuntimeAcceptsInterfaceManager(t *testing.T) {
 func TestNewSOCKS5RuntimeAcceptsInterfaceManager(t *testing.T) {
 	t.Parallel()
 
-	runtime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: "127.0.0.1:1080", state: config.StateIdle})
+	runtime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: testkit.LocalListenSOCKS, state: config.StateIdle})
 	if runtime == nil {
 		t.Fatal("expected socks5 runtime from interface manager")
 	}
@@ -558,7 +563,7 @@ func TestNewHTTPRuntimeFromBootstrapExposesReusableSnapshot(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	}, connectionManager, connectIPManager, &net.Dialer{Timeout: config.DefaultConnectTimeout})
 	if err != nil {
 		t.Fatalf("expected http runtime factory success, got %v", err)
@@ -566,7 +571,7 @@ func TestNewHTTPRuntimeFromBootstrapExposesReusableSnapshot(t *testing.T) {
 	if runtime == nil {
 		t.Fatal("expected non-nil http runtime")
 	}
-	if runtime.ListenAddress() != "127.0.0.1:0" {
+	if runtime.ListenAddress() != testkit.LocalListenZero {
 		t.Fatalf("expected initial listen address from bootstrap runtime, got %q", runtime.ListenAddress())
 	}
 }
@@ -586,6 +591,11 @@ func (echoStreamOpener) OpenStream(context.Context, string, string) (net.Conn, e
 		_, _ = io.Copy(server, server)
 	}()
 	return client, nil
+}
+
+func buildSOCKSDomainConnectRequest(host string, port uint16) []byte {
+	request := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}, []byte(host)...)
+	return append(request, byte(port>>8), byte(port))
 }
 
 func readSOCKSReply(r io.Reader) ([]byte, error) {
@@ -652,8 +662,8 @@ type stubTunnel struct {
 	state string
 }
 
-func (s stubTunnel) Start(context.Context) error       { return nil }
-func (s stubTunnel) Stop(context.Context) error        { return nil }
-func (s stubTunnel) Close() error                      { return nil }
-func (s stubTunnel) State() string                     { return s.state }
-func (s stubTunnel) Stats() config.Stats               { return config.Stats{} }
+func (s stubTunnel) Start(context.Context) error { return nil }
+func (s stubTunnel) Stop(context.Context) error  { return nil }
+func (s stubTunnel) Close() error                { return nil }
+func (s stubTunnel) State() string               { return s.state }
+func (s stubTunnel) Stats() config.Stats         { return config.Stats{} }

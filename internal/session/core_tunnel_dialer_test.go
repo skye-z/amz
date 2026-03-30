@@ -11,6 +11,7 @@ import (
 
 	"github.com/skye-z/amz/internal/config"
 	"github.com/skye-z/amz/internal/packet"
+	"github.com/skye-z/amz/internal/testkit"
 	internaltun "github.com/skye-z/amz/internal/tun"
 )
 
@@ -62,8 +63,8 @@ type fakePacketSession struct{}
 func (s *fakePacketSession) Close() error { return nil }
 func (s *fakePacketSession) SessionInfo() SessionInfo {
 	return SessionInfo{
-		IPv4: "172.16.0.2/32",
-		IPv6: "2606:4700:110:8d36::2/128",
+		IPv4: testkit.TunIPv4CIDR,
+		IPv6: testkit.TunIPv6CIDR,
 	}
 }
 func (s *fakePacketSession) ReadPacket(ctx context.Context, dst []byte) (int, error) {
@@ -184,7 +185,7 @@ func TestCoreTunnelDialerPropagatesBootstrapError(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	}
 
 	connectionManager, err := NewConnectionManager(cfg)
@@ -227,7 +228,7 @@ func TestCoreTunnelDialerHTTPModeDoesNotRequireConnectIP(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	}
 
 	connectionManager, err := NewConnectionManager(cfg)

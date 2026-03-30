@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 // 验证协议参数映射会以表驱动方式覆盖 CONNECT-IP 协议解析结果。
@@ -23,7 +24,7 @@ func TestBuildConnectIPOptionsTableDriven(t *testing.T) {
 		{
 			name: "datagrams disabled",
 			h3: HTTP3Options{
-				Authority:       "162.159.193.1:443",
+				Authority:       testkit.WarpIPv4Legacy443,
 				EnableDatagrams: false,
 			},
 		},
@@ -138,8 +139,8 @@ func TestConnectIPSessionManagerSnapshotCopiesRoutes(t *testing.T) {
 	}
 
 	info := SessionInfo{
-		IPv4:   "172.16.0.2/32",
-		Routes: []string{"0.0.0.0/0", "::/0"},
+		IPv4:   testkit.TunIPv4CIDR,
+		Routes: []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
 	}
 	manager.UpdateSessionInfo(info)
 
@@ -148,7 +149,7 @@ func TestConnectIPSessionManagerSnapshotCopiesRoutes(t *testing.T) {
 	snapshot.Routes[0] = "mutated-snapshot"
 
 	again := manager.Snapshot()
-	if again.Routes[0] != "0.0.0.0/0" {
+	if again.Routes[0] != testkit.DefaultRouteV4 {
 		t.Fatalf("expected copied routes in snapshot, got %+v", again.Routes)
 	}
 }

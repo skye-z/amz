@@ -8,6 +8,12 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
+)
+
+const (
+	preparedStreamTestTargetHost = testkit.TestDomain
+	preparedStreamTestTargetPort = "443"
 )
 
 func TestPreparedConnectStreamOpenerPreparesBeforeOpen(t *testing.T) {
@@ -17,7 +23,7 @@ func TestPreparedConnectStreamOpenerPreparesBeforeOpen(t *testing.T) {
 	manager := &stubPreparedStreamManager{}
 	opener := NewPreparedConnectStreamOpener(preparer, manager)
 
-	conn, err := opener.OpenStream(context.Background(), "example.com", "443")
+	conn, err := opener.OpenStream(context.Background(), preparedStreamTestTargetHost, preparedStreamTestTargetPort)
 	if err != nil {
 		t.Fatalf("expected open stream success, got %v", err)
 	}
@@ -30,7 +36,7 @@ func TestPreparedConnectStreamOpenerPreparesBeforeOpen(t *testing.T) {
 	if !manager.called {
 		t.Fatal("expected underlying stream manager to be called")
 	}
-	if manager.host != "example.com" || manager.port != "443" {
+	if manager.host != preparedStreamTestTargetHost || manager.port != preparedStreamTestTargetPort {
 		t.Fatalf("unexpected target %s:%s", manager.host, manager.port)
 	}
 }
@@ -41,7 +47,7 @@ func TestPreparedConnectStreamOpenerReturnsPrepareError(t *testing.T) {
 	wantErr := errors.New("prepare failed")
 	opener := NewPreparedConnectStreamOpener(&stubStreamPreparer{err: wantErr}, &stubPreparedStreamManager{})
 
-	_, err := opener.OpenStream(context.Background(), "example.com", "443")
+	_, err := opener.OpenStream(context.Background(), preparedStreamTestTargetHost, preparedStreamTestTargetPort)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected prepare error %v, got %v", wantErr, err)
 	}
@@ -61,7 +67,7 @@ func TestPreparedProxyStreamOpenerUsesPlainConnect(t *testing.T) {
 	manager.SetReady()
 
 	opener := NewPreparedProxyStreamOpener(nil, manager)
-	conn, err := opener.OpenStream(context.Background(), "example.com", "443")
+	conn, err := opener.OpenStream(context.Background(), preparedStreamTestTargetHost, preparedStreamTestTargetPort)
 	if err != nil {
 		t.Fatalf("expected proxy stream open success, got %v", err)
 	}
@@ -103,7 +109,7 @@ func (s *stubPreparedStreamManager) OpenStream(_ context.Context, host, port str
 func testConnectStreamConfig() config.KernelConfig {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeHTTP,
-		Endpoint: "162.159.197.1:443",
+		Endpoint: testkit.WarpIPv4Legacy443,
 		SNI:      "warp.cloudflare.com",
 	}
 	cfg.FillDefaults()

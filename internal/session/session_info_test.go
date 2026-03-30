@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 // 验证会话管理器可保存地址与路由信息。
@@ -24,16 +25,16 @@ func TestConnectIPSessionManagerUpdateSessionInfo(t *testing.T) {
 	}
 
 	manager.UpdateSessionInfo(SessionInfo{
-		IPv4:   "172.16.0.2/32",
-		IPv6:   "2606:4700:110:8765::2/128",
-		Routes: []string{"0.0.0.0/0", "::/0"},
+		IPv4:   testkit.TunIPv4CIDR,
+		IPv6:   testkit.TunIPv6AltCIDR,
+		Routes: []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
 	})
 
 	snapshot := manager.Snapshot()
-	if snapshot.IPv4 != "172.16.0.2/32" {
+	if snapshot.IPv4 != testkit.TunIPv4CIDR {
 		t.Fatalf("expected ipv4 in snapshot, got %q", snapshot.IPv4)
 	}
-	if snapshot.IPv6 != "2606:4700:110:8765::2/128" {
+	if snapshot.IPv6 != testkit.TunIPv6AltCIDR {
 		t.Fatalf("expected ipv6 in snapshot, got %q", snapshot.IPv6)
 	}
 	if len(snapshot.Routes) != 2 {

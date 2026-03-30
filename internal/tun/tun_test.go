@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 	"github.com/skye-z/amz/internal/tun"
 )
 
@@ -82,11 +83,11 @@ func TestAddressValidateTableDriven(t *testing.T) {
 	}{
 		{
 			name: "trim ipv4 cidr before parse",
-			addr: tun.Address{CIDR: " 172.16.0.2/32\t"},
+			addr: tun.Address{CIDR: " " + testkit.TunIPv4CIDR + "\t"},
 		},
 		{
 			name: "trim ipv6 cidr before parse",
-			addr: tun.Address{CIDR: "\n2606:4700:110:8d36::2/128 "},
+			addr: tun.Address{CIDR: "\n" + testkit.TunIPv6CIDR + " "},
 		},
 		{
 			name:        "reject blank cidr",
@@ -96,7 +97,7 @@ func TestAddressValidateTableDriven(t *testing.T) {
 		},
 		{
 			name:        "reject malformed cidr",
-			addr:        tun.Address{CIDR: "172.16.0.2"},
+			addr:        tun.Address{CIDR: testkit.TunIPv4Addr},
 			wantErr:     true,
 			wantMessage: "invalid address cidr",
 		},
@@ -259,14 +260,14 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 	config := tun.Config{
 		Device: tun.DeviceConfig{Name: "amz0", MTU: 1400},
 		Addresses: []tun.Address{
-			{CIDR: "172.16.0.2/32"},
-			{CIDR: "2606:4700:110:8d36::2/128"},
+			{CIDR: testkit.TunIPv4CIDR},
+			{CIDR: testkit.TunIPv6CIDR},
 		},
 	}
 	routes := tun.RoutePlan{
 		Mode:           tun.RouteModeSplit,
-		Routes:         []string{"100.64.0.0/10"},
-		EndpointRoutes: []string{"162.159.198.1/32"},
+		Routes:         []string{testkit.RouteSplitV4},
+		EndpointRoutes: []string{testkit.EndpointRouteV4},
 	}
 
 	if err := adapter.ApplyConfig(context.Background(), dev, config); err != nil {
@@ -286,7 +287,7 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 	if len(dev.config.Addresses) != 2 {
 		t.Fatalf("expected addresses to be applied to device, got %+v", dev.config)
 	}
-	if len(dev.routes.Routes) != 1 || dev.routes.Routes[0] != "100.64.0.0/10" {
+	if len(dev.routes.Routes) != 1 || dev.routes.Routes[0] != testkit.RouteSplitV4 {
 		t.Fatalf("expected routes to be applied to device, got %+v", dev.routes)
 	}
 	if adapter.PlaceholderError() != nil {
@@ -315,14 +316,14 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 	config := tun.Config{
 		Device: tun.DeviceConfig{Name: "amz0", MTU: 1280},
 		Addresses: []tun.Address{
-			{CIDR: "172.16.0.2/32"},
-			{CIDR: "2606:4700:110:8d36::2/128"},
+			{CIDR: testkit.TunIPv4CIDR},
+			{CIDR: testkit.TunIPv6CIDR},
 		},
 	}
 	routes := tun.RoutePlan{
 		Mode:           tun.RouteModeSplit,
-		Routes:         []string{"100.64.0.0/10"},
-		EndpointRoutes: []string{"162.159.198.1/32"},
+		Routes:         []string{testkit.RouteSplitV4},
+		EndpointRoutes: []string{testkit.EndpointRouteV4},
 	}
 
 	if err := adapter.ApplyConfig(context.Background(), dev, config); err != nil {
@@ -342,17 +343,17 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 	if len(snapshot.Config.Addresses) != 2 {
 		t.Fatalf("expected two addresses, got %d", len(snapshot.Config.Addresses))
 	}
-	if len(snapshot.Routes.Routes) != 1 || snapshot.Routes.Routes[0] != "100.64.0.0/10" {
+	if len(snapshot.Routes.Routes) != 1 || snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
 		t.Fatalf("unexpected route snapshot: %+v", snapshot.Routes)
 	}
 
 	config.Addresses[0].CIDR = "mutated"
 	routes.Routes[0] = "mutated"
 	snapshot = adapter.Snapshot()
-	if snapshot.Config.Addresses[0].CIDR != "172.16.0.2/32" {
+	if snapshot.Config.Addresses[0].CIDR != testkit.TunIPv4CIDR {
 		t.Fatalf("expected config snapshot isolation, got %+v", snapshot.Config.Addresses)
 	}
-	if snapshot.Routes.Routes[0] != "100.64.0.0/10" {
+	if snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
 		t.Fatalf("expected route snapshot isolation, got %+v", snapshot.Routes.Routes)
 	}
 
@@ -529,7 +530,7 @@ func TestValidatePlatformNeutralModels(t *testing.T) {
 	validConfig := tun.Config{
 		Device: tun.DeviceConfig{Name: "amz0", MTU: 1280},
 		Addresses: []tun.Address{
-			{CIDR: "172.16.0.2/32"},
+			{CIDR: testkit.TunIPv4CIDR},
 		},
 	}
 	if err := validConfig.Validate(); err != nil {
@@ -538,8 +539,8 @@ func TestValidatePlatformNeutralModels(t *testing.T) {
 
 	validPlan := tun.RoutePlan{
 		Mode:           tun.RouteModeGlobal,
-		Routes:         []string{"0.0.0.0/0", "::/0"},
-		EndpointRoutes: []string{"162.159.198.1/32"},
+		Routes:         []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
+		EndpointRoutes: []string{testkit.EndpointRouteV4},
 	}
 	if err := validPlan.Validate(); err != nil {
 		t.Fatalf("expected valid route plan, got %v", err)

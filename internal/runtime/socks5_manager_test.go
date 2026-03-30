@@ -12,6 +12,17 @@ import (
 
 	"github.com/skye-z/amz/internal/config"
 	"github.com/skye-z/amz/internal/failure"
+	"github.com/skye-z/amz/internal/testkit"
+)
+
+const (
+	socksIPv4DNSAddress         = testkit.TestIPv4Echo + ":53"
+	socksDomainTLSAddress       = testkit.TestDomain + ":443"
+	socksIPv6AltTLSAddress      = "[" + testkit.TestIPv6Doc + "]:8443"
+	socksPublicDNSAddress       = testkit.PublicDNSV4Alt + ":53"
+	socksInvalidNegativePort    = testkit.TestIPv4Echo + ":-1"
+	socksInvalidIPv4PortAddress = testkit.TestIPv4Echo + ":65536"
+	socksInvalidDomainPort      = testkit.TestDomain + ":70000"
 )
 
 func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
@@ -25,12 +36,12 @@ func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 	}{
 		{
 			name:    "ipv4",
-			address: "1.2.3.4:53",
+			address: socksIPv4DNSAddress,
 			atyp:    socksAtypIPv4,
 			check: func(t *testing.T, encoded []byte) {
 				t.Helper()
-				if got := net.IP(encoded[1:5]).String(); got != "1.2.3.4" {
-					t.Fatalf("expected ipv4 host 1.2.3.4, got %q", got)
+				if got := net.IP(encoded[1:5]).String(); got != testkit.TestIPv4Echo {
+					t.Fatalf("expected ipv4 host %s, got %q", testkit.TestIPv4Echo, got)
 				}
 				if got := int(binary.BigEndian.Uint16(encoded[5:7])); got != 53 {
 					t.Fatalf("expected ipv4 port 53, got %d", got)
@@ -39,13 +50,13 @@ func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 		},
 		{
 			name:    "domain",
-			address: "example.com:443",
+			address: socksDomainTLSAddress,
 			atyp:    socksAtypDomain,
 			check: func(t *testing.T, encoded []byte) {
 				t.Helper()
 				hostLen := int(encoded[1])
-				if got := string(encoded[2 : 2+hostLen]); got != "example.com" {
-					t.Fatalf("expected domain host example.com, got %q", got)
+				if got := string(encoded[2 : 2+hostLen]); got != testkit.TestDomain {
+					t.Fatalf("expected domain host %s, got %q", testkit.TestDomain, got)
 				}
 				if got := int(binary.BigEndian.Uint16(encoded[2+hostLen:])); got != 443 {
 					t.Fatalf("expected domain port 443, got %d", got)
@@ -54,12 +65,12 @@ func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 		},
 		{
 			name:    "ipv6",
-			address: "[2001:db8::1]:8443",
+			address: socksIPv6AltTLSAddress,
 			atyp:    socksAtypIPv6,
 			check: func(t *testing.T, encoded []byte) {
 				t.Helper()
-				if got := net.IP(encoded[1:17]).String(); got != "2001:db8::1" {
-					t.Fatalf("expected ipv6 host 2001:db8::1, got %q", got)
+				if got := net.IP(encoded[1:17]).String(); got != testkit.TestIPv6Doc {
+					t.Fatalf("expected ipv6 host %s, got %q", testkit.TestIPv6Doc, got)
 				}
 				if got := int(binary.BigEndian.Uint16(encoded[17:19])); got != 8443 {
 					t.Fatalf("expected ipv6 port 8443, got %d", got)
@@ -87,7 +98,7 @@ func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 func TestBuildAndParseSOCKSUDPDatagramRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	address := "8.8.8.8:53"
+	address := socksPublicDNSAddress
 	payload := []byte("dns-query")
 
 	packet, err := buildSOCKSUDPDatagram(address, payload)
@@ -114,9 +125,9 @@ func TestEncodeSOCKSAddressRejectsOutOfRangePorts(t *testing.T) {
 	t.Parallel()
 
 	tests := []string{
-		"1.2.3.4:-1",
-		"1.2.3.4:65536",
-		"example.com:70000",
+		socksInvalidNegativePort,
+		socksInvalidIPv4PortAddress,
+		socksInvalidDomainPort,
 	}
 
 	for _, address := range tests {
@@ -141,7 +152,7 @@ func TestSOCKS5ManagerStopClosesActiveTCPConnections(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected manager creation success, got %v", err)
@@ -194,7 +205,7 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected manager creation success, got %v", err)
@@ -222,8 +233,7 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	if _, err := io.ReadFull(conn, reply); err != nil {
 		t.Fatalf("expected greeting read success, got %v", err)
 	}
-	connectRequest := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}, []byte("example.com")...)
-	connectRequest = append(connectRequest, 0x01, 0xbb)
+	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
 		t.Fatalf("expected connect request write success, got %v", err)
 	}
@@ -250,7 +260,7 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected manager creation success, got %v", err)
@@ -277,8 +287,7 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 	if _, err := io.ReadFull(conn, reply); err != nil {
 		t.Fatalf("expected greeting read success, got %v", err)
 	}
-	connectRequest := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}, []byte("example.com")...)
-	connectRequest = append(connectRequest, 0x01, 0xbb)
+	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
 		t.Fatalf("expected connect request write success, got %v", err)
 	}
@@ -297,4 +306,9 @@ type failingContextDialer struct {
 
 func (d *failingContextDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, d.err
+}
+
+func buildSOCKSDomainConnectRequest(host string, port uint16) []byte {
+	request := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}, []byte(host)...)
+	return binary.BigEndian.AppendUint16(request, port)
 }

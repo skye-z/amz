@@ -21,8 +21,17 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	internalcloudflare "github.com/skye-z/amz/internal/cloudflare"
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/testkit"
 	internaltun "github.com/skye-z/amz/internal/tun"
 	"github.com/yosida95/uritemplate/v3"
+)
+
+const (
+	transportRuntimeConnectIPPath   = "/connect-ip"
+	transportRuntimeIPv4ZeroAddr    = "0.0.0.0"
+	transportRuntimeIPv4Broadcast   = "255.255.255.255"
+	transportRuntimeMasqueLocalhost = testkit.LocalhostName
+	transportRuntimeTargetEndpoint  = testkit.TestDomain + ":443"
 )
 
 type fakeQUICConn struct {
@@ -232,9 +241,9 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 		t.Fatalf("expected manager creation success, got %v", err)
 	}
 	dialer := &fakeConnectIPDialer{latency: 15 * time.Millisecond, session: &fakeConnectIPSession{info: SessionInfo{
-		IPv4:   "172.16.0.2/32",
-		IPv6:   "2606:4700:110:8765::2/128",
-		Routes: []string{"0.0.0.0/0", "::/0"},
+		IPv4:   testkit.TunIPv4CIDR,
+		IPv6:   testkit.TunIPv6AltCIDR,
+		Routes: []string{testkit.DefaultRouteV4, testkit.DefaultRouteV6},
 	}}}
 	mgr.dialer = dialer
 
@@ -251,7 +260,7 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 	if mgr.PacketEndpoint() == nil {
 		t.Fatal("expected packet endpoint after session open")
 	}
-	if snapshot.IPv4 != "172.16.0.2/32" {
+	if snapshot.IPv4 != testkit.TunIPv4CIDR {
 		t.Fatalf("expected ipv4 session info, got %q", snapshot.IPv4)
 	}
 	if len(snapshot.Routes) != 2 {
@@ -312,7 +321,7 @@ func TestCoreTunnelDialerBindsHTTP3ConnIntoStreamManager(t *testing.T) {
 		Mode:           config.ModeHTTP,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	}
 
 	connectionManager, err := NewConnectionManager(cfg)
@@ -326,7 +335,7 @@ func TestCoreTunnelDialerBindsHTTP3ConnIntoStreamManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected connect-ip session manager creation success, got %v", err)
 	}
-	sessionManager.dialer = &fakeConnectIPDialer{session: &fakeConnectIPSession{info: SessionInfo{IPv4: "172.16.0.2/32"}}}
+	sessionManager.dialer = &fakeConnectIPDialer{session: &fakeConnectIPSession{info: SessionInfo{IPv4: testkit.TunIPv4CIDR}}}
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -344,7 +353,7 @@ func TestCoreTunnelDialerBindsHTTP3ConnIntoStreamManager(t *testing.T) {
 	}
 	defer func() { _ = dialer.Close() }()
 
-	if _, err := dialer.DialContext(context.Background(), "tcp", "example.com:443"); err != nil {
+	if _, err := dialer.DialContext(context.Background(), "tcp", transportRuntimeTargetEndpoint); err != nil {
 		t.Fatalf("expected downstream dial success, got %v", err)
 	}
 
@@ -392,17 +401,17 @@ func TestKeepaliveManagerReconnect(t *testing.T) {
 // 验证真实 QUIC/H3/connect-ip 会话协商后会更新地址与路由。
 func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	tlsConfig, certPool := newTestTLSConfig(t)
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(testkit.LocalhostIPv4).To4(), Port: 0})
 	if err != nil {
 		t.Fatalf("expected udp listen success, got %v", err)
 	}
 	t.Cleanup(func() { _ = udpConn.Close() })
 
-	template := fmt.Sprintf("https://localhost:%d/connect-ip", udpConn.LocalAddr().(*net.UDPAddr).Port)
+	template := fmt.Sprintf("https://%s:%d%s", transportRuntimeMasqueLocalhost, udpConn.LocalAddr().(*net.UDPAddr).Port, transportRuntimeConnectIPPath)
 	proxy := &connectip.Proxy{}
 	connCh := make(chan *connectip.Conn, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/connect-ip", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(transportRuntimeConnectIPPath, func(w http.ResponseWriter, r *http.Request) {
 		tpl := uritemplate.MustNew(template)
 		parsed, err := connectip.ParseRequest(r, tpl)
 		if err != nil {
@@ -420,10 +429,10 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	go func() { _ = server.Serve(udpConn) }()
 	t.Cleanup(func() { _ = server.Close() })
 
-	endpoint := fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port)
+	endpoint := net.JoinHostPort(transportRuntimeMasqueLocalhost, fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
 	manager, err := NewConnectionManager(config.KernelConfig{
 		Endpoint:       endpoint,
-		SNI:            "localhost",
+		SNI:            transportRuntimeMasqueLocalhost,
 		MTU:            config.DefaultMTU,
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
@@ -433,7 +442,7 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected manager creation success, got %v", err)
 	}
-	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}}}
+	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: transportRuntimeMasqueLocalhost, RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := manager.Connect(ctx); err != nil {
@@ -442,7 +451,7 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 
 	sessionManager, err := NewConnectIPSessionManager(config.KernelConfig{
 		Endpoint:       endpoint,
-		SNI:            "localhost",
+		SNI:            transportRuntimeMasqueLocalhost,
 		MTU:            config.DefaultMTU,
 		Mode:           config.ModeSOCKS,
 		ConnectTimeout: config.DefaultConnectTimeout,
@@ -455,8 +464,8 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	sessionManager.BindHTTP3Conn(manager.HTTP3Conn())
 	go func() {
 		conn := <-connCh
-		_ = conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("172.16.0.2/32"), netip.MustParsePrefix("2606:4700:110:8765::2/128")})
-		_ = conn.AdvertiseRoute(ctx, []connectip.IPRoute{{StartIP: netip.MustParseAddr("0.0.0.0"), EndIP: netip.MustParseAddr("255.255.255.255")}})
+		_ = conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix(testkit.TunIPv4CIDR), netip.MustParsePrefix(testkit.TunIPv6AltCIDR)})
+		_ = conn.AdvertiseRoute(ctx, []connectip.IPRoute{{StartIP: netip.MustParseAddr(transportRuntimeIPv4ZeroAddr), EndIP: netip.MustParseAddr(transportRuntimeIPv4Broadcast)}})
 	}()
 	if err := sessionManager.Open(ctx); err != nil {
 		t.Fatalf("expected connect-ip open success, got %v", err)
@@ -465,10 +474,10 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	if snapshot.State != SessionStateReady {
 		t.Fatalf("expected ready state, got %q", snapshot.State)
 	}
-	if snapshot.IPv4 != "172.16.0.2/32" {
+	if snapshot.IPv4 != testkit.TunIPv4CIDR {
 		t.Fatalf("expected ipv4 assignment, got %q", snapshot.IPv4)
 	}
-	if snapshot.IPv6 != "2606:4700:110:8765::2/128" {
+	if snapshot.IPv6 != testkit.TunIPv6AltCIDR {
 		t.Fatalf("expected ipv6 assignment, got %q", snapshot.IPv6)
 	}
 	if len(snapshot.Routes) != 1 {
@@ -524,7 +533,7 @@ func newTestTLSConfig(t *testing.T) (*tls.Config, *x509.CertPool) {
 	if err != nil {
 		t.Fatalf("expected rsa key generation success, got %v", err)
 	}
-	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost"}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: transportRuntimeMasqueLocalhost}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{transportRuntimeMasqueLocalhost}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &priv.PublicKey, priv)
 	if err != nil {
 		t.Fatalf("expected certificate creation success, got %v", err)
