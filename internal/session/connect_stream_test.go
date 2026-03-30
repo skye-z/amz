@@ -529,6 +529,7 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 		t.Fatalf("expected tls listener success, got %v", err)
 	}
 	defer tlsListener.Close()
+	expectedTargetAddr := tlsListener.Addr().String()
 
 	handshakeDone := make(chan error, 1)
 	go func() {
@@ -558,7 +559,11 @@ func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
 			http.Error(w, "expected connect", http.StatusMethodNotAllowed)
 			return
 		}
-		targetConn, err := net.Dial("tcp", r.Host)
+		if r.Host != expectedTargetAddr {
+			http.Error(w, "unexpected target host", http.StatusBadRequest)
+			return
+		}
+		targetConn, err := net.Dial("tcp", expectedTargetAddr)
 		if err != nil {
 			http.Error(w, "dial target failed", http.StatusBadGateway)
 			return

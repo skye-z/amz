@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -201,14 +203,19 @@ func buildHTTP3Transport(quicOpts QUICOptions, h3Opts HTTP3Options) *http3.Trans
 }
 
 func buildTLSConfig(opts QUICOptions) *tls.Config {
-	sni := opts.ServerName
-	if sni == "" {
-		sni = "warp.cloudflare.com"
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil || rootCAs == nil {
+		rootCAs = x509.NewCertPool()
 	}
+	serverName := tlsServerNameForOptions(opts)
 	cfg := &tls.Config{
-		ServerName:         sni,
-		NextProtos:         []string{"h3"},
-		InsecureSkipVerify: true,
+		ServerName: serverName,
+		NextProtos: []string{"h3"},
+		RootCAs:    rootCAs,
+	}
+	if requiresPinnedMASQUETrust(opts) {
+		cfg.InsecureSkipVerify = true
+		cfg.VerifyPeerCertificate = buildPinnedMASQUEVerifier(serverName, opts.PeerPublicKey)
 	}
 	if cert, err := buildClientCertificate(opts); err == nil && cert != nil {
 		cfg.Certificates = []tls.Certificate{*cert}
@@ -216,11 +223,65 @@ func buildTLSConfig(opts QUICOptions) *tls.Config {
 	return cfg
 }
 
+func tlsServerNameForOptions(opts QUICOptions) string {
+	if requiresPinnedMASQUETrust(opts) {
+		return "masque.cloudflareclient.com"
+	}
+	if strings.TrimSpace(opts.ServerName) != "" {
+		return strings.TrimSpace(opts.ServerName)
+	}
+	return "warp.cloudflare.com"
+}
+
+func requiresPinnedMASQUETrust(opts QUICOptions) bool {
+	if strings.TrimSpace(opts.PeerPublicKey) == "" {
+		return false
+	}
+	_, port, err := net.SplitHostPort(strings.TrimSpace(opts.Endpoint))
+	if err != nil {
+		return false
+	}
+	return port != "443"
+}
+
+func buildPinnedMASQUEVerifier(serverName, pinnedPublicKey string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	normalizedPinned := normalizePEM(strings.TrimSpace(pinnedPublicKey))
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("missing peer certificate")
+		}
+		cert, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse peer certificate: %w", err)
+		}
+		now := time.Now()
+		if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+			return fmt.Errorf("peer certificate is not currently valid")
+		}
+		if err := cert.VerifyHostname(serverName); err != nil {
+			return fmt.Errorf("verify peer hostname: %w", err)
+		}
+		pub, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+		if err != nil {
+			return fmt.Errorf("marshal peer public key: %w", err)
+		}
+		peerPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub})
+		if normalizePEM(string(peerPEM)) != normalizedPinned {
+			return fmt.Errorf("peer public key does not match pinned key")
+		}
+		return nil
+	}
+}
+
+func normalizePEM(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), "\n")
+}
+
 func buildQUICConfig(opts QUICOptions) *quic.Config {
 	return &quic.Config{
-		EnableDatagrams:  opts.EnableDatagrams,
-		MaxIdleTimeout:   30 * time.Second,
-		KeepAlivePeriod:  4 * time.Second,
+		EnableDatagrams: opts.EnableDatagrams,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 4 * time.Second,
 	}
 }
 

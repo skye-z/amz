@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,8 +12,11 @@ import (
 	"github.com/skye-z/amz/internal/storage"
 )
 
+var tunSelectionGlobalsMu sync.Mutex
+
 func TestTUNCandidateCheckerRequiresConnectIPReady(t *testing.T) {
-	t.Parallel()
+	tunSelectionGlobalsMu.Lock()
+	defer tunSelectionGlobalsMu.Unlock()
 
 	state := storage.State{
 		Certificate: storage.Certificate{
@@ -55,7 +59,8 @@ func TestTUNCandidateCheckerRequiresConnectIPReady(t *testing.T) {
 }
 
 func TestTUNCandidateCheckerTimesOutWhenValidatorHangs(t *testing.T) {
-	t.Parallel()
+	tunSelectionGlobalsMu.Lock()
+	defer tunSelectionGlobalsMu.Unlock()
 
 	state := storage.State{}
 	mr := &managedRuntime{
@@ -90,7 +95,8 @@ func TestTUNCandidateCheckerTimesOutWhenValidatorHangs(t *testing.T) {
 }
 
 func TestSelectEndpointUsesTUNTimingProfile(t *testing.T) {
-	t.Parallel()
+	tunSelectionGlobalsMu.Lock()
+	defer tunSelectionGlobalsMu.Unlock()
 
 	state := storage.State{
 		NodeCache: []storage.Node{{

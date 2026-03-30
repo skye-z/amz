@@ -1,4 +1,4 @@
-e2etest_state.json
+e2etest_*
 
 # Go build and test artifacts
 *.test
@@ -21,3 +21,4 @@ coverage.out
 .idea/
 .vscode/
 coverage.txt
+.tmp/
