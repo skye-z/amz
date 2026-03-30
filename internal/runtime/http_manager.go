@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 	"github.com/skye-z/amz/internal/masque"
 	"github.com/skye-z/amz/internal/observe"
 )
@@ -45,7 +46,7 @@ type HTTPManager struct {
 	dialer        HTTPStreamDialer
 	transport     http.RoundTripper
 	streamManager HTTPConnectStreamOpener
-	failureReport func(error)
+	failureReport func(failure.Event)
 }
 
 type countingReadCloser struct {
@@ -130,7 +131,7 @@ func (m *HTTPManager) SetStreamManager(mgr HTTPConnectStreamOpener) {
 	m.streamManager = mgr
 }
 
-func (m *HTTPManager) SetFailureReporter(reporter func(error)) {
+func (m *HTTPManager) SetFailureReporter(reporter func(failure.Event)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failureReport = reporter
@@ -255,7 +256,16 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.manager.logf("http proxy connect stream failed: target=%s err=%v; fallback=dialer", r.Host, err)
-		h.manager.reportFailure(err)
+		h.manager.reportFailure("connect-stream", err)
+		if retriedUpstream, retriedErr, retried := h.manager.retryConnectOnce(r.Context(), "connect-stream", r.Host, err); retried {
+			if retriedErr == nil {
+				h.relayHTTPConnect(w, r, retriedUpstream, started, masque.ShouldDebugTarget(masqueDebugEnabled(), r.Host))
+				return
+			}
+			h.manager.logf("http proxy connect retry failed: target=%s err=%v", r.Host, retriedErr)
+			http.Error(w, "connect upstream failed", http.StatusBadGateway)
+			return
+		}
 	}
 	if dialer == nil {
 		h.manager.logf("http proxy connect dialer unavailable: target=%s", r.Host)
@@ -266,7 +276,13 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, err := dialer.DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
 		h.manager.logf("http proxy connect upstream failed: target=%s err=%v", r.Host, err)
-		h.manager.reportFailure(err)
+		h.manager.reportFailure("connect-upstream", err)
+		if retriedUpstream, retriedErr, retried := h.manager.retryConnectOnce(r.Context(), "connect-upstream", r.Host, err); retried {
+			if retriedErr == nil {
+				h.relayHTTPConnect(w, r, retriedUpstream, started, false)
+				return
+			}
+		}
 		http.Error(w, "connect upstream failed", http.StatusBadGateway)
 		return
 	}
@@ -452,15 +468,106 @@ func (m *HTTPManager) currentRoundTripper() http.RoundTripper {
 	}}
 }
 
-func (m *HTTPManager) reportFailure(err error) {
+func (m *HTTPManager) currentEndpoint() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.Endpoint
+}
+
+func (m *HTTPManager) retryConnectOnce(ctx context.Context, operation, target string, cause error) (net.Conn, error, bool) {
+	currentEndpoint := m.currentEndpoint()
+	currentSignature := m.currentBackendSignature()
+	decision := failure.Classify(failure.Event{
+		Component: failure.ComponentHTTP,
+		Operation: operation,
+		Endpoint:  currentEndpoint,
+		Err:       cause,
+	})
+	if decision.Action == failure.ActionIgnore {
+		return nil, nil, false
+	}
+	if decision.Action == failure.ActionSwitchEndpoint {
+		if !m.waitForBackendRefresh(ctx, currentEndpoint, currentSignature, 2*time.Second) {
+			return nil, nil, false
+		}
+	}
+	host, port, err := parseHTTPConnectTarget(target)
+	if err != nil {
+		return nil, err, true
+	}
+	streamMgr := m.currentStreamManager()
+	if streamMgr != nil {
+		conn, err := streamMgr.OpenStream(ctx, host, port)
+		if err == nil {
+			return conn, nil, true
+		}
+		cause = err
+	}
+	dialer := m.currentHTTPDialer()
+	if dialer == nil {
+		return nil, cause, true
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", target)
+	return conn, err, true
+}
+
+func (m *HTTPManager) currentBackendSignature() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return fmt.Sprintf("%p|%p|%s", m.dialer, m.streamManager, m.cfg.Endpoint)
+}
+
+func (m *HTTPManager) waitForBackendRefresh(ctx context.Context, currentEndpoint, currentSignature string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if endpoint := m.currentEndpoint(); endpoint != "" && endpoint != currentEndpoint {
+			return true
+		}
+		if signature := m.currentBackendSignature(); signature != "" && signature != currentSignature {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+func (m *HTTPManager) waitForEndpointChange(ctx context.Context, current string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if endpoint := m.currentEndpoint(); endpoint != "" && endpoint != current {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func (m *HTTPManager) reportFailure(operation string, err error) {
 	if err == nil {
 		return
 	}
 	m.mu.Lock()
 	reporter := m.failureReport
+	endpoint := m.cfg.Endpoint
 	m.mu.Unlock()
 	if reporter != nil {
-		go reporter(err)
+		reporter(failure.Event{
+			Component: failure.ComponentHTTP,
+			Operation: operation,
+			Endpoint:  endpoint,
+			Err:       err,
+		})
 	}
 }
 

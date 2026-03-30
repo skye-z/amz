@@ -6,6 +6,7 @@ import (
 	"net"
 
 	internalconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 )
 
 type httpStarter interface {
@@ -21,13 +22,20 @@ type httpStarter interface {
 type HTTPRuntime struct {
 	manager  httpStarter
 	listener net.Listener
+	health   HealthCheckSpec
 }
 
 func NewHTTPRuntime(manager httpStarter) *HTTPRuntime {
 	if manager == nil {
 		return nil
 	}
-	return &HTTPRuntime{manager: manager}
+	return &HTTPRuntime{
+		manager: manager,
+		health: HealthCheckSpec{
+			Component: "http",
+			Mode:      HealthCheckModePassiveProxy,
+		},
+	}
 }
 
 func (r *HTTPRuntime) SetListener(listener net.Listener) {
@@ -79,7 +87,28 @@ func (r *HTTPRuntime) Stats() internalconfig.Stats {
 	return r.manager.Stats()
 }
 
-func (r *HTTPRuntime) SetFailureReporter(reporter func(error)) {
+func (r *HTTPRuntime) HealthCheck(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	return r.health.Run(ctx)
+}
+
+func (r *HTTPRuntime) SetHealthCheck(checker HealthCheckFunc) {
+	if r == nil {
+		return
+	}
+	r.health.Check = checker
+}
+
+func (r *HTTPRuntime) HealthSpec() HealthCheckSpec {
+	if r == nil {
+		return HealthCheckSpec{}
+	}
+	return r.health
+}
+
+func (r *HTTPRuntime) SetFailureReporter(reporter func(failure.Event)) {
 	if r == nil {
 		return
 	}

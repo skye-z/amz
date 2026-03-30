@@ -14,6 +14,7 @@ import (
 	"github.com/skye-z/amz/internal/auth"
 	amzconfig "github.com/skye-z/amz/internal/config"
 	"github.com/skye-z/amz/internal/discovery"
+	"github.com/skye-z/amz/internal/failure"
 	iruntime "github.com/skye-z/amz/internal/runtime"
 	amzsession "github.com/skye-z/amz/internal/session"
 	"github.com/skye-z/amz/internal/storage"
@@ -38,6 +39,7 @@ type managedRuntime struct {
 	activeIdx  int
 	lastState  storage.State
 	switching  bool
+	failureBus *failure.Bus
 }
 
 type endpointSelection struct {
@@ -120,6 +122,7 @@ func newManagedRuntime(opts Options) (sdkRuntime, error) {
 			TUNEnabled:    opts.TUN.Enabled,
 		},
 	}
+	runtime.failureBus = failure.NewBus(16, runtime.handleFailureEvent)
 	runtime.selectFn = runtime.selectEndpoint
 	runtime.buildFn = runtime.buildRuntime
 	logEvent(opts.Logger, "managed_runtime", "new.success",
@@ -393,6 +396,9 @@ func (m *managedRuntime) Close() error {
 	m.mu.Unlock()
 	if runtime == nil {
 		logEvent(logger, "managed_runtime", "close.skipped", field("reason", "runtime_unavailable"))
+		if m.failureBus != nil {
+			m.failureBus.Close()
+		}
 		return nil
 	}
 	err := runtime.Close()
@@ -415,6 +421,9 @@ func (m *managedRuntime) Close() error {
 		field("running", status.Running),
 		durationField("duration", time.Since(started)),
 	)
+	if m.failureBus != nil {
+		m.failureBus.Close()
+	}
 	return err
 }
 
@@ -428,9 +437,29 @@ func (m *managedRuntime) runRuntimeHealthCheck(endpoint string, runtime sdkRunti
 }
 
 func (m *managedRuntime) reportEndpointFailure(endpoint string, err error) {
-	if err == nil {
+	m.publishFailure(failure.Event{
+		Endpoint: endpoint,
+		Err:      err,
+	})
+}
+
+func (m *managedRuntime) publishFailure(event failure.Event) {
+	if event.Err == nil || m.failureBus == nil {
 		return
 	}
+	if strings.TrimSpace(event.Endpoint) == "" {
+		event.Endpoint = m.endpoint
+	}
+	_ = m.failureBus.Publish(event)
+}
+
+func (m *managedRuntime) handleFailureEvent(event failure.Event) {
+	decision := failure.Classify(event)
+	if decision.Action != failure.ActionSwitchEndpoint {
+		return
+	}
+	endpoint := strings.TrimSpace(event.Endpoint)
+	err := event.Err
 	m.mu.Lock()
 	if m.switching || !m.status.Running || strings.TrimSpace(endpoint) == "" || endpoint != m.endpoint {
 		m.mu.Unlock()
@@ -449,6 +478,9 @@ func (m *managedRuntime) reportEndpointFailure(endpoint string, err error) {
 
 	logEvent(logger, "managed_runtime", "runtime.failover.begin",
 		field("endpoint", endpoint),
+		field("failure_component", event.Component),
+		field("failure_operation", event.Operation),
+		field("failure_class", decision.Class),
 		field("error", err),
 	)
 
@@ -739,8 +771,11 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 		if err != nil {
 			return nil, err
 		}
-		sharedDialer.SetFailureReporter(func(err error) {
-			m.reportEndpointFailure(endpoint, err)
+		sharedDialer.SetFailureReporter(func(event failure.Event) {
+			if strings.TrimSpace(event.Endpoint) == "" {
+				event.Endpoint = endpoint
+			}
+			m.publishFailure(event)
 		})
 		sharedPacketDialer, err := amzsession.NewPacketStackDialer(sharedDialer)
 		if err != nil {
@@ -756,8 +791,11 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			if err != nil {
 				return nil, err
 			}
-			runtime.SetFailureReporter(func(err error) {
-				m.reportEndpointFailure(endpoint, err)
+			runtime.SetFailureReporter(func(event failure.Event) {
+				if strings.TrimSpace(event.Endpoint) == "" {
+					event.Endpoint = endpoint
+				}
+				m.publishFailure(event)
 			})
 			httpRT = runtime
 		}
@@ -770,8 +808,11 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			if err != nil {
 				return nil, err
 			}
-			runtime.SetFailureReporter(func(err error) {
-				m.reportEndpointFailure(endpoint, err)
+			runtime.SetFailureReporter(func(event failure.Event) {
+				if strings.TrimSpace(event.Endpoint) == "" {
+					event.Endpoint = endpoint
+				}
+				m.publishFailure(event)
 			})
 			socksRT = runtime
 		}
@@ -792,8 +833,11 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 		if err != nil {
 			return nil, err
 		}
-		bootstrap.SetFailureReporter(func(err error) {
-			m.reportEndpointFailure(endpoint, err)
+		bootstrap.SetFailureReporter(func(event failure.Event) {
+			if strings.TrimSpace(event.Endpoint) == "" {
+				event.Endpoint = endpoint
+			}
+			m.publishFailure(event)
 		})
 		manager, err := iruntime.NewBootstrapTUNManager(&tunCfg, bootstrap)
 		if err != nil {

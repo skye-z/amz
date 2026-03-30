@@ -11,6 +11,7 @@ import (
 	"time"
 
 	amzconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 	"github.com/skye-z/amz/internal/packet"
 	internaltun "github.com/skye-z/amz/internal/tun"
 )
@@ -31,7 +32,7 @@ type CoreTunnelDialer struct {
 	packetRelay     func(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error
 	healthProbe     func(context.Context) error
 	healthStats     func() packet.Snapshot
-	failureReporter func(error)
+	failureReporter func(failure.Event)
 
 	assembly    *internaltun.Assembly
 	relayCancel context.CancelCauseFunc
@@ -87,7 +88,7 @@ func (d *CoreTunnelDialer) StreamManager() *ConnectStreamManager {
 	return d.streamMgr
 }
 
-func (d *CoreTunnelDialer) SetFailureReporter(reporter func(error)) {
+func (d *CoreTunnelDialer) SetFailureReporter(reporter func(failure.Event)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.failureReporter = reporter
@@ -366,5 +367,10 @@ func (d *CoreTunnelDialer) reportFailure(err error) {
 	if err == nil || d.failureReporter == nil {
 		return
 	}
-	go d.failureReporter(err)
+	go d.failureReporter(failure.Event{
+		Component: failure.ComponentSession,
+		Operation: "bootstrap",
+		Endpoint:  d.connection.cfg.Endpoint,
+		Err:       err,
+	})
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/skye-z/amz/internal/auth"
 	"github.com/skye-z/amz/internal/discovery"
+	"github.com/skye-z/amz/internal/failure"
 	"github.com/skye-z/amz/internal/storage"
 )
 
@@ -322,7 +323,11 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 		t.Fatalf("expected initial start success, got %v", err)
 	}
 
-	mr.reportEndpointFailure("162.159.198.1:443", errors.New("ensure connect-ip ready: protocol mismatch"))
+	mr.handleFailureEvent(failure.Event{
+		Component: failure.ComponentSession,
+		Endpoint:  "162.159.198.1:443",
+		Err:       errors.New("ensure connect-ip ready: protocol mismatch"),
+	})
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {

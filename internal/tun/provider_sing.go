@@ -11,14 +11,17 @@ import (
 
 	singtun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/control"
+	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 )
 
 type nativeTunFactory func(singtun.Options) (singtun.Tun, error)
 
 type singProvider struct {
-	platform string
-	factory  nativeTunFactory
+	platform          string
+	factory           nativeTunFactory
+	newNetworkMonitor func() (singtun.NetworkUpdateMonitor, error)
+	newDefaultMonitor func(singtun.NetworkUpdateMonitor) (singtun.DefaultInterfaceMonitor, error)
 
 	mu      sync.Mutex
 	devices []Device
@@ -29,6 +32,14 @@ func newSingProvider(platform string) PlatformProvider {
 		platform: platform,
 		factory: func(options singtun.Options) (singtun.Tun, error) {
 			return singtun.New(options)
+		},
+		newNetworkMonitor: func() (singtun.NetworkUpdateMonitor, error) {
+			return singtun.NewNetworkUpdateMonitor(logger.NOP())
+		},
+		newDefaultMonitor: func(networkMonitor singtun.NetworkUpdateMonitor) (singtun.DefaultInterfaceMonitor, error) {
+			return singtun.NewDefaultInterfaceMonitor(networkMonitor, logger.NOP(), singtun.DefaultInterfaceMonitorOptions{
+				InterfaceFinder: control.NewDefaultInterfaceFinder(),
+			})
 		},
 	}
 }
@@ -63,6 +74,20 @@ func (p *singProvider) Open(ctx context.Context, cfg DeviceConfig) (Device, erro
 			AutoRoute:        false,
 			InterfaceMonitor: noOpDefaultInterfaceMonitor{},
 		},
+	}
+	if strings.EqualFold(p.platform, "windows") && p.newNetworkMonitor != nil && p.newDefaultMonitor != nil {
+		networkMonitor, err := p.newNetworkMonitor()
+		if err != nil {
+			return nil, err
+		}
+		interfaceMonitor, err := p.newDefaultMonitor(networkMonitor)
+		if err != nil {
+			_ = networkMonitor.Close()
+			return nil, err
+		}
+		device.networkMonitor = networkMonitor
+		device.interfaceMonitor = interfaceMonitor
+		device.options.InterfaceMonitor = interfaceMonitor
 	}
 
 	p.mu.Lock()
@@ -100,12 +125,14 @@ type systemRouteConfigurableDevice interface {
 }
 
 type singDevice struct {
-	creator nativeTunFactory
-	tun     singtun.Tun
-	name    string
-	mtu     int
-	options singtun.Options
-	started bool
+	creator          nativeTunFactory
+	tun              singtun.Tun
+	name             string
+	mtu              int
+	options          singtun.Options
+	started          bool
+	networkMonitor   singtun.NetworkUpdateMonitor
+	interfaceMonitor singtun.DefaultInterfaceMonitor
 }
 
 func (d *singDevice) Name() string {
@@ -137,6 +164,12 @@ func (d *singDevice) WritePacket(ctx context.Context, packet []byte) (int, error
 }
 
 func (d *singDevice) Close() error {
+	if d.interfaceMonitor != nil {
+		_ = d.interfaceMonitor.Close()
+	}
+	if d.networkMonitor != nil {
+		_ = d.networkMonitor.Close()
+	}
 	if d.tun == nil {
 		return nil
 	}
@@ -148,6 +181,20 @@ func (d *singDevice) StartDevice() error {
 		return nil
 	}
 	if d.creator != nil {
+		if d.networkMonitor != nil {
+			if err := d.networkMonitor.Start(); err != nil {
+				return fmt.Errorf("start network monitor: %w", err)
+			}
+		}
+		monitor := d.interfaceMonitor
+		if monitor == nil {
+			monitor = d.options.InterfaceMonitor
+		}
+		if monitor != nil {
+			if err := monitor.Start(); err != nil {
+				return fmt.Errorf("start interface monitor: %w", err)
+			}
+		}
 		nativeTun, err := d.creator(d.options)
 		if err != nil {
 			return fmt.Errorf("open sing-tun device: %w", err)

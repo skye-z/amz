@@ -61,3 +61,16 @@ func TestShouldRunModeFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultIPTransportDisablesConnectionReuse(t *testing.T) {
+	transport := defaultIPTransport()
+	if transport == nil {
+		t.Fatal("expected direct transport")
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("expected keepalives disabled to avoid reusing pre-tunnel direct connections")
+	}
+	if transport.ForceAttemptHTTP2 {
+		t.Fatal("expected http2 disabled for deterministic direct/tun checks")
+	}
+}

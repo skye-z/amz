@@ -6,6 +6,7 @@ import (
 	"net"
 
 	internalconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 )
 
 type socks5Starter interface {
@@ -21,13 +22,20 @@ type socks5Starter interface {
 type SOCKS5Runtime struct {
 	manager  socks5Starter
 	listener net.Listener
+	health   HealthCheckSpec
 }
 
 func NewSOCKS5Runtime(manager socks5Starter) *SOCKS5Runtime {
 	if manager == nil {
 		return nil
 	}
-	return &SOCKS5Runtime{manager: manager}
+	return &SOCKS5Runtime{
+		manager: manager,
+		health: HealthCheckSpec{
+			Component: "socks5",
+			Mode:      HealthCheckModePassiveProxy,
+		},
+	}
 }
 
 func (r *SOCKS5Runtime) SetListener(listener net.Listener) {
@@ -79,7 +87,28 @@ func (r *SOCKS5Runtime) Stats() internalconfig.Stats {
 	return r.manager.Stats()
 }
 
-func (r *SOCKS5Runtime) SetFailureReporter(reporter func(error)) {
+func (r *SOCKS5Runtime) HealthCheck(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	return r.health.Run(ctx)
+}
+
+func (r *SOCKS5Runtime) SetHealthCheck(checker HealthCheckFunc) {
+	if r == nil {
+		return
+	}
+	r.health.Check = checker
+}
+
+func (r *SOCKS5Runtime) HealthSpec() HealthCheckSpec {
+	if r == nil {
+		return HealthCheckSpec{}
+	}
+	return r.health
+}
+
+func (r *SOCKS5Runtime) SetFailureReporter(reporter func(failure.Event)) {
 	if r == nil {
 		return
 	}

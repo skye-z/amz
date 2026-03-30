@@ -3,10 +3,12 @@ package runtime_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/skye-z/amz/internal/config"
@@ -190,6 +192,106 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	}
 	if tunnel.State() != config.StateStopped {
 		t.Fatalf("expected tun runtime stopped, got %q", tunnel.State())
+	}
+}
+
+func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
+	t.Parallel()
+
+	httpManager, err := internalruntime.NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected http manager creation success, got %v", err)
+	}
+	socksManager, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected socks manager creation success, got %v", err)
+	}
+	tunnel, err := internalruntime.NewTunManager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeTUN,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		TUN:            config.TUNConfig{Name: "igara-test0"},
+	})
+	if err != nil {
+		t.Fatalf("expected tun manager creation success, got %v", err)
+	}
+
+	httpRuntime := internalruntime.NewHTTPRuntime(httpManager)
+	socksRuntime := internalruntime.NewSOCKS5Runtime(socksManager)
+	tunRuntime := internalruntime.NewTUNRuntime(tunnel)
+
+	var calls atomic.Int32
+	httpRuntime.SetHealthCheck(func(context.Context) error {
+		calls.Add(1)
+		return nil
+	})
+	socksRuntime.SetHealthCheck(func(context.Context) error {
+		calls.Add(1)
+		return nil
+	})
+	tunRuntime.SetHealthCheck(func(context.Context) error {
+		calls.Add(1)
+		return nil
+	})
+
+	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		ListenAddress: "127.0.0.1:0",
+		HTTP:          httpRuntime,
+		SOCKS5:        socksRuntime,
+		TUN:           tunRuntime,
+	})
+	if err != nil {
+		t.Fatalf("expected client runtime creation success, got %v", err)
+	}
+
+	if err := runtime.HealthCheck(context.Background()); err != nil {
+		t.Fatalf("expected health check success, got %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("expected 3 component health checks, got %d", calls.Load())
+	}
+}
+
+func TestClientRuntimeHealthCheckReturnsFirstComponentError(t *testing.T) {
+	t.Parallel()
+
+	httpRuntime := internalruntime.NewHTTPRuntime(stubHTTPStarter{listenAddress: "127.0.0.1:9811", state: config.StateIdle})
+	socksRuntime := internalruntime.NewSOCKS5Runtime(stubSOCKSStarter{listenAddress: "127.0.0.1:1080", state: config.StateIdle})
+	tunRuntime := internalruntime.NewTUNRuntime(stubTunnel{state: config.StateIdle})
+	httpRuntime.SetHealthCheck(func(context.Context) error { return errors.New("http unhealthy") })
+	socksRuntime.SetHealthCheck(func(context.Context) error { return nil })
+	tunRuntime.SetHealthCheck(func(context.Context) error { return nil })
+
+	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		HTTP:   httpRuntime,
+		SOCKS5: socksRuntime,
+		TUN:    tunRuntime,
+	})
+	if err != nil {
+		t.Fatalf("expected client runtime creation success, got %v", err)
+	}
+	err = runtime.HealthCheck(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "http unhealthy") {
+		t.Fatalf("expected http health error, got %v", err)
 	}
 }
 
@@ -545,3 +647,13 @@ func (s stubSOCKSStarter) Close() error                                         
 func (s stubSOCKSStarter) State() string                                         { return s.state }
 func (s stubSOCKSStarter) Stats() config.Stats                                   { return config.Stats{} }
 func (s stubSOCKSStarter) ListenAddress() string                                 { return s.listenAddress }
+
+type stubTunnel struct {
+	state string
+}
+
+func (s stubTunnel) Start(context.Context) error       { return nil }
+func (s stubTunnel) Stop(context.Context) error        { return nil }
+func (s stubTunnel) Close() error                      { return nil }
+func (s stubTunnel) State() string                     { return s.state }
+func (s stubTunnel) Stats() config.Stats               { return config.Stats{} }

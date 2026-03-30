@@ -228,8 +228,20 @@ func (r *ClientRuntime) Close() error {
 
 func (r *ClientRuntime) HealthCheck(ctx context.Context) error {
 	r.mu.Lock()
+	httpRuntime := r.http
+	socksRuntime := r.socks5
 	tunRuntime := r.tun
 	r.mu.Unlock()
+	if httpRuntime != nil {
+		if err := httpRuntime.HealthCheck(ctx); err != nil {
+			return err
+		}
+	}
+	if socksRuntime != nil {
+		if err := socksRuntime.HealthCheck(ctx); err != nil {
+			return err
+		}
+	}
 	if tunRuntime != nil {
 		return tunRuntime.HealthCheck(ctx)
 	}

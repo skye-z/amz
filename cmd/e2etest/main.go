@@ -205,9 +205,12 @@ func main() {
 }
 
 func fetchIP(ctx context.Context, transport http.RoundTripper) (string, map[string]any, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if transport != nil {
-		httpClient.Transport = transport
+	if transport == nil {
+		transport = defaultIPTransport()
+	}
+	httpClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipAPI, nil)
@@ -239,6 +242,17 @@ func fetchIP(ctx context.Context, transport http.RoundTripper) (string, map[stri
 	}
 
 	return ipStr, data, nil
+}
+
+func defaultIPTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:               nil,
+		DisableKeepAlives:   true,
+		ForceAttemptHTTP2:   false,
+		MaxIdleConns:        0,
+		MaxIdleConnsPerHost: 0,
+		IdleConnTimeout:     0,
+	}
 }
 
 func httpProxyTransport(proxyAddr string) *http.Transport {

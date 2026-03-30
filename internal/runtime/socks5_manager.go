@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalconfig "github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 	"github.com/skye-z/amz/internal/observe"
 )
 
@@ -72,7 +73,7 @@ type SOCKS5Manager struct {
 	activeTCP     map[net.Conn]struct{}
 	streamManager SOCKS5ConnectStreamOpener
 	dialer        contextDialer
-	failureReport func(error)
+	failureReport func(failure.Event)
 }
 
 type udpAssociation struct {
@@ -148,7 +149,7 @@ func (m *SOCKS5Manager) SetDialer(d contextDialer) {
 	m.dialer = d
 }
 
-func (m *SOCKS5Manager) SetFailureReporter(reporter func(error)) {
+func (m *SOCKS5Manager) SetFailureReporter(reporter func(failure.Event)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failureReport = reporter
@@ -350,7 +351,13 @@ func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, 
 		address := net.JoinHostPort(host, port)
 		remoteConn, err = dialer.DialContext(ctx, "tcp", address)
 		if err != nil {
-			m.reportFailure(err)
+			m.reportFailure("connect-upstream", err)
+			if retriedConn, retriedErr, retried := m.retryConnectOnce(ctx, "connect-upstream", targetAddr, err); retried {
+				if retriedErr == nil {
+					remoteConn = retriedConn
+					goto relay
+				}
+			}
 			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
 			return err
 		}
@@ -362,7 +369,13 @@ func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, 
 		}
 		remoteConn, err = streamMgr.OpenStream(ctx, host, port)
 		if err != nil {
-			m.reportFailure(err)
+			m.reportFailure("connect-stream", err)
+			if retriedConn, retriedErr, retried := m.retryConnectOnce(ctx, "connect-stream", targetAddr, err); retried {
+				if retriedErr == nil {
+					remoteConn = retriedConn
+					goto relay
+				}
+			}
 			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
 			return err
 		}
@@ -370,6 +383,7 @@ func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, 
 		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
 		return fmt.Errorf("no dialer or stream manager configured")
 	}
+relay:
 	defer remoteConn.Close()
 	if err := writeSOCKSReply(clientConn, socksReplySucceeded, remoteConn.LocalAddr().String()); err != nil {
 		return err
@@ -458,16 +472,125 @@ func (m *SOCKS5Manager) handleUserPassAuth(conn net.Conn) error {
 	return err
 }
 
-func (m *SOCKS5Manager) reportFailure(err error) {
+func (m *SOCKS5Manager) reportFailure(operation string, err error) {
 	if err == nil {
 		return
 	}
 	m.mu.Lock()
 	reporter := m.failureReport
+	endpoint := m.cfg.Endpoint
 	m.mu.Unlock()
 	if reporter != nil {
-		go reporter(err)
+		reporter(failure.Event{
+			Component: failure.ComponentSOCKS5,
+			Operation: operation,
+			Endpoint:  endpoint,
+			Err:       err,
+		})
 	}
+}
+
+func (m *SOCKS5Manager) currentEndpoint() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.Endpoint
+}
+
+func (m *SOCKS5Manager) retryConnectOnce(ctx context.Context, operation, targetAddr string, cause error) (net.Conn, error, bool) {
+	currentEndpoint := m.currentEndpoint()
+	currentSignature := m.currentBackendSignature()
+	decision := failure.Classify(failure.Event{
+		Component: failure.ComponentSOCKS5,
+		Operation: operation,
+		Endpoint:  currentEndpoint,
+		Err:       cause,
+	})
+	if decision.Action == failure.ActionIgnore {
+		return nil, nil, false
+	}
+	if decision.Action == failure.ActionSwitchEndpoint {
+		if !m.waitForBackendRefresh(ctx, currentEndpoint, currentSignature, 2*time.Second) {
+			return nil, nil, false
+		}
+	}
+
+	streamMgr := m.currentStreamManager()
+	if streamMgr != nil {
+		host, port, err := parseSOCKSTargetAddress(targetAddr)
+		if err != nil {
+			return nil, err, true
+		}
+		conn, err := streamMgr.OpenStream(ctx, host, port)
+		if err == nil {
+			return conn, nil, true
+		}
+		cause = err
+	}
+
+	dialer := m.currentDialer()
+	if dialer == nil {
+		return nil, cause, true
+	}
+	host, port, err := parseSOCKSTargetAddress(targetAddr)
+	if err != nil {
+		return nil, err, true
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	return conn, err, true
+}
+
+func (m *SOCKS5Manager) currentBackendSignature() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return fmt.Sprintf("%p|%p|%s", m.dialer, m.streamManager, m.cfg.Endpoint)
+}
+
+func (m *SOCKS5Manager) waitForBackendRefresh(ctx context.Context, currentEndpoint, currentSignature string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if endpoint := m.currentEndpoint(); endpoint != "" && endpoint != currentEndpoint {
+			return true
+		}
+		if signature := m.currentBackendSignature(); signature != "" && signature != currentSignature {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+func (m *SOCKS5Manager) waitForEndpointChange(ctx context.Context, current string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if endpoint := m.currentEndpoint(); endpoint != "" && endpoint != current {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func (m *SOCKS5Manager) currentStreamManager() SOCKS5ConnectStreamOpener {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.streamManager
+}
+
+func (m *SOCKS5Manager) currentDialer() contextDialer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dialer
 }
 
 func (m *SOCKS5Manager) swapBackendFrom(other *SOCKS5Manager) {

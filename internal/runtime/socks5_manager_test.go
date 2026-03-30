@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skye-z/amz/internal/config"
+	"github.com/skye-z/amz/internal/failure"
 )
 
 func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
@@ -200,7 +201,7 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	}
 	manager.SetDialer(&failingContextDialer{err: io.EOF})
 	var reported atomic.Bool
-	manager.SetFailureReporter(func(error) {
+	manager.SetFailureReporter(func(failure.Event) {
 		reported.Store(true)
 	})
 
@@ -236,6 +237,57 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	}
 	if !reported.Load() {
 		t.Fatal("expected upstream dial failure to be reported")
+	}
+}
+
+func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+	})
+	if err != nil {
+		t.Fatalf("expected manager creation success, got %v", err)
+	}
+	manager.SetDialer(&failingContextDialer{err: context.DeadlineExceeded})
+	manager.SetFailureReporter(func(failure.Event) {
+		manager.SetDialer(echoHTTPDialer{})
+	})
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("expected manager start success, got %v", err)
+	}
+	defer manager.Close()
+
+	conn, err := net.Dial("tcp", manager.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected socks dial success, got %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
+		t.Fatalf("expected greeting write success, got %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("expected greeting read success, got %v", err)
+	}
+	connectRequest := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}, []byte("example.com")...)
+	connectRequest = append(connectRequest, 0x01, 0xbb)
+	if _, err := conn.Write(connectRequest); err != nil {
+		t.Fatalf("expected connect request write success, got %v", err)
+	}
+	resp, err := io.ReadAll(io.LimitReader(conn, 10))
+	if err != nil {
+		t.Fatalf("expected connect response success, got %v", err)
+	}
+	if len(resp) < 2 || resp[1] != socksReplySucceeded {
+		t.Fatalf("expected socks success reply after retry, got %v", resp)
 	}
 }
 

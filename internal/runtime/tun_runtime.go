@@ -9,20 +9,35 @@ import (
 type TUNRuntime struct {
 	runtime     internalconfig.Tunnel
 	healthCheck func(context.Context) error
+	health      HealthCheckSpec
 }
 
 func NewTUNRuntime(runtime internalconfig.Tunnel) *TUNRuntime {
 	if runtime == nil {
 		return nil
 	}
-	return &TUNRuntime{runtime: runtime}
+	return &TUNRuntime{
+		runtime: runtime,
+		health: HealthCheckSpec{
+			Component: "tun",
+			Mode:      HealthCheckModeActiveTunnel,
+		},
+	}
 }
 
 func NewTUNRuntimeWithHealth(runtime internalconfig.Tunnel, healthCheck func(context.Context) error) *TUNRuntime {
 	if runtime == nil {
 		return nil
 	}
-	return &TUNRuntime{runtime: runtime, healthCheck: healthCheck}
+	return &TUNRuntime{
+		runtime:     runtime,
+		healthCheck: healthCheck,
+		health: HealthCheckSpec{
+			Component: "tun",
+			Mode:      HealthCheckModeActiveTunnel,
+			Check:     healthCheck,
+		},
+	}
 }
 
 func (r *TUNRuntime) Start(ctx context.Context) error {
@@ -47,10 +62,25 @@ func (r *TUNRuntime) Stop(ctx context.Context) error {
 }
 
 func (r *TUNRuntime) HealthCheck(ctx context.Context) error {
-	if r == nil || r.runtime == nil || r.healthCheck == nil {
+	if r == nil || r.runtime == nil {
 		return nil
 	}
-	return r.healthCheck(ctx)
+	return r.health.Run(ctx)
+}
+
+func (r *TUNRuntime) SetHealthCheck(checker HealthCheckFunc) {
+	if r == nil {
+		return
+	}
+	r.healthCheck = checker
+	r.health.Check = checker
+}
+
+func (r *TUNRuntime) HealthSpec() HealthCheckSpec {
+	if r == nil {
+		return HealthCheckSpec{}
+	}
+	return r.health
 }
 
 func (r *TUNRuntime) State() string {
