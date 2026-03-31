@@ -762,12 +762,13 @@ func TestConnectIPSessionManagerOpenAndParsingBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf(errSessionManagerCreate, err)
 	}
-	manager.info = SessionInfo{IPv4: "10.0.0.2/32"}
+	seedIPv4CIDR := netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 32).String()
+	manager.info = SessionInfo{IPv4: seedIPv4CIDR}
 	manager.dialer = &fakeConnectIPDialer{session: &waiterSession{waitErr: errors.New("no info")}}
 	if err := manager.Open(context.Background()); err != nil {
 		t.Fatalf("expected open success with seed info fallback, got %v", err)
 	}
-	if manager.Snapshot().IPv4 != "10.0.0.2/32" {
+	if manager.Snapshot().IPv4 != seedIPv4CIDR {
 		t.Fatalf("expected seed info fallback in snapshot, got %+v", manager.Snapshot())
 	}
 
