@@ -35,10 +35,10 @@ const (
 	quicVersionDraft08          = "draft-08"
 	quicMutatedValue            = "mutated"
 	quicExampleTCPAddress       = testkit.TestDomain + ":443"
-	quicBootstrapTCPAddress     = "1.1.1.1:443"
+	quicBootstrapTCPAddress     = testkit.PublicDNSV4 + ":443"
 	quicDisconnectReasonTimeout = "timeout"
 	quicTracePacketsEnv         = "AMZ_TUN_TRACE_PACKETS"
-	quicTraceSourceAddress      = "10.0.0.8"
+	quicTraceSourceAddress      = testkit.PacketSrcV4
 	quicPayloadPong             = "pong"
 
 	errConnectionManagerCreate = "expected connection manager creation success, got %v"
@@ -287,7 +287,7 @@ func TestPacketStackDialerValidationAndHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected dialer creation success, got %v", err)
 	}
-	if _, err := dialer.DialContext(context.Background(), "udp", "1.1.1.1:53"); err == nil {
+	if _, err := dialer.DialContext(context.Background(), "udp", testkit.PublicDNSV4+":53"); err == nil {
 		t.Fatal("expected non-tcp network error")
 	}
 	if _, err := dialer.DialContext(context.Background(), "tcp", "missing-port"); err == nil {
@@ -636,7 +636,7 @@ func TestQUICHelperBranches(t *testing.T) {
 	if requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: quicBootstrapTCPAddress}) {
 		t.Fatal("expected :443 not to require pinned trust")
 	}
-	if !requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: "1.1.1.1:8443"}) {
+	if !requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: testkit.PublicDNSV4 + ":8443"}) {
 		t.Fatal("expected alternate port to require pinned trust")
 	}
 	if got := normalizePEM(" a\n\n b "); got != "a\nb" {
@@ -1636,14 +1636,14 @@ func TestPacketIORelayEmitsDiagnosticsAndStats(t *testing.T) {
 		name: "igara-test0",
 		mtu:  1280,
 		inbound: [][]byte{
-			ipv4Packet(quicTraceSourceAddress, "104.28.152.116", 6, 64),
-			ipv4Packet(quicTraceSourceAddress, "1.1.1.1", 17, 52),
+			ipv4Packet(quicTraceSourceAddress, testkit.PacketDstV4, 6, 64),
+			ipv4Packet(quicTraceSourceAddress, testkit.PublicDNSV4, 17, 52),
 		},
 	}
 	endpoint := &stubRelayEndpoint{
 		downlink: [][]byte{
-			ipv4Packet("104.28.152.116", quicTraceSourceAddress, 6, 112),
-			ipv4Packet("1.1.1.1", quicTraceSourceAddress, 17, 60),
+			ipv4Packet(testkit.PacketDstV4, quicTraceSourceAddress, 6, 112),
+			ipv4Packet(testkit.PublicDNSV4, quicTraceSourceAddress, 17, 60),
 		},
 	}
 
@@ -1663,8 +1663,8 @@ func TestPacketIORelayEmitsDiagnosticsAndStats(t *testing.T) {
 		"uplink packet #2",
 		"downlink packet #1",
 		"downlink packet #2",
-		"src=10.0.0.8",
-		"dst=104.28.152.116",
+		"src=" + testkit.PacketSrcV4,
+		"dst=" + testkit.PacketDstV4,
 		"proto=tcp",
 		"packet relay stopped",
 		"rx_packets=2",
@@ -1735,7 +1735,7 @@ func TestDatapathFormattingHelpers(t *testing.T) {
 	ipv6 := make([]byte, 40)
 	ipv6[0] = 0x60
 	ipv6[6] = 58
-	copy(ipv6[8:24], netip.MustParseAddr("2001:db8::1").AsSlice())
+	copy(ipv6[8:24], netip.MustParseAddr(testkit.TestIPv6Doc).AsSlice())
 	copy(ipv6[24:40], netip.MustParseAddr("2001:db8::2").AsSlice())
 	if got := packetSummary(ipv6); !strings.Contains(got, "version=6") || !strings.Contains(got, "icmpv6") {
 		t.Fatalf("unexpected ipv6 summary: %q", got)

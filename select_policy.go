@@ -2,6 +2,7 @@ package amz
 
 import (
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -11,14 +12,26 @@ import (
 
 var detectIPv6Support = defaultDetectIPv6Support
 
+var (
+	discoveryScanRangeV4 = net.IPv4(162, 159, 192, 0).String() + "/24"
+	discoveryScanRangeV6 = netip.PrefixFrom(netip.AddrFrom16([16]byte{
+		0x26, 0x06, 0x47, 0x00, 0x01, 0x03,
+	}), 64).String()
+	ipv6ConnectivityProbeTarget = net.JoinHostPort(netip.AddrFrom16([16]byte{
+		0x26, 0x06, 0x47, 0x00, 0x47, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x11, 0x11,
+	}).String(), "53")
+)
+
 func buildDiscoveryInput(state storage.State, ipv6Supported bool) discovery.Input {
 	input := discovery.Input{
 		Registration: registrationFromState(state),
 		Cache:        cacheFromState(state),
 		Scan: discovery.Scan{
 			Source: "auto",
-			Range4: []string{"162.159.192.0/24"},
-			Range6: []string{"2606:4700:103::/64"},
+			Range4: []string{discoveryScanRangeV4},
+			Range6: []string{discoveryScanRangeV6},
 		},
 	}
 	if !ipv6Supported {
@@ -81,7 +94,7 @@ func defaultDetectIPv6Support() bool {
 		return false
 	}
 
-	conn, err := net.DialTimeout("udp6", "[2606:4700:4700::1111]:53", 300*time.Millisecond)
+	conn, err := net.DialTimeout("udp6", ipv6ConnectivityProbeTarget, 300*time.Millisecond)
 	if err != nil {
 		return false
 	}

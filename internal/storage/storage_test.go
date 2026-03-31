@@ -141,7 +141,6 @@ func TestFileStoreLoadAndSave(t *testing.T) {
 	}
 }
 
-
 func TestStateNormalizedAndDefaultState(t *testing.T) {
 	state := State{}
 	normalized := state.normalized()
@@ -194,10 +193,10 @@ func TestStateJSONRoundTripIncludesOptionalSections(t *testing.T) {
 		Token:        "token-1",
 		Certificate:  Certificate{PrivateKey: "priv", ClientCertificate: "cert", PeerPublicKey: "peer", ClientID: "cid"},
 		Account:      AccountStatus{State: "registered", AccountType: "plus"},
-		Interface:    InterfaceAddresses{V4: "1.1.1.1", V6: "::1"},
+		Interface:    InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc},
 		Services:     Services{HTTPProxy: "http://proxy"},
 		SelectedNode: "node-1",
-		NodeCache:    []Node{{ID: "node-1", Host: "host", EndpointV4: "1.1.1.1:443", EndpointV6: "[::1]:443", PublicKey: "peer", Ports: []uint16{443}}},
+		NodeCache:    []Node{{ID: "node-1", Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}},
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -226,4 +225,3 @@ func TestDefaultPathFallbackToUserConfigDir(t *testing.T) {
 func osWriteFileString(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
-

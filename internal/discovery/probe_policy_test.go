@@ -157,11 +157,19 @@ func TestDiscoveryInternalHelpers(t *testing.T) {
 		t.Fatalf("expected unknown source rank 100, got %d", got)
 	}
 
-	fallbacks := observedWarpProxyFallbackHosts("162.159.198.1")
-	if len(fallbacks) != 1 || fallbacks[0] != "162.159.198.2" {
+	primaryHost, _, err := net.SplitHostPort(testkit.WarpIPv4Primary443)
+	if err != nil {
+		t.Fatalf("unexpected primary endpoint parse error: %v", err)
+	}
+	fallbackHost, _, err := net.SplitHostPort(testkit.WarpIPv4Alt443)
+	if err != nil {
+		t.Fatalf("unexpected fallback endpoint parse error: %v", err)
+	}
+	fallbacks := observedWarpProxyFallbackHosts(primaryHost)
+	if len(fallbacks) != 1 || fallbacks[0] != fallbackHost {
 		t.Fatalf("unexpected fallback hosts: %+v", fallbacks)
 	}
-	if got := observedWarpProxyFallbackHosts("1.1.1.1"); got != nil {
+	if got := observedWarpProxyFallbackHosts(testkit.PublicDNSV4); got != nil {
 		t.Fatalf("expected nil fallback hosts, got %+v", got)
 	}
 }

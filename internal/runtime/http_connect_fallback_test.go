@@ -47,6 +47,68 @@ const (
 	errTunManagerStart     = "expected start success, got %v"
 )
 
+func mustDialHTTPConnect(t *testing.T, listenAddress string) (net.Conn, *http.Response) {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf(errProxyDial, err)
+	}
+	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
+		_ = conn.Close()
+		t.Fatalf(errConnectRequestWrite, err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf(errConnectResponseRead, err)
+	}
+	return conn, resp
+}
+
+func assertHTTPConnectStatus(t *testing.T, resp *http.Response, want int, format string) {
+	t.Helper()
+	if resp.StatusCode != want {
+		t.Fatalf(format, resp.StatusCode)
+	}
+}
+
+func assertEchoPayload(t *testing.T, conn net.Conn, payload string) {
+	t.Helper()
+	if _, err := conn.Write([]byte(payload)); err != nil {
+		t.Fatalf("expected payload write success, got %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("expected payload echo success, got %v", err)
+	}
+	if got := string(reply); got != payload {
+		t.Fatalf("expected echo payload %q, got %q", payload, got)
+	}
+}
+
+func mustDialSOCKSConn(t *testing.T, listenAddress string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf(errSOCKSDial, err)
+	}
+	return conn
+}
+
+func mustCompleteSOCKSGreeting(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
+		t.Fatalf(errGreetingWrite, err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("expected greeting read success, got %v", err)
+	}
+}
+
 func TestHTTPManagerConnectFallsBackToDialerWhenStreamOpenFails(t *testing.T) {
 	t.Parallel()
 
@@ -70,32 +132,10 @@ func TestHTTPManagerConnectFallsBackToDialerWhenStreamOpenFails(t *testing.T) {
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf(errConnectResponseRead, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
-	}
-	if _, err := conn.Write([]byte(echoPayload)); err != nil {
-		t.Fatalf("expected payload write success, got %v", err)
-	}
-	reply := make([]byte, len(echoPayload))
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("expected payload echo success, got %v", err)
-	}
-	if got := string(reply); got != echoPayload {
-		t.Fatalf("expected echo payload %q, got %q", echoPayload, got)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
+	assertEchoPayload(t, conn, echoPayload)
 }
 
 func TestHTTPManagerReportsFailureWhenStreamOpenFails(t *testing.T) {
@@ -125,21 +165,9 @@ func TestHTTPManagerReportsFailureWhenStreamOpenFails(t *testing.T) {
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf(errConnectResponseRead, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) && !reported.Load() {
 		time.Sleep(10 * time.Millisecond)
@@ -176,22 +204,9 @@ func TestHTTPManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *tes
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("expected retried connect response success, got %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response after retry, got %d", resp.StatusCode)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response after retry, got %d")
 }
 
 func TestHTTPManagerReconnectsStreamAfterBackendRefresh(t *testing.T) {
@@ -221,22 +236,9 @@ func TestHTTPManagerReconnectsStreamAfterBackendRefresh(t *testing.T) {
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf(errConnectResponseRead, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response after backend refresh, got %d", resp.StatusCode)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response after backend refresh, got %d")
 }
 
 func TestHTTPManagerConnectFallbackUsesFreshTimeoutContext(t *testing.T) {
@@ -262,22 +264,9 @@ func TestHTTPManagerConnectFallbackUsesFreshTimeoutContext(t *testing.T) {
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf(errConnectResponseRead, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response after fallback, got %d", resp.StatusCode)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response after fallback, got %d")
 }
 
 type failingHTTPStreamOpener struct{}
@@ -1046,7 +1035,7 @@ func TestHTTPHandleConnectViaStreamAndHelpers(t *testing.T) {
 }
 
 func TestSOCKSAddressReadersAndNegotiationBranches(t *testing.T) {
-	if host, err := readAddressFromConn(bytes.NewReader([]byte{1, 2, 3, 4}), socksAtypIPv4); err != nil || host != "1.2.3.4" {
+	if host, err := readAddressFromConn(bytes.NewReader([]byte{1, 2, 3, 4}), socksAtypIPv4); err != nil || host != testkit.TestIPv4Echo {
 		t.Fatalf("unexpected ipv4 read result host=%q err=%v", host, err)
 	}
 	if host, err := readAddressFromConn(bytes.NewReader(append([]byte{3}, []byte("abc")...)), socksAtypDomain); err != nil || host != "abc" {
@@ -1054,7 +1043,7 @@ func TestSOCKSAddressReadersAndNegotiationBranches(t *testing.T) {
 	}
 	ipv6raw := make([]byte, 16)
 	ipv6raw[15] = 1
-	if host, err := readAddressFromConn(bytes.NewReader(ipv6raw), socksAtypIPv6); err != nil || !strings.Contains(host, "::1") {
+	if host, err := readAddressFromConn(bytes.NewReader(ipv6raw), socksAtypIPv6); err != nil || !strings.Contains(host, net.IP(ipv6raw).String()) {
 		t.Fatalf("unexpected ipv6 read result host=%q err=%v", host, err)
 	}
 	r := bytesReader(append([]byte{3, 3}, []byte("abc")...))
@@ -1062,7 +1051,7 @@ func TestSOCKSAddressReadersAndNegotiationBranches(t *testing.T) {
 		t.Fatalf("unexpected bytesReader domain result host=%q err=%v", host, err)
 	}
 	r = bytesReader(append([]byte{socksAtypIPv4}, []byte{1, 2, 3, 4}...))
-	if host, err := readAddress(&r); err != nil || host != "1.2.3.4" {
+	if host, err := readAddress(&r); err != nil || host != testkit.TestIPv4Echo {
 		t.Fatalf("unexpected bytesReader ipv4 result host=%q err=%v", host, err)
 	}
 
@@ -1356,32 +1345,10 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 	}
 	defer runtime.Close()
 
-	conn, err := net.Dial("tcp", runtime.ListenAddress())
-	if err != nil {
-		t.Fatalf(errProxyDial, err)
-	}
+	conn, resp := mustDialHTTPConnect(t, runtime.ListenAddress())
 	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf(errConnectRequestWrite, err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf(errConnectResponseRead, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
-	}
-	if _, err := conn.Write([]byte(echoPayload)); err != nil {
-		t.Fatalf("expected payload write success, got %v", err)
-	}
-	reply := make([]byte, len(echoPayload))
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("expected payload echo success, got %v", err)
-	}
-	if got := string(reply); got != echoPayload {
-		t.Fatalf("expected echo payload %q, got %q", echoPayload, got)
-	}
+	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
+	assertEchoPayload(t, conn, echoPayload)
 }
 
 type failingSharedDialer struct{}
@@ -1649,19 +1616,9 @@ func TestSOCKS5ManagerStopClosesActiveTCPConnections(t *testing.T) {
 		t.Fatalf(errManagerStart, err)
 	}
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errSOCKSDial, err)
-	}
+	conn := mustDialSOCKSConn(t, manager.ListenAddress())
 	defer conn.Close()
-
-	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf(errGreetingWrite, err)
-	}
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("expected auth reply success, got %v", err)
-	}
+	mustCompleteSOCKSGreeting(t, conn)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1709,18 +1666,9 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errSOCKSDial, err)
-	}
+	conn := mustDialSOCKSConn(t, manager.ListenAddress())
 	defer conn.Close()
-	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf(errGreetingWrite, err)
-	}
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("expected greeting read success, got %v", err)
-	}
+	mustCompleteSOCKSGreeting(t, conn)
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
 		t.Fatalf(errConnectRequestWrite, err)
@@ -1763,18 +1711,9 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 	}
 	defer manager.Close()
 
-	conn, err := net.Dial("tcp", manager.ListenAddress())
-	if err != nil {
-		t.Fatalf(errSOCKSDial, err)
-	}
+	conn := mustDialSOCKSConn(t, manager.ListenAddress())
 	defer conn.Close()
-	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf(errGreetingWrite, err)
-	}
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("expected greeting read success, got %v", err)
-	}
+	mustCompleteSOCKSGreeting(t, conn)
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
 		t.Fatalf(errConnectRequestWrite, err)

@@ -21,6 +21,7 @@ const (
 	testFailureListenAddr   = "127.0.0.1:1"
 	testIPField             = "ip"
 	testExpectedExitCodeOne = "expected exit code 1, got %d"
+	testFetchIPBody         = `{"ip":"` + testkit.TestIPv4Echo + `","city":"A","country":"B","connection":{"org":"C"}}`
 )
 
 func TestBuildClientOptionsInjectsLoggerAndEndpoint(t *testing.T) {
@@ -105,13 +106,13 @@ func TestFetchIPSuccessAndHeaders(t *testing.T) {
 		if got := req.Header.Get("User-Agent"); got != "amz-e2etest/1.0" {
 			t.Fatalf("unexpected user-agent: %q", got)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ip":"1.2.3.4","city":"A","country":"B","connection":{"org":"C"}}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(testFetchIPBody))}, nil
 	})
 	ip, raw, err := fetchIP(context.Background(), transport)
 	if err != nil {
 		t.Fatalf("expected fetch success, got %v", err)
 	}
-	if ip != "1.2.3.4" || raw[testIPField].(string) != "1.2.3.4" {
+	if ip != testkit.TestIPv4Echo || raw[testIPField].(string) != testkit.TestIPv4Echo {
 		t.Fatalf("unexpected fetch result: %s %+v", ip, raw)
 	}
 }
@@ -273,7 +274,7 @@ func TestRunE2EReturnsSuccessWhenAllModesPass(t *testing.T) {
 		{status: amz.Status{Running: true, ListenAddress: testRunListenAddress, Endpoint: testkit.WarpIPv4Alt500, Registered: true, HTTPEnabled: true, SOCKS5Enabled: true}},
 		{status: amz.Status{Running: true, Endpoint: testkit.WarpIPv4Alt500, Registered: true, TUNEnabled: true}},
 	}}
-	ips := []string{testkit.PublicDNSV4, "2.2.2.2", "3.3.3.3", "4.4.4.4"}
+	ips := []string{testkit.PublicDNSV4, testkit.PublicDNSV4Alt, testkit.TestIPv4Echo, testkit.TestIPv4Private}
 	deps := runDeps{
 		fetchIP: func(_ context.Context, _ transportRoundTripper) (string, map[string]any, error) {
 			ip := ips[0]
@@ -301,7 +302,7 @@ func TestRunE2EReturnsFailureWhenHTTPCheckFails(t *testing.T) {
 			case 2:
 				return "", nil, errors.New("http failed")
 			default:
-				return "3.3.3.3", map[string]any{testIPField: "3.3.3.3"}, nil
+				return testkit.TestIPv4Echo, map[string]any{testIPField: testkit.TestIPv4Echo}, nil
 			}
 		},
 		newClient: factory.NewClient,

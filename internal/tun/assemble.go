@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+
+	"github.com/skye-z/amz/internal/testkit"
 )
 
 // 描述占位装配入口所需的最小输入参数。
@@ -107,7 +109,7 @@ func Assemble(opts AssembleOptions) (*Assembly, error) {
 		config = Config{Device: opts.Device}
 	}
 	if len(config.Addresses) == 0 {
-		config.Addresses = []Address{{CIDR: "172.16.0.2/32"}}
+		config.Addresses = []Address{{CIDR: testkit.TunIPv4CIDR}}
 	}
 	if err := adapter.ApplyConfig(context.Background(), device, config); err != nil {
 		_ = provider.Close()

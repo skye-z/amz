@@ -22,6 +22,69 @@ type phaseLogger struct {
 	action string
 }
 
+type eventDescription struct {
+	action  string
+	message string
+}
+
+var eventDescriptions = map[string]eventDescription{
+	"managed_runtime:new.success":                 {action: "INIT", message: "initialized managed runtime"},
+	"managed_runtime:new.failed":                  {action: "INIT", message: "failed to initialize managed runtime"},
+	"managed_runtime:start.begin":                 {action: "START", message: "starting managed runtime"},
+	"managed_runtime:start.reuse_runtime":         {action: "START", message: "reusing existing runtime"},
+	"managed_runtime:start.success":               {action: "START", message: "managed runtime started"},
+	"managed_runtime:start.failed":                {action: "START", message: "managed runtime failed to start"},
+	"managed_runtime:auth.ensure.begin":           {action: "REGISTER", message: "preparing registration state"},
+	"managed_runtime:auth.ensure.success":         {action: "REGISTER", message: "registration state ready"},
+	"managed_runtime:auth.ensure.failed":          {action: "REGISTER", message: "failed to prepare registration state"},
+	"managed_runtime:endpoint.select.begin":       {action: "SELECT", message: "selecting endpoint"},
+	"managed_runtime:endpoint.plan.ready":         {action: "SELECT", message: "prepared candidate plan"},
+	"managed_runtime:endpoint.probe_profile":      {action: "SELECT", message: "using endpoint probe profile"},
+	"managed_runtime:endpoint.select.success":     {action: "SELECT", message: "selected endpoint"},
+	"managed_runtime:endpoint.select.failed":      {action: "SELECT", message: "failed to select endpoint"},
+	"managed_runtime:endpoint.failover":           {action: "SELECT", message: "failing over to next endpoint"},
+	"managed_runtime:endpoint.probe.begin":        {action: "SELECT", message: "probing candidate"},
+	"managed_runtime:endpoint.probe.success":      {action: "SELECT", message: "probe finished"},
+	"managed_runtime:endpoint.probe.failed":       {action: "SELECT", message: "probe failed"},
+	"managed_runtime:endpoint.warp_check.begin":   {action: "SELECT", message: "checking warp availability"},
+	"managed_runtime:endpoint.warp_check.success": {action: "SELECT", message: "warp availability confirmed"},
+	"managed_runtime:endpoint.warp_check.failed":  {action: "SELECT", message: "warp availability failed"},
+	"managed_runtime:state.save.begin":            {action: "STATE", message: "saving runtime state"},
+	"managed_runtime:state.save.success":          {action: "STATE", message: "saved runtime state"},
+	"managed_runtime:state.save.failed":           {action: "STATE", message: "failed to save runtime state"},
+	"managed_runtime:runtime.build.begin":         {action: "BUILD", message: "building runtime"},
+	"managed_runtime:runtime.build.success":       {action: "BUILD", message: "built runtime"},
+	"managed_runtime:runtime.build.failed":        {action: "BUILD", message: "failed to build runtime"},
+	"managed_runtime:runtime.start.begin":         {action: "CONNECT", message: "connecting runtime"},
+	"managed_runtime:runtime.start.success":       {action: "CONNECT", message: "runtime connected"},
+	"managed_runtime:runtime.start.failed":        {action: "CONNECT", message: "runtime connection failed"},
+	"managed_runtime:runtime.health.failed":       {action: "HEALTH", message: "runtime health check failed"},
+	"managed_runtime:runtime.close.failed":        {action: "CLOSE", message: "failed to close runtime"},
+	"managed_runtime:runtime.failover.begin":      {action: "FAILOVER", message: "starting runtime failover"},
+	"managed_runtime:runtime.failover.success":    {action: "FAILOVER", message: "runtime failover succeeded"},
+	"managed_runtime:runtime.failover.failed":     {action: "FAILOVER", message: "runtime failover failed"},
+	"managed_runtime:run.begin":                   {action: "RUN", message: "running managed runtime"},
+	"managed_runtime:run.success":                 {action: "RUN", message: "managed runtime finished"},
+	"managed_runtime:run.failed":                  {action: "RUN", message: "managed runtime run failed"},
+	"managed_runtime:run.skipped":                 {action: "RUN", message: "skipped managed runtime run"},
+	"managed_runtime:close.begin":                 {action: "CLOSE", message: "closing managed runtime"},
+	"managed_runtime:close.success":               {action: "CLOSE", message: "managed runtime closed"},
+	"managed_runtime:close.failed":                {action: "CLOSE", message: "managed runtime close failed"},
+	"managed_runtime:close.skipped":               {action: "CLOSE", message: "skipped managed runtime close"},
+	"client:new.success":                          {action: "INIT", message: "created client"},
+	"client:new.failed":                           {action: "INIT", message: "failed to create client"},
+	"client:start.begin":                          {action: "START", message: "starting client"},
+	"client:start.success":                        {action: "START", message: "client started"},
+	"client:start.failed":                         {action: "START", message: "client failed to start"},
+	"client:run.begin":                            {action: "RUN", message: "running client"},
+	"client:run.success":                          {action: "RUN", message: "client finished"},
+	"client:run.failed":                           {action: "RUN", message: "client run failed"},
+	"client:close.begin":                          {action: "CLOSE", message: "closing client"},
+	"client:close.success":                        {action: "CLOSE", message: "client closed"},
+	"client:close.failed":                         {action: "CLOSE", message: "client close failed"},
+	"client:close.skipped":                        {action: "CLOSE", message: "skipped client close"},
+}
+
 func field(key string, value any) logField {
 	return logField{key: key, value: value}
 }
@@ -79,120 +142,10 @@ func currentLogTimestamp() string {
 }
 
 func describeEvent(component, event string) (action string, message string) {
-	switch component + ":" + event {
-	case "managed_runtime:new.success":
-		return "INIT", "initialized managed runtime"
-	case "managed_runtime:new.failed":
-		return "INIT", "failed to initialize managed runtime"
-	case "managed_runtime:start.begin":
-		return "START", "starting managed runtime"
-	case "managed_runtime:start.reuse_runtime":
-		return "START", "reusing existing runtime"
-	case "managed_runtime:start.success":
-		return "START", "managed runtime started"
-	case "managed_runtime:start.failed":
-		return "START", "managed runtime failed to start"
-	case "managed_runtime:auth.ensure.begin":
-		return "REGISTER", "preparing registration state"
-	case "managed_runtime:auth.ensure.success":
-		return "REGISTER", "registration state ready"
-	case "managed_runtime:auth.ensure.failed":
-		return "REGISTER", "failed to prepare registration state"
-	case "managed_runtime:endpoint.select.begin":
-		return "SELECT", "selecting endpoint"
-	case "managed_runtime:endpoint.plan.ready":
-		return "SELECT", "prepared candidate plan"
-	case "managed_runtime:endpoint.probe_profile":
-		return "SELECT", "using endpoint probe profile"
-	case "managed_runtime:endpoint.select.success":
-		return "SELECT", "selected endpoint"
-	case "managed_runtime:endpoint.select.failed":
-		return "SELECT", "failed to select endpoint"
-	case "managed_runtime:endpoint.failover":
-		return "SELECT", "failing over to next endpoint"
-	case "managed_runtime:endpoint.probe.begin":
-		return "SELECT", "probing candidate"
-	case "managed_runtime:endpoint.probe.success":
-		return "SELECT", "probe finished"
-	case "managed_runtime:endpoint.probe.failed":
-		return "SELECT", "probe failed"
-	case "managed_runtime:endpoint.warp_check.begin":
-		return "SELECT", "checking warp availability"
-	case "managed_runtime:endpoint.warp_check.success":
-		return "SELECT", "warp availability confirmed"
-	case "managed_runtime:endpoint.warp_check.failed":
-		return "SELECT", "warp availability failed"
-	case "managed_runtime:state.save.begin":
-		return "STATE", "saving runtime state"
-	case "managed_runtime:state.save.success":
-		return "STATE", "saved runtime state"
-	case "managed_runtime:state.save.failed":
-		return "STATE", "failed to save runtime state"
-	case "managed_runtime:runtime.build.begin":
-		return "BUILD", "building runtime"
-	case "managed_runtime:runtime.build.success":
-		return "BUILD", "built runtime"
-	case "managed_runtime:runtime.build.failed":
-		return "BUILD", "failed to build runtime"
-	case "managed_runtime:runtime.start.begin":
-		return "CONNECT", "connecting runtime"
-	case "managed_runtime:runtime.start.success":
-		return "CONNECT", "runtime connected"
-	case "managed_runtime:runtime.start.failed":
-		return "CONNECT", "runtime connection failed"
-	case "managed_runtime:runtime.health.failed":
-		return "HEALTH", "runtime health check failed"
-	case "managed_runtime:runtime.close.failed":
-		return "CLOSE", "failed to close runtime"
-	case "managed_runtime:runtime.failover.begin":
-		return "FAILOVER", "starting runtime failover"
-	case "managed_runtime:runtime.failover.success":
-		return "FAILOVER", "runtime failover succeeded"
-	case "managed_runtime:runtime.failover.failed":
-		return "FAILOVER", "runtime failover failed"
-	case "managed_runtime:run.begin":
-		return "RUN", "running managed runtime"
-	case "managed_runtime:run.success":
-		return "RUN", "managed runtime finished"
-	case "managed_runtime:run.failed":
-		return "RUN", "managed runtime run failed"
-	case "managed_runtime:run.skipped":
-		return "RUN", "skipped managed runtime run"
-	case "managed_runtime:close.begin":
-		return "CLOSE", "closing managed runtime"
-	case "managed_runtime:close.success":
-		return "CLOSE", "managed runtime closed"
-	case "managed_runtime:close.failed":
-		return "CLOSE", "managed runtime close failed"
-	case "managed_runtime:close.skipped":
-		return "CLOSE", "skipped managed runtime close"
-	case "client:new.success":
-		return "INIT", "created client"
-	case "client:new.failed":
-		return "INIT", "failed to create client"
-	case "client:start.begin":
-		return "START", "starting client"
-	case "client:start.success":
-		return "START", "client started"
-	case "client:start.failed":
-		return "START", "client failed to start"
-	case "client:run.begin":
-		return "RUN", "running client"
-	case "client:run.success":
-		return "RUN", "client finished"
-	case "client:run.failed":
-		return "RUN", "client run failed"
-	case "client:close.begin":
-		return "CLOSE", "closing client"
-	case "client:close.success":
-		return "CLOSE", "client closed"
-	case "client:close.failed":
-		return "CLOSE", "client close failed"
-	case "client:close.skipped":
-		return "CLOSE", "skipped client close"
-	default:
-		return "INFO", strings.ReplaceAll(event, ".", " ")
+	if description, ok := eventDescriptions[component+":"+event]; ok {
+		return description.action, description.message
 	}
+	return "INFO", strings.ReplaceAll(event, ".", " ")
 }
 
 func normalizeAction(action string) string {

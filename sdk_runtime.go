@@ -68,6 +68,11 @@ var tunProbeProfile = probeProfile{
 	concurrency:         4,
 }
 
+var (
+	tunCandidateHostPreferred = net.IPv4(162, 159, 198, 2).String()
+	tunCandidateHostFallback  = net.IPv4(162, 159, 198, 1).String()
+)
+
 var validateTUNCandidateForSelection = func(ctx context.Context, opts Options, state storage.State, candidate discovery.Candidate) error {
 	tunCfg := baseKernelConfigFromState(state, candidate.Address, strings.TrimSpace(opts.Transport.SNI), amzconfig.ModeTUN, "", withAction(opts.Logger, "SELECT"))
 	connectionManager, err := amzsession.NewConnectionManager(tunCfg)
@@ -1102,9 +1107,9 @@ func tunCandidatePriority(address, source string) int {
 
 	hostRank := 100
 	switch host {
-	case "162.159.198.2":
+	case tunCandidateHostPreferred:
 		hostRank = 0
-	case "162.159.198.1":
+	case tunCandidateHostFallback:
 		hostRank = 10
 	case "engage.cloudflareclient.com":
 		hostRank = 20

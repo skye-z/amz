@@ -38,6 +38,7 @@ const (
 	testExpectedClientRuntime = "expected client runtime success, got %v"
 	testReadFileError         = "read %s: %v"
 	testExpectedOutputContain = "expected output to contain %q, got:\n%s"
+	testClientListenAddress   = "127.0.0.1:9000"
 )
 
 func TestNewClientRejectsNoEnabledRuntime(t *testing.T) {
@@ -193,28 +194,8 @@ func TestManagedRuntimeFailsOverToNextEndpointOnStartFailure(t *testing.T) {
 	}
 
 	var built []string
-	mr := &managedRuntime{
-		opts: Options{
-			Listen: ListenOptions{Address: testkit.LocalListenSDK},
-			HTTP:   HTTPOptions{Enabled: true},
-			SOCKS5: SOCKS5Options{Enabled: true},
-		},
-		store: store,
-		auth:  &stubAuthEnsurer{result: authState},
-		status: Status{
-			HTTPEnabled:   true,
-			SOCKS5Enabled: true,
-		},
-	}
-	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
-		candidates := []discovery.Candidate{
-			{Address: testkit.WarpIPv4Primary443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-			{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-		}
-		return endpointSelection{Primary: candidates[0], Candidates: candidates}, []storage.Node{
-			{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443},
-		}, nil
-	}
+	mr := newTestManagedRuntime(store, authState, true)
+	mr.selectFn = fixedEndpointSelector([]storage.Node{{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443}})
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		built = append(built, endpoint)
 		switch endpoint {
@@ -251,24 +232,8 @@ func TestManagedRuntimeReturnsAggregateErrorWhenAllEndpointsFail(t *testing.T) {
 
 	store := &stubStateStore{loadState: storage.DefaultState()}
 	authState := storage.State{Version: storage.CurrentVersion}
-	mr := &managedRuntime{
-		opts: Options{
-			Listen: ListenOptions{Address: testkit.LocalListenSDK},
-			HTTP:   HTTPOptions{Enabled: true},
-		},
-		store: store,
-		auth:  &stubAuthEnsurer{result: authState},
-		status: Status{
-			HTTPEnabled: true,
-		},
-	}
-	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
-		candidates := []discovery.Candidate{
-			{Address: testkit.WarpIPv4Primary443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-			{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-		}
-		return endpointSelection{Primary: candidates[0], Candidates: candidates}, nil, nil
-	}
+	mr := newTestManagedRuntime(store, authState, false)
+	mr.selectFn = fixedEndpointSelector(nil)
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		return &stubClientRuntimeAdapter{
 			status:   runtimeStatus(testkit.LocalListenSDK, endpoint, true, false, false),
@@ -311,29 +276,11 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 		status: runtimeStatus(testkit.LocalListenSDK, testkit.WarpIPv4Alt443, true, true, false),
 	}
 
-	mr := &managedRuntime{
-		opts: Options{
-			Listen: ListenOptions{Address: testkit.LocalListenSDK},
-			HTTP:   HTTPOptions{Enabled: true},
-			SOCKS5: SOCKS5Options{Enabled: true},
-		},
-		store: store,
-		auth:  &stubAuthEnsurer{result: authState},
-		status: Status{
-			HTTPEnabled:   true,
-			SOCKS5Enabled: true,
-		},
-	}
-	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
-		candidates := []discovery.Candidate{
-			{Address: testkit.WarpIPv4Primary443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-			{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
-		}
-		return endpointSelection{Primary: candidates[0], Candidates: candidates}, []storage.Node{
-			{ID: "node-1", EndpointV4: testkit.WarpIPv4Primary443},
-			{ID: "node-2", EndpointV4: testkit.WarpIPv4Alt443},
-		}, nil
-	}
+	mr := newTestManagedRuntime(store, authState, true)
+	mr.selectFn = fixedEndpointSelector([]storage.Node{
+		{ID: "node-1", EndpointV4: testkit.WarpIPv4Primary443},
+		{ID: "node-2", EndpointV4: testkit.WarpIPv4Alt443},
+	})
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		switch endpoint {
 		case testkit.WarpIPv4Primary443:
@@ -416,6 +363,75 @@ func (s *stubAuthEnsurer) Ensure(context.Context) (auth.Result, error) {
 		Action: auth.ActionRegister,
 		State:  s.result,
 	}, nil
+}
+
+func newTestManagedRuntime(store stateStore, authState storage.State, enableSOCKS bool) *managedRuntime {
+	opts := Options{
+		Listen: ListenOptions{Address: testkit.LocalListenSDK},
+		HTTP:   HTTPOptions{Enabled: true},
+	}
+	status := Status{HTTPEnabled: true}
+	if enableSOCKS {
+		opts.SOCKS5 = SOCKS5Options{Enabled: true}
+		status.SOCKS5Enabled = true
+	}
+	return &managedRuntime{
+		opts:   opts,
+		store:  store,
+		auth:   &stubAuthEnsurer{result: authState},
+		status: status,
+	}
+}
+
+func testManagedRuntimeCandidates() []discovery.Candidate {
+	return []discovery.Candidate{
+		{Address: testkit.WarpIPv4Primary443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
+		{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true},
+	}
+}
+
+func fixedEndpointSelector(nodes []storage.Node) func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
+	return func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
+		candidates := testManagedRuntimeCandidates()
+		return endpointSelection{Primary: candidates[0], Candidates: candidates}, nodes, nil
+	}
+}
+
+func mustNewRuntimeAdapter(t *testing.T, endpoint string) *runtimeAdapter {
+	t.Helper()
+
+	httpManager, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            internalconfig.DefaultSNI,
+		MTU:            internalconfig.DefaultMTU,
+		Mode:           internalconfig.ModeHTTP,
+		ConnectTimeout: internalconfig.DefaultConnectTimeout,
+		Keepalive:      internalconfig.DefaultKeepalive,
+		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf("expected http manager success, got %v", err)
+	}
+	socksManager, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            internalconfig.DefaultSNI,
+		MTU:            internalconfig.DefaultMTU,
+		Mode:           internalconfig.ModeSOCKS,
+		ConnectTimeout: internalconfig.DefaultConnectTimeout,
+		Keepalive:      internalconfig.DefaultKeepalive,
+		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf("expected socks manager success, got %v", err)
+	}
+	clientRuntime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		HTTP:   internalruntime.NewHTTPRuntime(httpManager),
+		SOCKS5: internalruntime.NewSOCKS5Runtime(socksManager),
+	})
+	if err != nil {
+		t.Fatalf("expected client runtime success, got %v", err)
+	}
+	return &runtimeAdapter{runtime: clientRuntime}
 }
 
 type stubStateStore struct {
@@ -506,7 +522,7 @@ func (s *extraStore) Save(state storage.State) error { s.saved = state; return s
 func TestOptionsNormalizedAndClientLifecycle(t *testing.T) {
 	orig := buildSDKRuntime
 	defer func() { buildSDKRuntime = orig }()
-	stub := &extraSDKRuntime{status: Status{Running: true, ListenAddress: "127.0.0.1:9000"}, listen: "127.0.0.1:9000"}
+	stub := &extraSDKRuntime{status: Status{Running: true, ListenAddress: testClientListenAddress}, listen: testClientListenAddress}
 	buildSDKRuntime = func(Options) (sdkRuntime, error) { return stub, nil }
 
 	if got := (Options{HTTP: HTTPOptions{Enabled: true}}).normalized().Listen.Address; got == "" {
@@ -522,7 +538,7 @@ func TestOptionsNormalizedAndClientLifecycle(t *testing.T) {
 	if err := client.Run(); err != nil {
 		t.Fatalf("expected run success, got %v", err)
 	}
-	if got := client.ListenAddress(); got != "127.0.0.1:9000" {
+	if got := client.ListenAddress(); got != testClientListenAddress {
 		t.Fatalf("unexpected listen address: %q", got)
 	}
 	if !client.Status().Running {
@@ -576,10 +592,14 @@ func TestSDKHelpersAndManagedRuntimeUtilities(t *testing.T) {
 	if len(selection.Candidates) != 2 {
 		t.Fatalf("unexpected selection result: %+v", selection)
 	}
-	if tunCandidatePriority("162.159.198.2:4500", discovery.SourceFixed) >= tunCandidatePriority("162.159.198.1:4500", discovery.SourceFixed) {
+	primaryHost, _, err := net.SplitHostPort(testkit.WarpIPv4Primary443)
+	if err != nil {
+		t.Fatalf("unexpected primary endpoint host parse error: %v", err)
+	}
+	if tunCandidatePriority(testkit.WarpIPv4Alt4500, discovery.SourceFixed) >= tunCandidatePriority(net.JoinHostPort(primaryHost, "4500"), discovery.SourceFixed) {
 		t.Fatal("expected preferred tun candidate priority")
 	}
-	state := storage.State{Certificate: storage.Certificate{PrivateKey: "pk", ClientCertificate: "cert", PeerPublicKey: "peer", ClientID: "cid"}, Account: storage.AccountStatus{State: "registered", AccountType: "plus"}, Interface: storage.InterfaceAddresses{V4: "1.1.1.1", V6: "::1"}, Services: storage.Services{HTTPProxy: "http://proxy"}, SelectedNode: "node-1", NodeCache: []storage.Node{{ID: "node-1", Host: "host", EndpointV4: "1.1.1.1:443", EndpointV6: "[::1]:443", PublicKey: "peer", Ports: []uint16{443}}}}
+	state := storage.State{Certificate: storage.Certificate{PrivateKey: "pk", ClientCertificate: "cert", PeerPublicKey: "peer", ClientID: "cid"}, Account: storage.AccountStatus{State: "registered", AccountType: "plus"}, Interface: storage.InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc}, Services: storage.Services{HTTPProxy: "http://proxy"}, SelectedNode: "node-1", NodeCache: []storage.Node{{ID: "node-1", Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}}}
 	if info := sessionInfoFromState(state); info.IPv4 == "" || info.IPv6 == "" {
 		t.Fatalf("unexpected session info: %+v", info)
 	}
@@ -706,75 +726,15 @@ func TestRuntimeAdapterAndManagedRuntimeRunBranches(t *testing.T) {
 
 func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 	store := &stubStateStore{loadState: storage.DefaultState()}
-	currentHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       internalconfig.DefaultEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeHTTP,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected current http manager success, got %v", err)
-	}
-	currentSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       internalconfig.DefaultEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeSOCKS,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected current socks manager success, got %v", err)
-	}
-	nextHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       testNextEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeHTTP,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected next http manager success, got %v", err)
-	}
-	nextSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       testNextEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeSOCKS,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected next socks manager success, got %v", err)
-	}
-	currentRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		HTTP:   internalruntime.NewHTTPRuntime(currentHTTP),
-		SOCKS5: internalruntime.NewSOCKS5Runtime(currentSOCKS),
-	})
-	if err != nil {
-		t.Fatalf("expected current client runtime success, got %v", err)
-	}
-	nextRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		HTTP:   internalruntime.NewHTTPRuntime(nextHTTP),
-		SOCKS5: internalruntime.NewSOCKS5Runtime(nextSOCKS),
-	})
-	if err != nil {
-		t.Fatalf("expected next client runtime success, got %v", err)
-	}
+	currentRT := mustNewRuntimeAdapter(t, internalconfig.DefaultEndpoint)
+	nextRT := mustNewRuntimeAdapter(t, testNextEndpoint)
 	mr := &managedRuntime{
 		opts:      Options{},
 		store:     store,
 		endpoint:  "current-endpoint",
 		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "current-endpoint"}, {Address: testNextEndpoint}}},
 	}
-	ok := mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom"))
+	ok := mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom"))
 	if !ok {
 		t.Fatal("expected hot swap runtime success")
 	}
@@ -794,69 +754,9 @@ func TestManagedRuntimeTryHotSwapRuntimeFailureBranches(t *testing.T) {
 
 	saveFailStore := &failingStateStore{err: errors.New("save failed")}
 	mr = &managedRuntime{store: saveFailStore}
-	currentHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       internalconfig.DefaultEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeHTTP,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected current http manager success, got %v", err)
-	}
-	currentSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       internalconfig.DefaultEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeSOCKS,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected current socks manager success, got %v", err)
-	}
-	nextHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       testNextEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeHTTP,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected next http manager success, got %v", err)
-	}
-	nextSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       testNextEndpoint,
-		SNI:            internalconfig.DefaultSNI,
-		MTU:            internalconfig.DefaultMTU,
-		Mode:           internalconfig.ModeSOCKS,
-		ConnectTimeout: internalconfig.DefaultConnectTimeout,
-		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected next socks manager success, got %v", err)
-	}
-	currentRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		HTTP:   internalruntime.NewHTTPRuntime(currentHTTP),
-		SOCKS5: internalruntime.NewSOCKS5Runtime(currentSOCKS),
-	})
-	if err != nil {
-		t.Fatalf("expected current client runtime success, got %v", err)
-	}
-	nextRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		HTTP:   internalruntime.NewHTTPRuntime(nextHTTP),
-		SOCKS5: internalruntime.NewSOCKS5Runtime(nextSOCKS),
-	})
-	if err != nil {
-		t.Fatalf("expected next client runtime success, got %v", err)
-	}
-	if mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, testNextEndpoint, storage.DefaultState(), endpointSelection{}, 0, errors.New("boom")) {
+	currentRT := mustNewRuntimeAdapter(t, internalconfig.DefaultEndpoint)
+	nextRT := mustNewRuntimeAdapter(t, testNextEndpoint)
+	if mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), endpointSelection{}, 0, errors.New("boom")) {
 		t.Fatal("expected hot swap to fail when save fails")
 	}
 }
@@ -907,7 +807,7 @@ func TestManagedRuntimeBuildRuntimeAdditionalModesAndFailureHandlerNoops(t *test
 		PeerPublicKey:     "peer-key",
 		ClientID:          "client-id",
 	}
-	state.Interface = storage.InterfaceAddresses{V4: "1.1.1.1", V6: "::1"}
+	state.Interface = storage.InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc}
 
 	socksOnly := &managedRuntime{opts: Options{Listen: ListenOptions{Address: testkit.LocalListenZero}, SOCKS5: SOCKS5Options{Enabled: true}}}
 	if rt, err := socksOnly.buildRuntime(testkit.WarpIPv4Alt500, state); err != nil || rt == nil {

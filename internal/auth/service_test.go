@@ -27,8 +27,9 @@ const (
 	testAuthRegisterDeviceID     = "dev-1"
 	testAuthRegisterToken        = "tok-1"
 	testAuthEnrollToken          = "tok-2"
-	testAuthIPv4Addr             = "1.1.1.1"
-	testAuthIPv6Addr             = "::1"
+	testAuthIPv4Addr             = testkit.PublicDNSV4
+	testAuthIPv4AltAddr          = testkit.TestIPv4Echo
+	testAuthIPv6Addr             = testkit.TestIPv6Doc
 	testAuthHost                 = "host"
 	testDevicePrivateKeyBase64   = "MHcCAQEEIP2wC9ZwTe74MkRUYw35vj0IadB1iKsFcfoTmyaKOAqvoAoGCCqGSM49AwEHoUQDQgAEiKxuxMxDPZWS9Vyuk3F7S3w7Dnk3a1JpN96CB2A+qsSVqS+8CA0nVddOZXS6jttuPAHyBs+K6TfGsDz3jACzmw=="
 )
@@ -603,7 +604,7 @@ func TestModelHelpersAndBuildState(t *testing.T) {
 	}
 
 	previous := storage.State{SelectedNode: "node-keep", NodeCache: []storage.Node{{ID: "node-keep", PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: testAuthIPv4Addr}, Services: storage.Services{HTTPProxy: "http://old"}}
-	final := Response{ID: testAuthRegisterDeviceID, Token: testAuthEnrollToken, Account: ResponseAccount{Type: testAuthAccountTypePlus, License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: "1.2.3.4", Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
+	final := Response{ID: testAuthRegisterDeviceID, Token: testAuthEnrollToken, Account: ResponseAccount{Type: testAuthAccountTypePlus, License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: testkit.TestIPv4Echo, Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
 	state, err := buildState(previous, pair.PrivateKey, "fallback-token", final)
 	if err != nil {
 		t.Fatalf("expected buildState success, got %v", err)
@@ -614,7 +615,7 @@ func TestModelHelpersAndBuildState(t *testing.T) {
 	if state.SelectedNode != "node-keep" {
 		t.Fatalf("expected selected node preserved, got %q", state.SelectedNode)
 	}
-	if got := normalizePeerEndpoint("2001:db8::1", 443); !strings.HasPrefix(got, "[") {
+	if got := normalizePeerEndpoint(testkit.TestIPv6Doc, 443); !strings.HasPrefix(got, "[") {
 		t.Fatalf("expected ipv6 endpoint to be bracketed, got %q", got)
 	}
 	if got := firstNonEmpty("", " a "); got != "a" {
@@ -737,13 +738,13 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	}
 	if got := comparePeer(
 		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost, V4: testAuthIPv4Addr, Ports: []uint16{443}}}},
-		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.2"}}},
+		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4AltAddr}}},
 	); got <= 0 {
 		t.Fatalf("expected richer peer to compare greater, got %d", got)
 	}
 	if got := comparePeer(
 		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr}}},
-		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.2"}}},
+		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4AltAddr}}},
 	); got >= 0 {
 		t.Fatalf("expected lexical compare ordering, got %d", got)
 	}
@@ -753,12 +754,12 @@ func TestAdditionalAuthModelBranches(t *testing.T) {
 	if got := buildNodeCache([]ResponsePeer{{}}); len(got) != 0 {
 		t.Fatalf("expected empty node cache for empty peer id, got %+v", got)
 	}
-	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: "2001:db8::1"}}}); got == "" {
+	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.TestIPv6Doc}}}); got == "" {
 		t.Fatal("expected node id from ipv6 endpoint")
 	}
 	if got := selectPeer([]ResponsePeer{
 		{PublicKey: "a", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr}}},
-		{PublicKey: "b", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost, V4: "1.1.1.2", Ports: []uint16{443}}}},
+		{PublicKey: "b", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost, V4: testAuthIPv4AltAddr, Ports: []uint16{443}}}},
 	}); got.PublicKey != "b" {
 		t.Fatalf("expected richer peer selected, got %+v", got)
 	}
