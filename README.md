@@ -43,9 +43,13 @@ There are several WARP libraries based on WireGuard in the community—why choos
 
 ## Roadmap
 
-- [ ] TUN
+- [x] TUN
 - [ ] Team WARP
-- [ ] Advanced optimization strategies
+- [x] More complex optimization strategies
+- [x] Connection Performance Optimization
+- [x] Improve log slicing
+- [ ] Improve observability
+
 
 ## Quick Start
 
