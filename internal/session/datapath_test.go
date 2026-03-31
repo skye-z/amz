@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,108 @@ func TestPacketIORelayEmitsDiagnosticsAndStats(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, output)
 		}
+	}
+}
+
+func TestPacketIOHelpersAndUtilityBranches(t *testing.T) {
+	t.Parallel()
+
+	packetIO := NewPacketIO(0)
+	if packetIO.MTU() != 1280 {
+		t.Fatalf("expected default mtu 1280, got %d", packetIO.MTU())
+	}
+	if stats := packetIO.Stats(); stats.RxPackets != 0 || stats.TxPackets != 0 {
+		t.Fatalf("expected empty stats, got %+v", stats)
+	}
+	packetIO.logf("no logger attached")
+
+	packetIO.traceLimit = 1
+	logger := &capturingPacketLogger{}
+	packetIO.SetLogger(logger)
+	packetIO.tracePacket("uplink", 4, "igara0", []byte{0x45, 0x00, 0x00, 0x14})
+	packetIO.tracePacket("uplink", 4, "igara0", []byte{0x45, 0x00, 0x00, 0x14})
+	if strings.Count(logger.String(), "uplink packet #") != 1 {
+		t.Fatalf("expected one traced uplink packet, got:\n%s", logger.String())
+	}
+}
+
+func TestDatapathFormattingHelpers(t *testing.T) {
+	t.Setenv("AMZ_TUN_TRACE_PACKETS", "")
+	if got := packetTraceLimitFromEnv(); got != 1 {
+		t.Fatalf("expected default trace limit 1, got %d", got)
+	}
+	t.Setenv("AMZ_TUN_TRACE_PACKETS", "3")
+	if got := packetTraceLimitFromEnv(); got != 3 {
+		t.Fatalf("expected trace limit 3, got %d", got)
+	}
+	t.Setenv("AMZ_TUN_TRACE_PACKETS", "bad")
+	if got := packetTraceLimitFromEnv(); got != 1 {
+		t.Fatalf("expected fallback trace limit 1, got %d", got)
+	}
+	t.Setenv("AMZ_TUN_TRACE_PACKETS", "-1")
+	if got := packetTraceLimitFromEnv(); got != 1 {
+		t.Fatalf("expected negative fallback trace limit 1, got %d", got)
+	}
+
+	if got := ipProtocolName(1); got != "icmp" {
+		t.Fatalf("unexpected icmp protocol name: %q", got)
+	}
+	if got := ipProtocolName(17); got != "udp" {
+		t.Fatalf("unexpected udp protocol name: %q", got)
+	}
+	if got := ipProtocolName(250); got != "250" {
+		t.Fatalf("unexpected unknown protocol name: %q", got)
+	}
+
+	if got := packetSummary(nil); got != "packet=empty" {
+		t.Fatalf("unexpected empty packet summary: %q", got)
+	}
+	if got := packetSummary([]byte{0x45, 0x00}); got != "packet=ipv4_truncated" {
+		t.Fatalf("unexpected truncated ipv4 summary: %q", got)
+	}
+	ipv6 := make([]byte, 40)
+	ipv6[0] = 0x60
+	ipv6[6] = 58
+	copy(ipv6[8:24], netip.MustParseAddr("2001:db8::1").AsSlice())
+	copy(ipv6[24:40], netip.MustParseAddr("2001:db8::2").AsSlice())
+	if got := packetSummary(ipv6); !strings.Contains(got, "version=6") || !strings.Contains(got, "icmpv6") {
+		t.Fatalf("unexpected ipv6 summary: %q", got)
+	}
+	if got := packetSummary([]byte{0x10}); !strings.Contains(got, "unknown_version") {
+		t.Fatalf("unexpected unknown version summary: %q", got)
+	}
+
+	fragments := splitPacketByMTU([]byte{1, 2, 3, 4, 5}, 2)
+	if len(fragments) != 3 || len(fragments[2]) != 1 {
+		t.Fatalf("unexpected fragments: %+v", fragments)
+	}
+	if got := splitPacketByMTU([]byte{1, 2}, 0); len(got) != 1 {
+		t.Fatalf("expected single fragment when mtu<=0, got %+v", got)
+	}
+	if got := splitPacketByMTU(nil, 2); got != nil {
+		t.Fatalf("expected nil fragments for empty payload, got %+v", got)
+	}
+}
+
+func TestNormalizeRelayReadErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	if idle, err := normalizeRelayReadError(context.Background(), nil); idle || err != nil {
+		t.Fatalf("expected non-idle nil error, got idle=%v err=%v", idle, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if idle, err := normalizeRelayReadError(ctx, io.EOF); !idle || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled idle error, got idle=%v err=%v", idle, err)
+	}
+
+	if idle, err := normalizeRelayReadError(context.Background(), io.EOF); !idle || err != nil {
+		t.Fatalf("expected idle EOF normalization, got idle=%v err=%v", idle, err)
+	}
+
+	if idle, err := normalizeRelayReadError(context.Background(), errors.New("boom")); idle || err != nil {
+		t.Fatalf("expected non-idle generic error, got idle=%v err=%v", idle, err)
 	}
 }
 

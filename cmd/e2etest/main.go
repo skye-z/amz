@@ -31,6 +31,42 @@ const (
 	tagTUN    = "TUN"
 )
 
+type transportRoundTripper interface {
+	RoundTrip(*http.Request) (*http.Response, error)
+}
+
+type clientRuntime interface {
+	Start(context.Context) error
+	Close() error
+	Status() amz.Status
+}
+
+type runConfig struct {
+	listen    string
+	statePath string
+	endpoint  string
+	timeout   time.Duration
+	runHTTP   bool
+	runSOCKS5 bool
+	runTUN    bool
+}
+
+type runDeps struct {
+	fetchIP   func(context.Context, transportRoundTripper) (string, map[string]any, error)
+	newClient func(amz.Options) (clientRuntime, error)
+	sleep     func(time.Duration)
+}
+
+func defaultRunDeps() runDeps {
+	return runDeps{
+		fetchIP: fetchIP,
+		newClient: func(opts amz.Options) (clientRuntime, error) {
+			return amz.NewClient(opts)
+		},
+		sleep: time.Sleep,
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "127.0.0.1:19811", "proxy listen address")
 	statePath := flag.String("state", "./e2etest_state.json", "path for amz state file")
@@ -42,8 +78,29 @@ func main() {
 	flag.Parse()
 
 	runHTTP, runSOCKS5, runTUN := shouldRunModes(*skipHTTP, *skipSOCKS5, *skipTUN)
+	os.Exit(runE2E(runConfig{
+		listen:    *listen,
+		statePath: *statePath,
+		endpoint:  *endpoint,
+		timeout:   *timeout,
+		runHTTP:   runHTTP,
+		runSOCKS5: runSOCKS5,
+		runTUN:    runTUN,
+	}, defaultRunDeps()))
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+func runE2E(cfg runConfig, deps runDeps) int {
+	if deps.fetchIP == nil {
+		deps.fetchIP = fetchIP
+	}
+	if deps.newClient == nil {
+		deps.newClient = defaultRunDeps().newClient
+	}
+	if deps.sleep == nil {
+		deps.sleep = time.Sleep
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
 	passed := true
@@ -51,30 +108,30 @@ func main() {
 
 	printBanner("AMZ Full-Chain E2E Test")
 
-	directIP, directRaw, err := fetchIP(ctx, nil)
+	directIP, directRaw, err := deps.fetchIP(ctx, nil)
 	if err != nil {
 		printFail("Failed to get direct IP: %v", err)
-		os.Exit(1)
+		return 1
 	}
 	printStep(1, "Fetching direct exit IP (no proxy)")
 	printIPInfo(tagDirect, directIP, directRaw)
 
 	logger := newAMZLogger(os.Stdout)
-	opts := buildClientOptionsForModes(*listen, *statePath, *endpoint, logger, runHTTP, runSOCKS5, false)
-	if *endpoint != "" {
-		printInfo("  Using fixed endpoint: %s", *endpoint)
+	opts := buildClientOptionsForModes(cfg.listen, cfg.statePath, cfg.endpoint, logger, cfg.runHTTP, cfg.runSOCKS5, false)
+	if cfg.endpoint != "" {
+		printInfo("  Using fixed endpoint: %s", cfg.endpoint)
 	}
-	client, err := amz.NewClient(opts)
+	client, err := deps.newClient(opts)
 	if err != nil {
 		printFail("Failed to create client: %v", err)
-		os.Exit(1)
+		return 1
 	}
 	defer client.Close()
 
 	startTime := time.Now()
 	if err := client.Start(ctx); err != nil {
 		printFail("Failed to start client: %v", err)
-		os.Exit(1)
+		return 1
 	}
 	elapsed := time.Since(startTime)
 
@@ -91,21 +148,21 @@ func main() {
 
 	if !status.Running {
 		printFail("Client is not running after Start()")
-		os.Exit(1)
+		return 1
 	}
 
 	proxyAddr := status.ListenAddress
 	if proxyAddr == "" {
-		proxyAddr = *listen
+		proxyAddr = cfg.listen
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	deps.sleep(500 * time.Millisecond)
 
 	step := 3
-	if runHTTP {
+	if cfg.runHTTP {
 		printStep(step, "Fetching exit IP via HTTP proxy")
 		httpTransport := httpProxyTransport(proxyAddr)
-		ip, raw, err := fetchIP(ctx, httpTransport)
+		ip, raw, err := deps.fetchIP(ctx, httpTransport)
 		if err != nil {
 			printFail("HTTP proxy request failed: %v", err)
 			passed = false
@@ -122,14 +179,14 @@ func main() {
 		step++
 	}
 
-	if runSOCKS5 {
+	if cfg.runSOCKS5 {
 		printStep(step, "Fetching exit IP via SOCKS5 proxy")
 		socksTransport, err := socks5ProxyTransport(proxyAddr)
 		if err != nil {
 			printFail("Failed to create SOCKS5 transport: %v", err)
 			passed = false
 		} else {
-			ip, raw, err := fetchIP(ctx, socksTransport)
+			ip, raw, err := deps.fetchIP(ctx, socksTransport)
 			if err != nil {
 				printFail("SOCKS5 proxy request failed: %v", err)
 				passed = false
@@ -147,12 +204,12 @@ func main() {
 		step++
 	}
 
-	if runTUN {
+	if cfg.runTUN {
 		printStep(step, "Fetching exit IP via TUN")
 		_ = client.Close()
 
-		tunOpts := buildClientOptionsForModes("", *statePath+".tun", *endpoint, logger, false, false, true)
-		tunClient, err := amz.NewClient(tunOpts)
+		tunOpts := buildClientOptionsForModes("", cfg.statePath+".tun", cfg.endpoint, logger, false, false, true)
+		tunClient, err := deps.newClient(tunOpts)
 		if err != nil {
 			printFail("Failed to create TUN client: %v", err)
 			passed = false
@@ -164,8 +221,8 @@ func main() {
 					passed = false
 					return
 				}
-				time.Sleep(2 * time.Second)
-				ip, raw, err := fetchIP(ctx, nil)
+				deps.sleep(2 * time.Second)
+				ip, raw, err := deps.fetchIP(ctx, nil)
 				if err != nil {
 					printFail("TUN request failed: %v", err)
 					passed = false
@@ -198,13 +255,13 @@ func main() {
 
 	if passed {
 		printPass("=== ALL TESTS PASSED ===")
-	} else {
-		printFail("=== SOME TESTS FAILED ===")
-		os.Exit(1)
+		return 0
 	}
+	printFail("=== SOME TESTS FAILED ===")
+	return 1
 }
 
-func fetchIP(ctx context.Context, transport http.RoundTripper) (string, map[string]any, error) {
+func fetchIP(ctx context.Context, transport transportRoundTripper) (string, map[string]any, error) {
 	if transport == nil {
 		transport = defaultIPTransport()
 	}

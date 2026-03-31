@@ -96,3 +96,55 @@ func TestClassifyTreatsTransportTimeoutAsRetryCurrent(t *testing.T) {
 		t.Fatalf("expected retry_current action, got %+v", decision)
 	}
 }
+
+
+func TestFailureBusNilClosedAndAsyncBranches(t *testing.T) {
+	t.Parallel()
+
+	var nilBus *Bus
+	if nilBus.Publish(Event{}) {
+		t.Fatal("expected nil bus publish to return false")
+	}
+	nilBus.Close()
+
+	handled := make(chan Event, 2)
+	bus := NewBus(1, func(event Event) {
+		handled <- event
+	})
+	if ok := bus.Publish(Event{Endpoint: "first"}); !ok {
+		t.Fatal("expected first publish success")
+	}
+	if ok := bus.Publish(Event{Endpoint: "second"}); !ok {
+		t.Fatal("expected second publish success even when buffer is full")
+	}
+	gotFirst := <-handled
+	gotSecond := <-handled
+	if gotFirst.Endpoint == "" || gotSecond.Endpoint == "" {
+		t.Fatalf("expected handled events, got %+v %+v", gotFirst, gotSecond)
+	}
+	bus.Close()
+	if ok := bus.Publish(Event{Endpoint: "third"}); ok {
+		t.Fatal("expected publish to fail after close")
+	}
+	bus.Close()
+}
+
+func TestClassifyAdditionalBranches(t *testing.T) {
+	t.Parallel()
+
+	if decision := Classify(Event{}); decision.Action != ActionIgnore {
+		t.Fatalf("expected nil error to be ignored, got %+v", decision)
+	}
+	if decision := Classify(Event{Err: errors.New("authentication failed")}); decision.Class != ClassAuth || decision.Action != ActionSwitchEndpoint {
+		t.Fatalf("expected auth switch decision, got %+v", decision)
+	}
+	if decision := Classify(Event{Err: errors.New("bad request")}); decision.Class != ClassProtocol || decision.Action != ActionSwitchEndpoint {
+		t.Fatalf("expected protocol switch decision, got %+v", decision)
+	}
+	if decision := Classify(Event{Err: errors.New("eof")}); decision.Class != ClassTransport || decision.Action != ActionRetryCurrent {
+		t.Fatalf("expected transport retry decision, got %+v", decision)
+	}
+	if decision := Classify(Event{Err: internalcloudflare.WrapError("connect-ip", "mystery", errors.New("boom"))}); decision.Class != ClassTransport || decision.Action != ActionSwitchEndpoint {
+		t.Fatalf("expected default cloudflare transport decision, got %+v", decision)
+	}
+}
