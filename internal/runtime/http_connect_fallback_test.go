@@ -169,10 +169,129 @@ func TestHTTPManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *tes
 	}
 }
 
+
+
+func TestHTTPManagerReconnectsStreamAfterBackendRefresh(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: 100 * time.Millisecond,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf("expected http manager creation success, got %v", err)
+	}
+	manager.SetHTTPDialer(failingHTTPDialer{err: context.DeadlineExceeded})
+	manager.SetStreamManager(protocolErrorHTTPStreamOpener{err: context.DeadlineExceeded})
+	manager.SetFailureReporter(func(failure.Event) {
+		manager.SetStreamManager(echoHTTPStreamOpener{})
+		time.Sleep(20 * time.Millisecond)
+	})
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("expected manager start success, got %v", err)
+	}
+	defer manager.Close()
+
+	conn, err := net.Dial("tcp", manager.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected proxy dial success, got %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
+		t.Fatalf("expected connect request write success, got %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("expected connect response read success, got %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 connect response after backend refresh, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPManagerConnectFallbackUsesFreshTimeoutContext(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: 50 * time.Millisecond,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf("expected http manager creation success, got %v", err)
+	}
+	manager.SetHTTPDialer(checkingHTTPDialer{})
+	manager.SetStreamManager(blockingHTTPStreamOpener{})
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("expected manager start success, got %v", err)
+	}
+	defer manager.Close()
+
+	conn, err := net.Dial("tcp", manager.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected proxy dial success, got %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
+		t.Fatalf("expected connect request write success, got %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("expected connect response read success, got %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 connect response after fallback, got %d", resp.StatusCode)
+	}
+}
+
 type failingHTTPStreamOpener struct{}
 
 func (failingHTTPStreamOpener) OpenStream(context.Context, string, string) (net.Conn, error) {
 	return nil, fmt.Errorf("stream unauthorized")
+}
+
+
+
+type protocolErrorHTTPStreamOpener struct {
+	err error
+}
+
+func (o protocolErrorHTTPStreamOpener) OpenStream(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("cloudflare compatibility error: operation=connect-stream quirk=protocol_error: %w", o.err)
+}
+
+type blockingHTTPStreamOpener struct{}
+
+func (blockingHTTPStreamOpener) OpenStream(ctx context.Context, _ string, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, context.Cause(ctx)
+}
+
+type checkingHTTPDialer struct{}
+
+func (checkingHTTPDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		_, _ = io.Copy(server, server)
+	}()
+	return client, nil
 }
 
 type echoHTTPDialer struct{}

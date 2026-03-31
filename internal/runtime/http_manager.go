@@ -250,22 +250,16 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		started := time.Now()
-		upstream, err := streamMgr.OpenStream(r.Context(), host, port)
+		streamCtx, streamCancel := context.WithTimeout(r.Context(), h.manager.currentConnectTimeout())
+		upstream, err := h.manager.openStreamWithTimeout(streamCtx, streamMgr, host, port)
 		if err == nil {
+			streamCancel()
 			h.relayHTTPConnect(w, r, upstream, started, masque.ShouldDebugTarget(masqueDebugEnabled(), r.Host))
 			return
 		}
+		streamCancel()
 		h.manager.logf("http proxy connect stream failed: target=%s err=%v; fallback=dialer", r.Host, err)
 		h.manager.reportFailure("connect-stream", err)
-		if retriedUpstream, retriedErr, retried := h.manager.retryConnectOnce(r.Context(), "connect-stream", r.Host, err); retried {
-			if retriedErr == nil {
-				h.relayHTTPConnect(w, r, retriedUpstream, started, masque.ShouldDebugTarget(masqueDebugEnabled(), r.Host))
-				return
-			}
-			h.manager.logf("http proxy connect retry failed: target=%s err=%v", r.Host, retriedErr)
-			http.Error(w, "connect upstream failed", http.StatusBadGateway)
-			return
-		}
 	}
 	if dialer == nil {
 		h.manager.logf("http proxy connect dialer unavailable: target=%s", r.Host)
@@ -273,16 +267,29 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	started := time.Now()
-	upstream, err := dialer.DialContext(r.Context(), "tcp", r.Host)
+	previousEndpoint := h.manager.currentEndpoint()
+	previousSignature := h.manager.currentBackendSignature()
+	dialCtx, dialCancel := context.WithTimeout(r.Context(), h.manager.currentConnectTimeout())
+	upstream, err := dialer.DialContext(dialCtx, "tcp", r.Host)
+	if err == nil {
+		dialCancel()
+		h.relayHTTPConnect(w, r, upstream, started, false)
+		return
+	}
+	dialCancel()
 	if err != nil {
 		h.manager.logf("http proxy connect upstream failed: target=%s err=%v", r.Host, err)
 		h.manager.reportFailure("connect-upstream", err)
-		if retriedUpstream, retriedErr, retried := h.manager.retryConnectOnce(r.Context(), "connect-upstream", r.Host, err); retried {
+		retryCtx, retryCancel := context.WithTimeout(r.Context(), h.manager.currentConnectTimeout())
+		if retriedUpstream, retriedErr, retried := h.manager.retryConnectOnce(retryCtx, "connect-upstream", r.Host, err, previousEndpoint, previousSignature); retried {
 			if retriedErr == nil {
+				retryCancel()
 				h.relayHTTPConnect(w, r, retriedUpstream, started, false)
 				return
 			}
+			retryCancel()
 		}
+		retryCancel()
 		http.Error(w, "connect upstream failed", http.StatusBadGateway)
 		return
 	}
@@ -290,6 +297,8 @@ func (h *httpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Request, streamMgr HTTPConnectStreamOpener) {
+	connectCtx, cancel := context.WithTimeout(r.Context(), h.manager.currentConnectTimeout())
+	defer cancel()
 	host, port, err := parseHTTPConnectTarget(r.Host)
 	if err != nil {
 		h.manager.logf("http proxy parse target failed: target=%s err=%v", r.Host, err)
@@ -301,7 +310,7 @@ func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Requ
 	if debug {
 		h.manager.logf("masque debug: connect target=%s opening stream", r.Host)
 	}
-	upstream, err := streamMgr.OpenStream(r.Context(), host, port)
+	upstream, err := streamMgr.OpenStream(connectCtx, host, port)
 	if err != nil {
 		h.manager.logf("http proxy connect stream failed: target=%s err=%v", r.Host, err)
 		http.Error(w, "connect stream failed", http.StatusBadGateway)
@@ -468,15 +477,58 @@ func (m *HTTPManager) currentRoundTripper() http.RoundTripper {
 	}}
 }
 
+func (m *HTTPManager) openStreamWithTimeout(ctx context.Context, streamMgr HTTPConnectStreamOpener, host, port string) (net.Conn, error) {
+	if streamMgr == nil {
+		return nil, fmt.Errorf("stream manager is unavailable")
+	}
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		conn, err := streamMgr.OpenStream(ctx, host, port)
+		select {
+		case resultCh <- result{conn: conn, err: err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case res := <-resultCh:
+		return res.conn, res.err
+	}
+}
+
+func (m *HTTPManager) currentConnectTimeout() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg.ConnectTimeout > 0 {
+		return m.cfg.ConnectTimeout
+	}
+	return 10 * time.Second
+}
+
 func (m *HTTPManager) currentEndpoint() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cfg.Endpoint
 }
 
-func (m *HTTPManager) retryConnectOnce(ctx context.Context, operation, target string, cause error) (net.Conn, error, bool) {
-	currentEndpoint := m.currentEndpoint()
-	currentSignature := m.currentBackendSignature()
+func (m *HTTPManager) retryConnectOnce(ctx context.Context, operation, target string, cause error, previousEndpoint, previousSignature string) (net.Conn, error, bool) {
+	currentEndpoint := strings.TrimSpace(previousEndpoint)
+	if currentEndpoint == "" {
+		currentEndpoint = m.currentEndpoint()
+	}
+	currentSignature := strings.TrimSpace(previousSignature)
+	if currentSignature == "" {
+		currentSignature = m.currentBackendSignature()
+	}
 	decision := failure.Classify(failure.Event{
 		Component: failure.ComponentHTTP,
 		Operation: operation,
@@ -486,18 +538,20 @@ func (m *HTTPManager) retryConnectOnce(ctx context.Context, operation, target st
 	if decision.Action == failure.ActionIgnore {
 		return nil, nil, false
 	}
+	backendRefreshed := false
 	if decision.Action == failure.ActionSwitchEndpoint {
-		if !m.waitForBackendRefresh(ctx, currentEndpoint, currentSignature, 2*time.Second) {
+		if !m.waitForBackendRefresh(ctx, currentEndpoint, currentSignature, m.currentConnectTimeout()) {
 			return nil, nil, false
 		}
+		backendRefreshed = true
 	}
 	host, port, err := parseHTTPConnectTarget(target)
 	if err != nil {
 		return nil, err, true
 	}
 	streamMgr := m.currentStreamManager()
-	if streamMgr != nil {
-		conn, err := streamMgr.OpenStream(ctx, host, port)
+	if streamMgr != nil && (operation != "connect-stream" || backendRefreshed) {
+		conn, err := m.openStreamWithTimeout(ctx, streamMgr, host, port)
 		if err == nil {
 			return conn, nil, true
 		}

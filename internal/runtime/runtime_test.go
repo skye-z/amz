@@ -576,6 +576,71 @@ func TestNewHTTPRuntimeFromBootstrapExposesReusableSnapshot(t *testing.T) {
 	}
 }
 
+func TestNewSOCKS5RuntimeFromSharedDialerUsesStreamManager(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
+	}
+	streamMgr := echoStreamOpener{}
+
+	runtime, err := internalruntime.NewSOCKS5RuntimeFromSharedDialer(&cfg, nil, streamMgr)
+	if err != nil {
+		t.Fatalf("expected shared socks runtime factory success, got %v", err)
+	}
+	if runtime == nil {
+		t.Fatal("expected non-nil socks runtime")
+	}
+
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("expected shared socks runtime start success, got %v", err)
+	}
+	defer runtime.Close()
+
+	conn, err := net.Dial("tcp", runtime.ListenAddress())
+	if err != nil {
+		t.Fatalf("expected dial success, got %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("expected socks greeting write success, got %v", err)
+	}
+	greetingReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greetingReply); err != nil {
+		t.Fatalf("expected socks greeting reply success, got %v", err)
+	}
+	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
+		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
+	}
+	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
+	if _, err := conn.Write(connectRequest); err != nil {
+		t.Fatalf("expected socks connect request write success, got %v", err)
+	}
+	connectReply, err := readSOCKSReply(conn)
+	if err != nil {
+		t.Fatalf("expected socks connect reply success, got %v", err)
+	}
+	if connectReply[1] != 0x00 {
+		t.Fatalf("expected socks connect success reply, got %v", connectReply)
+	}
+	if _, err := conn.Write([]byte(clientRuntimeEchoPayload)); err != nil {
+		t.Fatalf("expected socks payload write success, got %v", err)
+	}
+	echoReply := make([]byte, len(clientRuntimeEchoPayload))
+	if _, err := io.ReadFull(conn, echoReply); err != nil {
+		t.Fatalf("expected socks payload echo success, got %v", err)
+	}
+	if string(echoReply) != clientRuntimeEchoPayload {
+		t.Fatalf("expected echo payload %q, got %q", clientRuntimeEchoPayload, string(echoReply))
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {

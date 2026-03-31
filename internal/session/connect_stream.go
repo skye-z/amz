@@ -321,7 +321,6 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 	h3conn := m.h3conn
 	quicOpts := m.quic
 	h3Opts := m.h3
-	proxyMode := m.proxyMode
 	m.mu.Unlock()
 
 	if dialer == nil {
@@ -329,9 +328,6 @@ func (m *ConnectStreamManager) OpenStream(ctx context.Context, targetHost, targe
 	}
 
 	opts := BuildConnectStreamOptions(h3Opts, targetHost, targetPort)
-	if proxyMode {
-		opts.Protocol = ""
-	}
 	conn, rsp, latency, err := dialer.DialStream(ctx, h3conn, quicOpts, h3Opts, opts)
 	if err != nil {
 		if m.compat != nil {

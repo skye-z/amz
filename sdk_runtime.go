@@ -804,7 +804,7 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 			socksCfg := baseCfg
 			socksCfg.Mode = amzconfig.ModeSOCKS
 			socksCfg.SOCKS.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewSOCKS5RuntimeFromSharedDialer(&socksCfg, sharedDNSDialer)
+			runtime, err := iruntime.NewSOCKS5RuntimeFromSharedDialer(&socksCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
 			if err != nil {
 				return nil, err
 			}

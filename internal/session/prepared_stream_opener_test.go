@@ -53,7 +53,7 @@ func TestPreparedConnectStreamOpenerReturnsPrepareError(t *testing.T) {
 	}
 }
 
-func TestPreparedProxyStreamOpenerUsesPlainConnect(t *testing.T) {
+func TestPreparedProxyStreamOpenerUsesConnectStreamProtocol(t *testing.T) {
 	t.Parallel()
 
 	stream := &fakeRequestStream{
@@ -76,8 +76,8 @@ func TestPreparedProxyStreamOpenerUsesPlainConnect(t *testing.T) {
 	if stream.request == nil {
 		t.Fatal("expected CONNECT request to be sent")
 	}
-	if stream.request.Proto != "" {
-		t.Fatalf("expected plain CONNECT without protocol token, got %q", stream.request.Proto)
+	if stream.request.Proto != ProtocolConnectStream {
+		t.Fatalf("expected connect-stream protocol token, got %q", stream.request.Proto)
 	}
 }
 

@@ -50,12 +50,13 @@ func NewHTTPRuntimeFromSharedDialer(cfg config.KernelConfig, d contextDialer, st
 }
 
 // NewSOCKS5RuntimeFromSharedDialer wires a SOCKS5 runtime using a pre-built shared dialer.
-func NewSOCKS5RuntimeFromSharedDialer(cfg *config.KernelConfig, d contextDialer) (*SOCKS5Runtime, error) {
+func NewSOCKS5RuntimeFromSharedDialer(cfg *config.KernelConfig, d contextDialer, streamMgr SOCKS5ConnectStreamOpener) (*SOCKS5Runtime, error) {
 	manager, err := NewSOCKS5Manager(cfg)
 	if err != nil {
 		return nil, err
 	}
 	manager.SetDialer(d)
+	manager.SetStreamManager(streamMgr)
 	return NewSOCKS5Runtime(manager), nil
 }
 
