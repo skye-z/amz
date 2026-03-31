@@ -678,12 +678,13 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 		t.Fatalf("expected manager creation success, got %v", err)
 	}
 	handler := &httpHandler{manager: manager}
+	manager.SetHTTPDialer(failingHTTPDialer{err: errors.New("dial unavailable")})
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/path", nil)
 	handler.handleForward(recorder, req)
 	if recorder.Code != http.StatusBadGateway {
-		t.Fatalf("expected bad gateway without transport, got %d", recorder.Code)
+		t.Fatalf("expected bad gateway with failing default transport, got %d", recorder.Code)
 	}
 
 	manager.SetHTTPRoundTripper(localRoundTripper(func(*http.Request) (*http.Response, error) {
