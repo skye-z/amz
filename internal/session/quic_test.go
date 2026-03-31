@@ -30,6 +30,30 @@ import (
 	"time"
 )
 
+const (
+	quicParamMasqueVersion      = "masque_version"
+	quicVersionDraft08          = "draft-08"
+	quicMutatedValue            = "mutated"
+	quicExampleTCPAddress       = testkit.TestDomain + ":443"
+	quicBootstrapTCPAddress     = "1.1.1.1:443"
+	quicDisconnectReasonTimeout = "timeout"
+	quicTracePacketsEnv         = "AMZ_TUN_TRACE_PACKETS"
+	quicTraceSourceAddress      = "10.0.0.8"
+	quicPayloadPong             = "pong"
+
+	errConnectionManagerCreate = "expected connection manager creation success, got %v"
+	errSessionManagerCreate    = "expected session manager creation success, got %v"
+	errProtocolMismatch        = "expected protocol %q, got %q"
+	errConnectIPManagerCreate  = "expected connect-ip manager creation success, got %v"
+	errManagerCreate           = "expected manager creation success, got %v"
+	errEndpointMismatch        = "expected endpoint %q, got %q"
+	errDatagramsEnabled        = "expected datagrams enabled"
+	errCoreTunnelDialerCreate  = "expected core tunnel dialer creation success, got %v"
+	errCompatLayerCreate       = "expected compat layer creation success, got %v"
+	errServerNameMismatch      = "expected server name %q, got %q"
+	errAuthorityMismatch       = "expected authority %q, got %q"
+)
+
 // 验证 QUIC 连接参数会从内核配置中生成�?
 func TestBuildQUICOptions(t *testing.T) {
 	options, err := BuildQUICOptions(config.KernelConfig{
@@ -47,13 +71,13 @@ func TestBuildQUICOptions(t *testing.T) {
 		t.Fatalf("expected quic options, got %v", err)
 	}
 	if options.Endpoint != config.DefaultEndpoint {
-		t.Fatalf("expected endpoint %q, got %q", config.DefaultEndpoint, options.Endpoint)
+		t.Fatalf(errEndpointMismatch, config.DefaultEndpoint, options.Endpoint)
 	}
 	if options.ServerName != config.DefaultSNI {
-		t.Fatalf("expected server name %q, got %q", config.DefaultSNI, options.ServerName)
+		t.Fatalf(errServerNameMismatch, config.DefaultSNI, options.ServerName)
 	}
 	if options.EnableDatagrams != true {
-		t.Fatal("expected datagrams enabled")
+		t.Fatal(errDatagramsEnabled)
 	}
 }
 
@@ -64,16 +88,16 @@ func TestBuildQUICOptionsAppliesDefaults(t *testing.T) {
 		t.Fatalf("expected quic options with defaults, got %v", err)
 	}
 	if options.Endpoint != config.DefaultEndpoint {
-		t.Fatalf("expected endpoint %q, got %q", config.DefaultEndpoint, options.Endpoint)
+		t.Fatalf(errEndpointMismatch, config.DefaultEndpoint, options.Endpoint)
 	}
 	if options.ServerName != config.DefaultSNI {
-		t.Fatalf("expected server name %q, got %q", config.DefaultSNI, options.ServerName)
+		t.Fatalf(errServerNameMismatch, config.DefaultSNI, options.ServerName)
 	}
 	if options.Keepalive != config.DefaultKeepalive.String() {
 		t.Fatalf("expected keepalive %q, got %q", config.DefaultKeepalive.String(), options.Keepalive)
 	}
 	if !options.EnableDatagrams {
-		t.Fatal("expected datagrams enabled")
+		t.Fatal(errDatagramsEnabled)
 	}
 }
 
@@ -85,10 +109,10 @@ func TestBuildHTTP3Options(t *testing.T) {
 		EnableDatagrams: true,
 	})
 	if http3Options.Authority != config.DefaultEndpoint {
-		t.Fatalf("expected authority %q, got %q", config.DefaultEndpoint, http3Options.Authority)
+		t.Fatalf(errAuthorityMismatch, config.DefaultEndpoint, http3Options.Authority)
 	}
 	if !http3Options.EnableDatagrams {
-		t.Fatal("expected datagrams enabled")
+		t.Fatal(errDatagramsEnabled)
 	}
 }
 
@@ -136,7 +160,7 @@ func TestBuildQUICOptionsCopiesConfigConnectionParameters(t *testing.T) {
 		},
 		QUIC: config.QUICConfig{
 			ConnectionParameters: map[string]string{
-				"masque_version": "draft-08",
+				quicParamMasqueVersion: quicVersionDraft08,
 			},
 		},
 	}
@@ -146,9 +170,9 @@ func TestBuildQUICOptionsCopiesConfigConnectionParameters(t *testing.T) {
 		t.Fatalf("expected quic options, got %v", err)
 	}
 
-	cfg.QUIC.ConnectionParameters["masque_version"] = "mutated"
-	if got := options.ConnectionParameters["masque_version"]; got != "draft-08" {
-		t.Fatalf("expected copied connection parameter %q, got %q", "draft-08", got)
+	cfg.QUIC.ConnectionParameters[quicParamMasqueVersion] = quicMutatedValue
+	if got := options.ConnectionParameters[quicParamMasqueVersion]; got != quicVersionDraft08 {
+		t.Fatalf("expected copied connection parameter %q, got %q", quicVersionDraft08, got)
 	}
 }
 
@@ -159,21 +183,21 @@ func TestBuildHTTP3OptionsCopiesConnectionParameters(t *testing.T) {
 		ServerName:      config.DefaultSNI,
 		EnableDatagrams: true,
 		ConnectionParameters: map[string]string{
-			"masque_version": "draft-08",
+			quicParamMasqueVersion: quicVersionDraft08,
 		},
 	})
-	if got := http3Options.ConnectionParameters["masque_version"]; got != "draft-08" {
-		t.Fatalf("expected connection parameter %q, got %q", "draft-08", got)
+	if got := http3Options.ConnectionParameters[quicParamMasqueVersion]; got != quicVersionDraft08 {
+		t.Fatalf("expected connection parameter %q, got %q", quicVersionDraft08, got)
 	}
-	http3Options.ConnectionParameters["masque_version"] = "changed"
+	http3Options.ConnectionParameters[quicParamMasqueVersion] = "changed"
 	quicOptions := QUICOptions{
 		ConnectionParameters: map[string]string{
-			"masque_version": "draft-08",
+			quicParamMasqueVersion: quicVersionDraft08,
 		},
 	}
 	isolated := BuildHTTP3Options(quicOptions)
-	isolated.ConnectionParameters["masque_version"] = "changed"
-	if quicOptions.ConnectionParameters["masque_version"] != "draft-08" {
+	isolated.ConnectionParameters[quicParamMasqueVersion] = "changed"
+	if quicOptions.ConnectionParameters[quicParamMasqueVersion] != quicVersionDraft08 {
 		t.Fatal("expected http3 connection parameters to be copied")
 	}
 }
@@ -192,11 +216,11 @@ func TestConnectionManagerSnapshot(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	snapshot := manager.Snapshot()
 	if snapshot.Endpoint != config.DefaultEndpoint {
-		t.Fatalf("expected endpoint %q, got %q", config.DefaultEndpoint, snapshot.Endpoint)
+		t.Fatalf(errEndpointMismatch, config.DefaultEndpoint, snapshot.Endpoint)
 	}
 	if snapshot.State != ConnStateIdle {
 		t.Fatalf("expected idle state, got %q", snapshot.State)
@@ -217,7 +241,7 @@ func TestConnectionManagerStats(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 
 	manager.RecordHandshakeLatency(120 * time.Millisecond)
@@ -240,11 +264,11 @@ func TestNewBootstrapDialerDelegatesToCoreTunnelDialer(t *testing.T) {
 	cfg := config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeHTTP, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, HTTP: config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress}}
 	connMgr, err := NewConnectionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	sessMgr, err := NewConnectIPSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 	dialer, err := NewBootstrapDialer(connMgr, sessMgr, nil)
 	if err != nil {
@@ -269,7 +293,7 @@ func TestPacketStackDialerValidationAndHelpers(t *testing.T) {
 	if _, err := dialer.DialContext(context.Background(), "tcp", "missing-port"); err == nil {
 		t.Fatal("expected malformed target error")
 	}
-	if _, err := dialer.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress); err == nil {
 		t.Fatal("expected prepare/cause error")
 	}
 	if local4, local6, err := parsePacketLocalAddrs(SessionInfo{}); err == nil || local4.IsValid() || local6.IsValid() {
@@ -351,7 +375,7 @@ func TestConnectionStatsAliasAndRuntimeInterfaces(t *testing.T) {
 func TestCloudflareCompatLayerAdditionalBranches(t *testing.T) {
 	layer, err := NewCloudflareCompatLayer(config.KernelConfig{})
 	if err != nil {
-		t.Fatalf("expected compat layer creation success, got %v", err)
+		t.Fatalf(errCompatLayerCreate, err)
 	}
 	if got := layer.Snapshot(); got.Endpoint == "" {
 		t.Fatalf("expected snapshot endpoint, got %+v", got)
@@ -377,10 +401,10 @@ func TestCloudflareCompatLayerAdditionalBranches(t *testing.T) {
 }
 
 func TestConnectStreamHelpersAndActiveStreamBranches(t *testing.T) {
-	if got := staticAddr("1.1.1.1:443").Network(); got != "tcp" {
+	if got := staticAddr(quicBootstrapTCPAddress).Network(); got != "tcp" {
 		t.Fatalf("unexpected network: %q", got)
 	}
-	if got := staticAddr("1.1.1.1:443").String(); got != "1.1.1.1:443" {
+	if got := staticAddr(quicBootstrapTCPAddress).String(); got != quicBootstrapTCPAddress {
 		t.Fatalf("unexpected addr string: %q", got)
 	}
 	manager, err := NewConnectStreamManager(config.KernelConfig{
@@ -397,17 +421,17 @@ func TestConnectStreamHelpersAndActiveStreamBranches(t *testing.T) {
 	}
 	client, server := net.Pipe()
 	defer client.Close()
-	manager.streams["example.com:443"] = &activeStream{
+	manager.streams[quicExampleTCPAddress] = &activeStream{
 		conn:   client,
 		info:   StreamInfo{RemoteAddr: "old", Protocol: "proto"},
 		local:  "local",
 		remote: "remote",
 	}
-	manager.UpdateStreamInfo("example.com:443", StreamInfo{RemoteAddr: "new", Protocol: ProtocolConnectStream})
-	if endpoint := manager.StreamEndpoint("example.com", "443"); endpoint == nil {
+	manager.UpdateStreamInfo(quicExampleTCPAddress, StreamInfo{RemoteAddr: "new", Protocol: ProtocolConnectStream})
+	if endpoint := manager.StreamEndpoint(testkit.TestDomain, "443"); endpoint == nil {
 		t.Fatal("expected stream endpoint after update")
 	}
-	stream := manager.streams["example.com:443"]
+	stream := manager.streams[quicExampleTCPAddress]
 	if stream.info.RemoteAddr != "new" {
 		t.Fatalf("expected updated stream info, got %+v", stream.info)
 	}
@@ -416,13 +440,13 @@ func TestConnectStreamHelpersAndActiveStreamBranches(t *testing.T) {
 		defer close(done)
 		buf := make([]byte, 4)
 		_, _ = server.Read(buf)
-		_, _ = server.Write([]byte("pong"))
+		_, _ = server.Write([]byte(quicPayloadPong))
 	}()
 	if _, err := stream.Write([]byte("ping")); err != nil {
 		t.Fatalf("expected stream write success, got %v", err)
 	}
 	buf := make([]byte, 4)
-	if _, err := stream.Read(buf); err != nil || string(buf) != "pong" {
+	if _, err := stream.Read(buf); err != nil || string(buf) != quicPayloadPong {
 		t.Fatalf("expected stream read success, got %q err=%v", string(buf), err)
 	}
 	if stream.LocalAddr() == nil || stream.RemoteAddr() == nil {
@@ -455,12 +479,12 @@ func TestCoreTunnelDialerAdditionalHelpers(t *testing.T) {
 	}
 	connectionManager, err := NewConnectionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	connectionManager.dialer = &countingTransportDialer{conn: &fakeQUICConn{}, h3: &fakeH3Client{}}
 	sessionManager, err := NewConnectIPSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+		t.Fatalf(errConnectIPManagerCreate, err)
 	}
 	sessionManager.dialer = &countingConnectIPDialer{session: &fakePacketSession{}}
 	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, &stubHTTPStreamDialer{})
@@ -606,10 +630,10 @@ func TestQUICHelperBranches(t *testing.T) {
 	if !cfg.EnableDatagrams || cfg.MaxIdleTimeout == 0 || cfg.KeepAlivePeriod == 0 {
 		t.Fatalf("unexpected quic config: %+v", cfg)
 	}
-	if got := tlsServerNameForOptions(QUICOptions{ServerName: "example.com", Endpoint: "1.1.1.1:443"}); got != "example.com" {
+	if got := tlsServerNameForOptions(QUICOptions{ServerName: testkit.TestDomain, Endpoint: quicBootstrapTCPAddress}); got != testkit.TestDomain {
 		t.Fatalf("unexpected server name: %q", got)
 	}
-	if requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: "1.1.1.1:443"}) {
+	if requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: quicBootstrapTCPAddress}) {
 		t.Fatal("expected :443 not to require pinned trust")
 	}
 	if !requiresPinnedMASQUETrust(QUICOptions{PeerPublicKey: "pk", Endpoint: "1.1.1.1:8443"}) {
@@ -646,26 +670,26 @@ func TestOpenCloudflareConnectIPStreamErrorBranches(t *testing.T) {
 	}
 
 	stream := &fakeRequestStream{sendErr: errors.New("send fail")}
-	_, _, err = openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: "example.com", Protocol: ProtocolConnectIP})
+	_, _, err = openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: testkit.TestDomain, Protocol: ProtocolConnectIP})
 	if err == nil || !strings.Contains(err.Error(), "send request header") || !stream.closed {
 		t.Fatalf("expected send header error and closed stream, got err=%v closed=%v", err, stream.closed)
 	}
 
 	stream = &fakeRequestStream{readResponseErr: errors.New("read fail")}
-	_, _, err = openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: "example.com", Protocol: ProtocolConnectIP})
+	_, _, err = openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: testkit.TestDomain, Protocol: ProtocolConnectIP})
 	if err == nil || !strings.Contains(err.Error(), "read response") || !stream.closed {
 		t.Fatalf("expected read response error and closed stream, got err=%v closed=%v", err, stream.closed)
 	}
 
 	stream = &fakeRequestStream{response: &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("bad gateway"))}}
-	_, rsp, err := openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: "example.com", Protocol: ProtocolConnectIP})
+	_, rsp, err := openCloudflareConnectIPStream(context.Background(), &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}, ConnectIPOptions{Authority: testkit.TestDomain, Protocol: ProtocolConnectIP})
 	if err == nil || rsp == nil || !strings.Contains(err.Error(), "status=502") || !strings.Contains(err.Error(), "bad gateway") || !stream.closed {
 		t.Fatalf("expected non-2xx error and closed stream, got rsp=%v err=%v closed=%v", rsp, err, stream.closed)
 	}
 }
 
 func TestCloudflareConnectIPSessionDatagramAndCloseBranches(t *testing.T) {
-	stream := &datagramTestStream{receive: append(append([]byte(nil), contextIDZero...), []byte("pong")...)}
+	stream := &datagramTestStream{receive: append(append([]byte(nil), contextIDZero...), []byte(quicPayloadPong)...)}
 	session := &cloudflareConnectIPSession{
 		stream:         stream,
 		closeCh:        make(chan struct{}),
@@ -680,7 +704,7 @@ func TestCloudflareConnectIPSessionDatagramAndCloseBranches(t *testing.T) {
 		t.Fatalf("expected sent datagram payload, got %v", stream.sentDatagram)
 	}
 	buf := make([]byte, 8)
-	if n, err := session.ReadPacket(context.Background(), buf); err != nil || string(buf[:n]) != "pong" {
+	if n, err := session.ReadPacket(context.Background(), buf); err != nil || string(buf[:n]) != quicPayloadPong {
 		t.Fatalf("expected ReadPacket success, got n=%d err=%v payload=%q", n, err, string(buf[:n]))
 	}
 
@@ -719,7 +743,7 @@ func TestConnectIPSessionManagerOpenAndParsingBranches(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 	manager.dialer = nil
 	if err := manager.Open(context.Background()); err == nil {
@@ -736,7 +760,7 @@ func TestConnectIPSessionManagerOpenAndParsingBranches(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 	manager.info = SessionInfo{IPv4: "10.0.0.2/32"}
 	manager.dialer = &fakeConnectIPDialer{session: &waiterSession{waitErr: errors.New("no info")}}
@@ -767,7 +791,7 @@ func TestHTTP3AdaptersAndConnectionManagerHelpers(t *testing.T) {
 
 	mgr, err := NewConnectionManager(config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeHTTP, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, HTTP: config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress}})
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	if mgr.HTTP3Conn() != nil {
 		t.Fatal("expected nil h3 conn before connect")
@@ -827,7 +851,7 @@ func TestPreparedProxyStreamOpenerUsesConnectStreamProtocol(t *testing.T) {
 	}
 	manager, err := NewConnectStreamManager(testConnectStreamConfig())
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	manager.h3conn = &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}
 	manager.SetReady()
@@ -924,7 +948,7 @@ func TestKeepaliveManagerEvents(t *testing.T) {
 	})
 
 	manager.MarkConnected()
-	manager.MarkDisconnected("timeout")
+	manager.MarkDisconnected(quicDisconnectReasonTimeout)
 	events := manager.Events()
 
 	if len(events) != 2 {
@@ -933,7 +957,7 @@ func TestKeepaliveManagerEvents(t *testing.T) {
 	if events[0].State != ConnStateReady {
 		t.Fatalf("expected ready event, got %q", events[0].State)
 	}
-	if events[1].Reason != "timeout" {
+	if events[1].Reason != quicDisconnectReasonTimeout {
 		t.Fatalf("expected timeout reason, got %q", events[1].Reason)
 	}
 }
@@ -946,7 +970,7 @@ func TestKeepaliveManagerReconnectStats(t *testing.T) {
 		MaxDelay:    5 * time.Second,
 	})
 
-	manager.RecordReconnect("timeout", 2)
+	manager.RecordReconnect(quicDisconnectReasonTimeout, 2)
 
 	stats := manager.Stats()
 	if stats.ReconnectCount != 1 {
@@ -960,7 +984,7 @@ func TestKeepaliveManagerReconnectStats(t *testing.T) {
 	if events[0].Attempt != 2 {
 		t.Fatalf("expected attempt 2, got %d", events[0].Attempt)
 	}
-	if events[0].Reason != "timeout" {
+	if events[0].Reason != quicDisconnectReasonTimeout {
 		t.Fatalf("expected timeout reason, got %q", events[0].Reason)
 	}
 }
@@ -984,12 +1008,12 @@ func TestRetryPolicyAdditionalBranchesAndEventCopy(t *testing.T) {
 		MaxDelay:    1500 * time.Millisecond,
 	})
 	manager.MarkConnected()
-	manager.MarkDisconnected("timeout")
+	manager.MarkDisconnected(quicDisconnectReasonTimeout)
 	events := manager.Events()
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
-	events[0].State = "mutated"
+	events[0].State = quicMutatedValue
 	if manager.Events()[0].State != ConnStateReady {
 		t.Fatalf("expected event slice copy, got %+v", manager.Events())
 	}
@@ -1012,7 +1036,7 @@ func TestConnectIPSessionManagerUpdateSessionInfo(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 
 	manager.UpdateSessionInfo(SessionInfo{
@@ -1064,22 +1088,22 @@ func TestCloudflareSnapshotUsesInternalAlias(t *testing.T) {
 		t.Fatalf("expected cloudflare snapshot to use internal alias, got %T", snapshot)
 	}
 	if snapshot.Protocol != internalcloudflare.ProtocolCFConnectIP {
-		t.Fatalf("expected protocol %q, got %q", internalcloudflare.ProtocolCFConnectIP, snapshot.Protocol)
+		t.Fatalf(errProtocolMismatch, internalcloudflare.ProtocolCFConnectIP, snapshot.Protocol)
 	}
 }
 
 func TestCloudflareCompatLayerDefaultsWithoutPublicImpl(t *testing.T) {
 	layer, err := NewCloudflareCompatLayer(config.KernelConfig{})
 	if err != nil {
-		t.Fatalf("expected compat layer creation success, got %v", err)
+		t.Fatalf(errCompatLayerCreate, err)
 	}
 
 	snapshot := layer.Snapshot()
 	if snapshot.Protocol != internalcloudflare.ProtocolCFConnectIP {
-		t.Fatalf("expected protocol %q, got %q", internalcloudflare.ProtocolCFConnectIP, snapshot.Protocol)
+		t.Fatalf(errProtocolMismatch, internalcloudflare.ProtocolCFConnectIP, snapshot.Protocol)
 	}
 	if snapshot.Endpoint != config.DefaultEndpoint {
-		t.Fatalf("expected endpoint %q, got %q", config.DefaultEndpoint, snapshot.Endpoint)
+		t.Fatalf(errEndpointMismatch, config.DefaultEndpoint, snapshot.Endpoint)
 	}
 	if !snapshot.Quirks.RequireDatagrams {
 		t.Fatal("expected datagram quirk enabled")
@@ -1089,7 +1113,7 @@ func TestCloudflareCompatLayerDefaultsWithoutPublicImpl(t *testing.T) {
 func TestCloudflareCompatLayerWrapsProtocolErrorWithoutPublicImpl(t *testing.T) {
 	layer, err := NewCloudflareCompatLayer(config.KernelConfig{})
 	if err != nil {
-		t.Fatalf("expected compat layer creation success, got %v", err)
+		t.Fatalf(errCompatLayerCreate, err)
 	}
 
 	err = layer.WrapProtocolError("connect-ip", errors.New("http3 settings: datagrams not enabled"))
@@ -1168,10 +1192,10 @@ func TestBuildConnectIPOptionsTableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			options := BuildConnectIPOptions(tt.h3)
 			if options.Authority != defaultCloudflareConnectIPAuthority {
-				t.Fatalf("expected authority %q, got %q", defaultCloudflareConnectIPAuthority, options.Authority)
+				t.Fatalf(errAuthorityMismatch, defaultCloudflareConnectIPAuthority, options.Authority)
 			}
 			if options.Protocol != ProtocolConnectIP {
-				t.Fatalf("expected protocol %q, got %q", ProtocolConnectIP, options.Protocol)
+				t.Fatalf(errProtocolMismatch, ProtocolConnectIP, options.Protocol)
 			}
 			if options.EnableDatagrams != tt.h3.EnableDatagrams {
 				t.Fatalf("expected datagrams %v, got %v", tt.h3.EnableDatagrams, options.EnableDatagrams)
@@ -1187,13 +1211,13 @@ func TestBuildConnectIPOptions(t *testing.T) {
 		EnableDatagrams: true,
 	})
 	if options.Authority != defaultCloudflareConnectIPAuthority {
-		t.Fatalf("expected authority %q, got %q", defaultCloudflareConnectIPAuthority, options.Authority)
+		t.Fatalf(errAuthorityMismatch, defaultCloudflareConnectIPAuthority, options.Authority)
 	}
 	if options.Protocol != ProtocolConnectIP {
-		t.Fatalf("expected protocol %q, got %q", ProtocolConnectIP, options.Protocol)
+		t.Fatalf(errProtocolMismatch, ProtocolConnectIP, options.Protocol)
 	}
 	if !options.EnableDatagrams {
-		t.Fatal("expected datagrams enabled")
+		t.Fatal(errDatagramsEnabled)
 	}
 }
 
@@ -1211,14 +1235,14 @@ func TestNewConnectIPSessionManager(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 	snapshot := manager.Snapshot()
 	if snapshot.State != SessionStateIdle {
 		t.Fatalf("expected idle state, got %q", snapshot.State)
 	}
 	if snapshot.Protocol != ProtocolCFConnectIP {
-		t.Fatalf("expected protocol %q, got %q", ProtocolCFConnectIP, snapshot.Protocol)
+		t.Fatalf(errProtocolMismatch, ProtocolCFConnectIP, snapshot.Protocol)
 	}
 }
 
@@ -1236,7 +1260,7 @@ func TestConnectIPSessionManagerStats(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 
 	manager.RecordHandshakeLatency(85 * time.Millisecond)
@@ -1269,7 +1293,7 @@ func TestConnectIPSessionManagerSnapshotCopiesRoutes(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected session manager creation success, got %v", err)
+		t.Fatalf(errSessionManagerCreate, err)
 	}
 
 	info := SessionInfo{
@@ -1377,14 +1401,14 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 
 	connectionManager, err := NewConnectionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	transportDialer := &countingTransportDialer{conn: &fakeQUICConn{}, h3: &fakeH3Client{}}
 	connectionManager.dialer = transportDialer
 
 	sessionManager, err := NewConnectIPSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+		t.Fatalf(errConnectIPManagerCreate, err)
 	}
 	connectDialer := &countingConnectIPDialer{session: &fakePacketSession{}}
 	sessionManager.dialer = connectDialer
@@ -1396,7 +1420,7 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	streamDialer := &stubHTTPStreamDialer{conn: clientConn}
 	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, streamDialer)
 	if err != nil {
-		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+		t.Fatalf(errCoreTunnelDialerCreate, err)
 	}
 	dialer.provider = &fakePlatformProvider{platform: "linux", delegate: internaltun.NewFakeProvider()}
 	dialer.adapter = internaltun.NewFakeAdapter()
@@ -1407,7 +1431,7 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 		return context.Cause(ctx)
 	}
 
-	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress)
 	if err != nil {
 		t.Fatalf("expected dial success, got %v", err)
 	}
@@ -1432,7 +1456,7 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 		t.Fatalf("expected one downstream dial, got %d", streamDialer.calls)
 	}
 
-	if _, err := dialer.DialContext(context.Background(), "tcp", "example.com:443"); err != nil {
+	if _, err := dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress); err != nil {
 		t.Fatalf("expected second dial success, got %v", err)
 	}
 	if transportDialer.calls != 1 {
@@ -1463,24 +1487,24 @@ func TestCoreTunnelDialerPropagatesBootstrapError(t *testing.T) {
 
 	connectionManager, err := NewConnectionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	transportDialer := &countingTransportDialer{err: errors.New("quic unavailable")}
 	connectionManager.dialer = transportDialer
 
 	sessionManager, err := NewConnectIPSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+		t.Fatalf(errConnectIPManagerCreate, err)
 	}
 	streamDialer := &stubHTTPStreamDialer{}
 	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, streamDialer)
 	if err != nil {
-		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+		t.Fatalf(errCoreTunnelDialerCreate, err)
 	}
 	dialer.provider = &fakePlatformProvider{platform: "linux", delegate: internaltun.NewFakeProvider()}
 	dialer.adapter = internaltun.NewFakeAdapter()
 
-	_, err = dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	_, err = dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress)
 	if err == nil {
 		t.Fatal("expected bootstrap error")
 	}
@@ -1506,14 +1530,14 @@ func TestCoreTunnelDialerHTTPModeDoesNotRequireConnectIP(t *testing.T) {
 
 	connectionManager, err := NewConnectionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
+		t.Fatalf(errConnectionManagerCreate, err)
 	}
 	transportDialer := &countingTransportDialer{conn: &fakeQUICConn{}, h3: &fakeH3Client{}}
 	connectionManager.dialer = transportDialer
 
 	sessionManager, err := NewConnectIPSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("expected connect-ip manager creation success, got %v", err)
+		t.Fatalf(errConnectIPManagerCreate, err)
 	}
 	connectDialer := &countingConnectIPDialer{err: errors.New("server didn't enable Extended CONNECT")}
 	sessionManager.dialer = connectDialer
@@ -1525,10 +1549,10 @@ func TestCoreTunnelDialerHTTPModeDoesNotRequireConnectIP(t *testing.T) {
 	streamDialer := &stubHTTPStreamDialer{conn: clientConn}
 	dialer, err := NewCoreTunnelDialer(connectionManager, sessionManager, streamDialer)
 	if err != nil {
-		t.Fatalf("expected core tunnel dialer creation success, got %v", err)
+		t.Fatalf(errCoreTunnelDialerCreate, err)
 	}
 
-	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress)
 	if err != nil {
 		t.Fatalf("expected http mode dial success without connect-ip, got %v", err)
 	}
@@ -1612,14 +1636,14 @@ func TestPacketIORelayEmitsDiagnosticsAndStats(t *testing.T) {
 		name: "igara-test0",
 		mtu:  1280,
 		inbound: [][]byte{
-			ipv4Packet("10.0.0.8", "104.28.152.116", 6, 64),
-			ipv4Packet("10.0.0.8", "1.1.1.1", 17, 52),
+			ipv4Packet(quicTraceSourceAddress, "104.28.152.116", 6, 64),
+			ipv4Packet(quicTraceSourceAddress, "1.1.1.1", 17, 52),
 		},
 	}
 	endpoint := &stubRelayEndpoint{
 		downlink: [][]byte{
-			ipv4Packet("104.28.152.116", "10.0.0.8", 6, 112),
-			ipv4Packet("1.1.1.1", "10.0.0.8", 17, 60),
+			ipv4Packet("104.28.152.116", quicTraceSourceAddress, 6, 112),
+			ipv4Packet("1.1.1.1", quicTraceSourceAddress, 17, 60),
 		},
 	}
 
@@ -1675,19 +1699,19 @@ func TestPacketIOHelpersAndUtilityBranches(t *testing.T) {
 }
 
 func TestDatapathFormattingHelpers(t *testing.T) {
-	t.Setenv("AMZ_TUN_TRACE_PACKETS", "")
+	t.Setenv(quicTracePacketsEnv, "")
 	if got := packetTraceLimitFromEnv(); got != 1 {
 		t.Fatalf("expected default trace limit 1, got %d", got)
 	}
-	t.Setenv("AMZ_TUN_TRACE_PACKETS", "3")
+	t.Setenv(quicTracePacketsEnv, "3")
 	if got := packetTraceLimitFromEnv(); got != 3 {
 		t.Fatalf("expected trace limit 3, got %d", got)
 	}
-	t.Setenv("AMZ_TUN_TRACE_PACKETS", "bad")
+	t.Setenv(quicTracePacketsEnv, "bad")
 	if got := packetTraceLimitFromEnv(); got != 1 {
 		t.Fatalf("expected fallback trace limit 1, got %d", got)
 	}
-	t.Setenv("AMZ_TUN_TRACE_PACKETS", "-1")
+	t.Setenv(quicTracePacketsEnv, "-1")
 	if got := packetTraceLimitFromEnv(); got != 1 {
 		t.Fatalf("expected negative fallback trace limit 1, got %d", got)
 	}
@@ -1847,7 +1871,7 @@ func TestBuildTLSConfigIncludesClientCertificate(t *testing.T) {
 		ClientCertificate: testClientCertificateBase64,
 	})
 	if tlsCfg.ServerName != config.DefaultSNI {
-		t.Fatalf("expected server name %q, got %q", config.DefaultSNI, tlsCfg.ServerName)
+		t.Fatalf(errServerNameMismatch, config.DefaultSNI, tlsCfg.ServerName)
 	}
 	if len(tlsCfg.Certificates) != 1 {
 		t.Fatalf("expected one client certificate, got %d", len(tlsCfg.Certificates))

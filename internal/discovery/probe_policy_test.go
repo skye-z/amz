@@ -117,6 +117,55 @@ func TestBatchProbeSelectsBestFromPartialResults(t *testing.T) {
 	}
 }
 
+func TestDiscoveryInternalHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := buildCacheCandidates(Cache{
+		Selected:   Candidate{Address: "selected:443"},
+		Candidates: []Candidate{{Address: "selected:443"}, {Address: "other:443"}},
+	}); len(got) != 2 || got[0].Address != "selected:443" {
+		t.Fatalf("unexpected cache candidates: %+v", got)
+	}
+
+	plan := buildPreferredPlan(Registration{
+		EndpointHost:  testkit.WarpHostPrimary,
+		EndpointV4:    testkit.WarpIPv4Primary443,
+		EndpointV6:    testkit.WarpIPv6Primary443,
+		EndpointPorts: []uint16{443, 500},
+	})
+	if len(plan.Domains) == 0 || len(plan.Fixed) == 0 {
+		t.Fatalf("expected preferred plan addresses, got %+v", plan)
+	}
+
+	if got := buildFixedCandidates([]string{"", " a:443 ", "a:443"}); len(got) != 2 {
+		t.Fatalf("expected trimmed fixed candidates including duplicate raw entries, got %+v", got)
+	}
+
+	if got := dedupeCandidates([]Candidate{{Address: "a:443"}, {Address: "a:443"}, {Address: "b:443"}}); len(got) != 2 {
+		t.Fatalf("unexpected deduped candidates: %+v", got)
+	}
+	if !containsCandidate([]Candidate{{Address: "a:443"}}, "a:443") {
+		t.Fatal("expected containsCandidate match")
+	}
+	if got := warpProxyPortRank("missing-port"); got != 100 {
+		t.Fatalf("expected unknown port rank 100, got %d", got)
+	}
+	if got := warpProxyPortRank("example.com:4500"); got != 3 {
+		t.Fatalf("expected 4500 rank 3, got %d", got)
+	}
+	if got := candidateSourceRank("mystery"); got != 100 {
+		t.Fatalf("expected unknown source rank 100, got %d", got)
+	}
+
+	fallbacks := observedWarpProxyFallbackHosts("162.159.198.1")
+	if len(fallbacks) != 1 || fallbacks[0] != "162.159.198.2" {
+		t.Fatalf("unexpected fallback hosts: %+v", fallbacks)
+	}
+	if got := observedWarpProxyFallbackHosts("1.1.1.1"); got != nil {
+		t.Fatalf("expected nil fallback hosts, got %+v", got)
+	}
+}
+
 type partialProber struct {
 	results []ProbeResult
 }

@@ -25,6 +25,26 @@ const (
 	httpConnectTarget  = testkit.TestDomain + ":443"
 	httpConnectRequest = "CONNECT " + httpConnectTarget + " HTTP/1.1\r\nHost: " + httpConnectTarget + "\r\n\r\n"
 	echoPayload        = "ping"
+
+	httpConnectProxyAddress    = "proxy.local:8080"
+	httpConnectNewEndpoint     = "new-endpoint"
+	httpConnectHeaderName      = "Connection"
+	httpConnectErrBoom         = "boom"
+	httpConnectTUNName         = "igara0"
+	httpConnectBootstrapName   = "igara-test0"
+	httpConnectRespEstablished = "HTTP/1.1 200 Connection Established\r\n\r\n"
+
+	errHTTPManagerCreate   = "expected http manager creation success, got %v"
+	errManagerCreate       = "expected manager creation success, got %v"
+	errManagerStart        = "expected manager start success, got %v"
+	errProxyDial           = "expected proxy dial success, got %v"
+	errConnectRequestWrite = "expected connect request write success, got %v"
+	errConnectResponseRead = "expected connect response read success, got %v"
+	errSOCKSManagerCreate  = "expected socks manager creation success, got %v"
+	errSOCKSDial           = "expected socks dial success, got %v"
+	errGreetingWrite       = "expected greeting write success, got %v"
+	errManagerClose        = "expected close success, got %v"
+	errTunManagerStart     = "expected start success, got %v"
 )
 
 func TestHTTPManagerConnectFallsBackToDialerWhenStreamOpenFails(t *testing.T) {
@@ -40,28 +60,28 @@ func TestHTTPManagerConnectFallsBackToDialerWhenStreamOpenFails(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetHTTPDialer(echoHTTPDialer{})
 	manager.SetStreamManager(failingHTTPStreamOpener{})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
@@ -91,7 +111,7 @@ func TestHTTPManagerReportsFailureWhenStreamOpenFails(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetHTTPDialer(echoHTTPDialer{})
 	manager.SetStreamManager(failingHTTPStreamOpener{})
@@ -101,21 +121,21 @@ func TestHTTPManagerReportsFailureWhenStreamOpenFails(t *testing.T) {
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
@@ -142,7 +162,7 @@ func TestHTTPManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *tes
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetHTTPDialer(failingHTTPDialer{err: context.DeadlineExceeded})
 	manager.SetStreamManager(failingHTTPStreamOpener{})
@@ -152,18 +172,18 @@ func TestHTTPManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *tes
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
@@ -187,7 +207,7 @@ func TestHTTPManagerReconnectsStreamAfterBackendRefresh(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetHTTPDialer(failingHTTPDialer{err: context.DeadlineExceeded})
 	manager.SetStreamManager(protocolErrorHTTPStreamOpener{err: context.DeadlineExceeded})
@@ -197,22 +217,22 @@ func TestHTTPManagerReconnectsStreamAfterBackendRefresh(t *testing.T) {
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response after backend refresh, got %d", resp.StatusCode)
@@ -232,28 +252,28 @@ func TestHTTPManagerConnectFallbackUsesFreshTimeoutContext(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetHTTPDialer(checkingHTTPDialer{})
 	manager.SetStreamManager(blockingHTTPStreamOpener{})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response after fallback, got %d", resp.StatusCode)
@@ -354,7 +374,7 @@ func TestMuxListenerDispatchesProtocolsAndCloses(t *testing.T) {
 
 	socksConn, err := net.Dial("tcp", mux.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected socks dial success, got %v", err)
+		t.Fatalf(errSOCKSDial, err)
 	}
 	defer socksConn.Close()
 	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
@@ -377,7 +397,7 @@ func TestMuxListenerDispatchesProtocolsAndCloses(t *testing.T) {
 		t.Fatal("expected mux addr")
 	}
 	if err := mux.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errManagerClose, err)
 	}
 }
 
@@ -490,12 +510,12 @@ func TestTunManagerAndBootstrapManagerBranches(t *testing.T) {
 	if _, err := NewTunManager(nil); err == nil {
 		t.Fatal("expected nil tun config error")
 	}
-	manager, err := NewTunManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: "igara0"}})
+	manager, err := NewTunManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: httpConnectTUNName}})
 	if err != nil {
 		t.Fatalf("expected tun manager creation success, got %v", err)
 	}
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errTunManagerStart, err)
 	}
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("expected idempotent start success, got %v", err)
@@ -504,7 +524,7 @@ func TestTunManagerAndBootstrapManagerBranches(t *testing.T) {
 		t.Fatal("expected nil logger by default")
 	}
 	if err := manager.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errManagerClose, err)
 	}
 	if got := manager.State(); got != config.StateStopped {
 		t.Fatalf("expected stopped state, got %q", got)
@@ -513,11 +533,11 @@ func TestTunManagerAndBootstrapManagerBranches(t *testing.T) {
 	if _, err := NewBootstrapTUNManager(nil, &stubTUNBootstrap{}); err == nil {
 		t.Fatal("expected nil bootstrap config error")
 	}
-	if _, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: "igara0"}}, nil); err == nil {
+	if _, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: httpConnectTUNName}}, nil); err == nil {
 		t.Fatal("expected nil bootstrap dependency error")
 	}
 	bootstrap := &stubTUNBootstrap{}
-	bootMgr, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: "igara0"}}, bootstrap)
+	bootMgr, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, TUN: config.TUNConfig{Name: httpConnectTUNName}}, bootstrap)
 	if err != nil {
 		t.Fatalf("expected bootstrap manager creation success, got %v", err)
 	}
@@ -596,7 +616,7 @@ func TestHTTPManagerUtilityHelpers(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	if manager.State() != config.StateIdle {
 		t.Fatalf("expected idle state, got %q", manager.State())
@@ -626,15 +646,15 @@ func TestHTTPManagerUtilityHelpers(t *testing.T) {
 	if dst.Get("A") != "1" {
 		t.Fatalf("expected copied header, got %+v", dst)
 	}
-	headers := http.Header{"Connection": []string{"keep-alive"}, "Upgrade": []string{"h2c"}}
+	headers := http.Header{httpConnectHeaderName: []string{"keep-alive"}, "Upgrade": []string{"h2c"}}
 	removeHopByHopHeaders(headers)
-	if headers.Get("Connection") != "" || headers.Get("Upgrade") != "" {
+	if headers.Get(httpConnectHeaderName) != "" || headers.Get("Upgrade") != "" {
 		t.Fatalf("expected hop-by-hop headers removed, got %+v", headers)
 	}
 	if !isClosedNetworkError(net.ErrClosed) {
 		t.Fatal("expected closed network error detection")
 	}
-	if isClosedNetworkError(errors.New("boom")) {
+	if isClosedNetworkError(errors.New(httpConnectErrBoom)) {
 		t.Fatal("expected generic error not to be treated as closed network error")
 	}
 	args := sanitizeHTTPArgs([]any{"token=secret", errors.New("bad")})
@@ -651,7 +671,7 @@ func TestHTTPManagerUtilityHelpers(t *testing.T) {
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		manager.mu.Lock()
-		manager.cfg.Endpoint = "new-endpoint"
+		manager.cfg.Endpoint = httpConnectNewEndpoint
 		manager.mu.Unlock()
 		done <- true
 	}()
@@ -659,7 +679,7 @@ func TestHTTPManagerUtilityHelpers(t *testing.T) {
 		t.Fatal("expected backend refresh detection")
 	}
 	<-done
-	if manager.waitForEndpointChange(context.Background(), "new-endpoint", 30*time.Millisecond) {
+	if manager.waitForEndpointChange(context.Background(), httpConnectNewEndpoint, 30*time.Millisecond) {
 		t.Fatal("expected endpoint change wait to time out when unchanged")
 	}
 }
@@ -675,7 +695,7 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	handler := &httpHandler{manager: manager}
 	manager.SetHTTPDialer(failingHTTPDialer{err: errors.New("dial unavailable")})
@@ -699,7 +719,7 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 	manager.SetHTTPRoundTripper(localRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Connection": []string{"keep-alive"}, "X-Test": []string{"ok"}},
+			Header:     http.Header{httpConnectHeaderName: []string{"keep-alive"}, "X-Test": []string{"ok"}},
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		}, nil
 	}))
@@ -708,17 +728,17 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "ok" {
 		t.Fatalf("unexpected forward success response: code=%d body=%q", recorder.Code, recorder.Body.String())
 	}
-	if recorder.Header().Get("Connection") != "" || recorder.Header().Get("X-Test") != "ok" {
+	if recorder.Header().Get(httpConnectHeaderName) != "" || recorder.Header().Get("X-Test") != "ok" {
 		t.Fatalf("unexpected forwarded headers: %+v", recorder.Header())
 	}
 
-	if _, _, retried := manager.retryConnectOnce(context.Background(), "connect-stream", "bad-target", errors.New("boom"), "", ""); !retried {
+	if _, _, retried := manager.retryConnectOnce(context.Background(), "connect-stream", "bad-target", errors.New(httpConnectErrBoom), "", ""); !retried {
 		t.Fatal("expected retry flag on malformed target branch")
 	}
 
 	reported := false
 	manager.SetFailureReporter(func(failure.Event) { reported = true })
-	manager.reportFailure("op", errors.New("boom"))
+	manager.reportFailure("op", errors.New(httpConnectErrBoom))
 	if !reported {
 		t.Fatal("expected http failure reporter invocation")
 	}
@@ -735,7 +755,7 @@ func TestSOCKS5ManagerUtilityHelpersAndAuth(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero, Username: "u", Password: "p"},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	if manager.State() != config.StateIdle || manager.ListenAddress() == "" {
 		t.Fatalf("unexpected initial manager state/listen: %q %q", manager.State(), manager.ListenAddress())
@@ -815,7 +835,7 @@ func TestSOCKS5ManagerUtilityHelpersAndAuth(t *testing.T) {
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		manager.mu.Lock()
-		manager.cfg.Endpoint = "new-endpoint"
+		manager.cfg.Endpoint = httpConnectNewEndpoint
 		manager.mu.Unlock()
 		done <- struct{}{}
 	}()
@@ -836,7 +856,7 @@ func TestSOCKS5ManagerStateSnapshotAndUDPAssociatePaths(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	if manager.State() != config.StateIdle {
 		t.Fatalf("expected idle state, got %q", manager.State())
@@ -875,9 +895,9 @@ func TestSOCKS5ManagerHandleUDPAssociateAndUDPLoop(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero, EnableUDP: true},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
-	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	packetConn, err := net.ListenPacket("udp", testkit.LocalListenZero)
 	if err != nil {
 		t.Fatalf("expected udp listen success, got %v", err)
 	}
@@ -889,7 +909,7 @@ func TestSOCKS5ManagerHandleUDPAssociateAndUDPLoop(t *testing.T) {
 	manager.associations = make(map[string]*udpAssociation)
 	manager.mu.Unlock()
 
-	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	tcpLn, err := net.Listen("tcp", testkit.LocalListenZero)
 	if err != nil {
 		t.Fatalf("expected tcp listen success, got %v", err)
 	}
@@ -929,7 +949,7 @@ func TestSOCKS5ManagerHandleUDPAssociateAndUDPLoop(t *testing.T) {
 	manager.runWG.Add(1)
 	udpCtx, udpCancel := context.WithCancel(context.Background())
 	go manager.udpLoop(udpCtx)
-	peerConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	peerConn, err := net.ListenPacket("udp", testkit.LocalListenZero)
 	if err != nil {
 		t.Fatalf("expected peer udp listen success, got %v", err)
 	}
@@ -995,7 +1015,7 @@ func TestHTTPHandleConnectViaStreamAndHelpers(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetStreamManager(localStreamOpener{})
 	host, port, err := parseHTTPConnectTarget("example.com")
@@ -1004,21 +1024,21 @@ func TestHTTPHandleConnectViaStreamAndHelpers(t *testing.T) {
 	}
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected connect response 200, got %d", resp.StatusCode)
@@ -1056,7 +1076,7 @@ func TestSOCKSAddressReadersAndNegotiationBranches(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero, Username: "u", Password: "p"},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	server, client := net.Pipe()
 	defer client.Close()
@@ -1096,7 +1116,7 @@ func TestUpstreamConnectDialerFailureBranches(t *testing.T) {
 		_ = server.Close()
 		return client
 	}}
-	if _, err := newUpstreamConnectDialer(writeFailDialer, "proxy.local:8080").DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := newUpstreamConnectDialer(writeFailDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
 		t.Fatal("expected write/read failure from upstream dialer")
 	}
 
@@ -1109,12 +1129,12 @@ func TestUpstreamConnectDialerFailureBranches(t *testing.T) {
 		}()
 		return client
 	}}
-	if _, err := newUpstreamConnectDialer(rejectDialer, "proxy.local:8080").DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := newUpstreamConnectDialer(rejectDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
 		t.Fatal("expected upstream rejection error")
 	}
 
 	plainDialer := &recordingDialer{}
-	if err := newUpstreamConnectDialer(plainDialer, "proxy.local:8080").Close(); err != nil {
+	if err := newUpstreamConnectDialer(plainDialer, httpConnectProxyAddress).Close(); err != nil {
 		t.Fatalf("expected upstream close passthrough success, got %v", err)
 	}
 }
@@ -1129,28 +1149,28 @@ func TestUpstreamAndDNSDialers(t *testing.T) {
 			defer server.Close()
 			req, _ := http.ReadRequest(bufio.NewReader(server))
 			if req != nil {
-				_, _ = server.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+				_, _ = server.Write([]byte(httpConnectRespEstablished))
 			}
 		}()
 		return client
 	}}
-	upstream := newUpstreamConnectDialer(base, "proxy.local:8080")
+	upstream := newUpstreamConnectDialer(base, httpConnectProxyAddress)
 	conn, err := upstream.DialContext(context.Background(), "tcp", "example.com:443")
 	if err != nil {
 		t.Fatalf("expected upstream connect success, got %v", err)
 	}
 	_ = conn.Close()
-	if base.lastAddress != "proxy.local:8080" {
+	if base.lastAddress != httpConnectProxyAddress {
 		t.Fatalf("expected upstream target address, got %q", base.lastAddress)
 	}
 	if err := upstream.Close(); err != nil {
 		t.Fatalf("expected upstream close success, got %v", err)
 	}
-	transport := newUpstreamHTTPTransport("proxy.local:8080", base)
+	transport := newUpstreamHTTPTransport(httpConnectProxyAddress, base)
 	if transport == nil {
 		t.Fatal("expected upstream transport")
 	}
-	if newUpstreamHTTPTransport("proxy.local:8080", nil) != nil {
+	if newUpstreamHTTPTransport(httpConnectProxyAddress, nil) != nil {
 		t.Fatal("expected nil upstream transport when dialer missing")
 	}
 
@@ -1174,7 +1194,7 @@ func (l *captureRuntimeLogger) Printf(format string, args ...any) {
 
 func TestTunLogSanitizersAndStatsAccessors(t *testing.T) {
 	logger := &captureRuntimeLogger{}
-	manager, err := NewTunManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, Logger: logger, TUN: config.TUNConfig{Name: "igara0"}})
+	manager, err := NewTunManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, Logger: logger, TUN: config.TUNConfig{Name: httpConnectTUNName}})
 	if err != nil {
 		t.Fatalf("expected tun manager success, got %v", err)
 	}
@@ -1185,7 +1205,7 @@ func TestTunLogSanitizersAndStatsAccessors(t *testing.T) {
 	if stats := manager.Stats(); stats.StartCount != 0 || stats.StopCount != 0 {
 		t.Fatalf("unexpected tun stats: %+v", stats)
 	}
-	boot, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, Logger: logger, TUN: config.TUNConfig{Name: "igara0"}}, &stubTUNBootstrap{})
+	boot, err := NewBootstrapTUNManager(&config.KernelConfig{Endpoint: config.DefaultEndpoint, SNI: config.DefaultSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, ConnectTimeout: config.DefaultConnectTimeout, Keepalive: config.DefaultKeepalive, Logger: logger, TUN: config.TUNConfig{Name: httpConnectTUNName}}, &stubTUNBootstrap{})
 	if err != nil {
 		t.Fatalf("expected bootstrap manager success, got %v", err)
 	}
@@ -1338,16 +1358,16 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 
 	conn, err := net.Dial("tcp", runtime.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected proxy dial success, got %v", err)
+		t.Fatalf(errProxyDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := fmt.Fprintf(conn, httpConnectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		t.Fatalf("expected connect response read success, got %v", err)
+		t.Fatalf(errConnectResponseRead, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 connect response, got %d", resp.StatusCode)
@@ -1396,14 +1416,14 @@ func TestBootstrapTUNManagerStartInvokesPrepare(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: httpConnectBootstrapName},
 	}, bootstrap)
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errTunManagerStart, err)
 	}
 	if !bootstrap.prepareCalled {
 		t.Fatal("expected Prepare to be called")
@@ -1424,16 +1444,16 @@ func TestBootstrapTUNManagerCloseInvokesBootstrapClose(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: httpConnectBootstrapName},
 	}, bootstrap)
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errTunManagerStart, err)
 	}
 	if err := manager.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errManagerClose, err)
 	}
 	if !bootstrap.closeCalled {
 		t.Fatal("expected bootstrap Close to be called")
@@ -1454,10 +1474,10 @@ func TestBootstrapTUNManagerPropagatesPrepareError(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: httpConnectBootstrapName},
 	}, &stubTUNBootstrap{prepareErr: wantErr})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 
 	err = manager.Start(context.Background())
@@ -1623,20 +1643,20 @@ func TestSOCKS5ManagerStopClosesActiveTCPConnections(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected socks dial success, got %v", err)
+		t.Fatalf(errSOCKSDial, err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf("expected greeting write success, got %v", err)
+		t.Fatalf(errGreetingWrite, err)
 	}
 	reply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, reply); err != nil {
@@ -1676,7 +1696,7 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	manager.SetDialer(&failingContextDialer{err: io.EOF})
 	var reported atomic.Bool
@@ -1685,17 +1705,17 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected socks dial success, got %v", err)
+		t.Fatalf(errSOCKSDial, err)
 	}
 	defer conn.Close()
 	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf("expected greeting write success, got %v", err)
+		t.Fatalf(errGreetingWrite, err)
 	}
 	reply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, reply); err != nil {
@@ -1703,7 +1723,7 @@ func TestSOCKS5ManagerReportsFailureWhenUpstreamDialFails(t *testing.T) {
 	}
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp := make([]byte, 10)
 	if _, err := io.ReadAtLeast(conn, resp, 2); err != nil {
@@ -1731,7 +1751,7 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errManagerCreate, err)
 	}
 	manager.SetDialer(&failingContextDialer{err: context.DeadlineExceeded})
 	manager.SetFailureReporter(func(failure.Event) {
@@ -1739,17 +1759,17 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
-		t.Fatalf("expected manager start success, got %v", err)
+		t.Fatalf(errManagerStart, err)
 	}
 	defer manager.Close()
 
 	conn, err := net.Dial("tcp", manager.ListenAddress())
 	if err != nil {
-		t.Fatalf("expected socks dial success, got %v", err)
+		t.Fatalf(errSOCKSDial, err)
 	}
 	defer conn.Close()
 	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
-		t.Fatalf("expected greeting write success, got %v", err)
+		t.Fatalf(errGreetingWrite, err)
 	}
 	reply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, reply); err != nil {
@@ -1757,7 +1777,7 @@ func TestSOCKS5ManagerRetriesCurrentConnectAfterFailureReporterSwapsBackend(t *t
 	}
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 443)
 	if _, err := conn.Write(connectRequest); err != nil {
-		t.Fatalf("expected connect request write success, got %v", err)
+		t.Fatalf(errConnectRequestWrite, err)
 	}
 	resp, err := io.ReadAll(io.LimitReader(conn, 10))
 	if err != nil {

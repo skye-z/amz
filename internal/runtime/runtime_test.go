@@ -20,6 +20,14 @@ import (
 const (
 	clientRuntimeHTTPResourceURL = "http://" + testkit.TestDomain + "/resource"
 	clientRuntimeEchoPayload     = "ping"
+	clientRuntimeHTTPBody        = "http-ok"
+	clientRuntimeTestTUNName     = "igara-test0"
+
+	errHTTPManagerCreate  = "expected http manager creation success, got %v"
+	errSOCKSManagerCreate = "expected socks manager creation success, got %v"
+	errClientRuntimeNew   = "expected client runtime creation success, got %v"
+	errSOCKSGreetingWrite = "expected socks greeting write success, got %v"
+	errGreetingReply      = "expected greeting reply %v, got %v"
 )
 
 func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
@@ -35,13 +43,13 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	httpManager.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("http-ok")),
+			Body:       io.NopCloser(strings.NewReader(clientRuntimeHTTPBody)),
 		}, nil
 	}))
 
@@ -55,7 +63,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	socksManager.SetStreamManager(echoStreamOpener{})
 
@@ -65,7 +73,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager),
 	})
 	if err != nil {
-		t.Fatalf("expected client runtime creation success, got %v", err)
+		t.Fatalf(errClientRuntimeNew, err)
 	}
 	defer runtime.Close()
 
@@ -100,8 +108,8 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected http response body read success, got %v", err)
 	}
-	if string(body) != "http-ok" {
-		t.Fatalf("expected http body %q, got %q", "http-ok", string(body))
+	if string(body) != clientRuntimeHTTPBody {
+		t.Fatalf("expected http body %q, got %q", clientRuntimeHTTPBody, string(body))
 	}
 
 	socksConn, err := net.Dial("tcp", listenAddress)
@@ -110,14 +118,14 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	}
 	defer socksConn.Close()
 	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		t.Fatalf("expected socks greeting write success, got %v", err)
+		t.Fatalf(errSOCKSGreetingWrite, err)
 	}
 	greetingReply := make([]byte, 2)
 	if _, err := io.ReadFull(socksConn, greetingReply); err != nil {
 		t.Fatalf("expected socks greeting reply success, got %v", err)
 	}
 	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
-		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
+		t.Fatalf(errGreetingReply, want, greetingReply)
 	}
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
 	if _, err := socksConn.Write(connectRequest); err != nil {
@@ -155,7 +163,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 
 	tunnel, err := internalruntime.NewTunManager(&config.KernelConfig{
@@ -165,7 +173,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: clientRuntimeTestTUNName},
 	})
 	if err != nil {
 		t.Fatalf("expected tun runtime creation success, got %v", err)
@@ -177,7 +185,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 		TUN:           internalruntime.NewTUNRuntime(tunnel),
 	})
 	if err != nil {
-		t.Fatalf("expected client runtime creation success, got %v", err)
+		t.Fatalf(errClientRuntimeNew, err)
 	}
 
 	if err := runtime.Start(context.Background()); err != nil {
@@ -213,7 +221,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	socksManager, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
@@ -225,7 +233,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	tunnel, err := internalruntime.NewTunManager(&config.KernelConfig{
 		Endpoint:       config.DefaultEndpoint,
@@ -234,7 +242,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: clientRuntimeTestTUNName},
 	})
 	if err != nil {
 		t.Fatalf("expected tun manager creation success, got %v", err)
@@ -265,7 +273,7 @@ func TestClientRuntimeHealthCheckRunsAllEnabledComponents(t *testing.T) {
 		TUN:           tunRuntime,
 	})
 	if err != nil {
-		t.Fatalf("expected client runtime creation success, got %v", err)
+		t.Fatalf(errClientRuntimeNew, err)
 	}
 
 	if err := runtime.HealthCheck(context.Background()); err != nil {
@@ -292,7 +300,7 @@ func TestClientRuntimeHealthCheckReturnsFirstComponentError(t *testing.T) {
 		TUN:    tunRuntime,
 	})
 	if err != nil {
-		t.Fatalf("expected client runtime creation success, got %v", err)
+		t.Fatalf(errClientRuntimeNew, err)
 	}
 	err = runtime.HealthCheck(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "http unhealthy") {
@@ -313,7 +321,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected http manager creation success, got %v", err)
+		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	httpManager1.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("old"))}, nil
@@ -328,7 +336,7 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
-		t.Fatalf("expected socks manager creation success, got %v", err)
+		t.Fatalf(errSOCKSManagerCreate, err)
 	}
 	socksManager1.SetStreamManager(echoStreamOpener{})
 
@@ -421,14 +429,14 @@ func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 	}
 	defer socksConn.Close()
 	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		t.Fatalf("expected socks greeting write success, got %v", err)
+		t.Fatalf(errSOCKSGreetingWrite, err)
 	}
 	greetingReply := make([]byte, 2)
 	if _, err := io.ReadFull(socksConn, greetingReply); err != nil {
 		t.Fatalf("expected socks greeting reply success after hot swap, got %v", err)
 	}
 	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
-		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
+		t.Fatalf(errGreetingReply, want, greetingReply)
 	}
 }
 
@@ -508,7 +516,7 @@ func TestNewTUNRuntimeFromConfig(t *testing.T) {
 		Mode:           config.ModeTUN,
 		ConnectTimeout: config.DefaultConnectTimeout,
 		Keepalive:      config.DefaultKeepalive,
-		TUN:            config.TUNConfig{Name: "igara-test0"},
+		TUN:            config.TUNConfig{Name: clientRuntimeTestTUNName},
 	})
 	if err != nil {
 		t.Fatalf("expected tun runtime factory success, got %v", err)
@@ -609,14 +617,14 @@ func TestNewSOCKS5RuntimeFromSharedDialerUsesStreamManager(t *testing.T) {
 	}
 	defer conn.Close()
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		t.Fatalf("expected socks greeting write success, got %v", err)
+		t.Fatalf(errSOCKSGreetingWrite, err)
 	}
 	greetingReply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, greetingReply); err != nil {
 		t.Fatalf("expected socks greeting reply success, got %v", err)
 	}
 	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
-		t.Fatalf("expected greeting reply %v, got %v", want, greetingReply)
+		t.Fatalf(errGreetingReply, want, greetingReply)
 	}
 	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
 	if _, err := conn.Write(connectRequest); err != nil {

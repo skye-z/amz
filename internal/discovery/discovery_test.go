@@ -47,6 +47,30 @@ func TestParseSource(t *testing.T) {
 	}
 }
 
+func TestParseSourceRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{"", "missing-port", "  "} {
+		if _, err := discovery.ParseSource(input); err == nil {
+			t.Fatalf("expected parse error for %q", input)
+		}
+	}
+}
+
+func TestBuildCandidatesCoversKinds(t *testing.T) {
+	t.Parallel()
+
+	if got := discovery.BuildCandidates(discovery.Source{Kind: discovery.SourceFixed, Value: testkit.WarpIPv4Primary443}); len(got) != 1 || got[0].Address != testkit.WarpIPv4Primary443 {
+		t.Fatalf("unexpected fixed candidates: %+v", got)
+	}
+	if got := discovery.BuildCandidates(discovery.Source{Kind: discovery.SourceDomain, Value: testkit.WarpHostProxy443}); len(got) != 1 || got[0].Address != testkit.WarpHostProxy443 {
+		t.Fatalf("unexpected domain candidates: %+v", got)
+	}
+	if got := discovery.BuildCandidates(discovery.Source{Kind: "unknown"}); got != nil {
+		t.Fatalf("expected nil candidates for unknown kind, got %+v", got)
+	}
+}
+
 func TestBuildCandidatesFromPlanDeduplicatesAddresses(t *testing.T) {
 	plan := discovery.Plan{
 		Source:  discovery.Source{Kind: discovery.SourceAuto, Value: "auto"},
@@ -171,6 +195,25 @@ func TestBuildVerificationCandidatesPrefersCacheReuse(t *testing.T) {
 	}
 	if len(fallback) == 0 || fallback[0].Address != "scan.example:443" {
 		t.Fatalf("expected scan candidate in fallback list, got %+v", fallback)
+	}
+}
+
+func TestBatchProbePlanUsesDefaults(t *testing.T) {
+	t.Parallel()
+
+	result := discovery.BatchProbePlan(discovery.Plan{
+		Fixed: []string{testkit.WarpIPv4Primary443},
+	}, discovery.NewStaticProber(map[string]discovery.ProbeResult{
+		testkit.WarpIPv4Primary443: {
+			Address:     testkit.WarpIPv4Primary443,
+			Available:   true,
+			WarpEnabled: true,
+			Latency:     time.Millisecond,
+		},
+	}), 0, 0)
+
+	if !result.OK || result.Best.Address != testkit.WarpIPv4Primary443 {
+		t.Fatalf("expected batch probe plan success, got %+v", result)
 	}
 }
 

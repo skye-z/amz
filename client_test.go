@@ -21,6 +21,25 @@ import (
 	"time"
 )
 
+const (
+	testCertPrivateKey        = "private-key-123"
+	testCertClientCert        = "client-cert-123"
+	testCertPeerPublicKey     = "peer-public-key-123"
+	testCertClientID          = "client-id-123"
+	testCurrentEndpoint       = "endpoint-1"
+	testNextEndpoint          = "next-endpoint"
+	testCandidateAddress      = "candidate"
+	testConnectIPMismatchErr  = "ensure connect-ip ready: protocol mismatch"
+	testSelectLogAction       = "[SELECT]"
+	testExpectedCallerInfo    = "expected caller info"
+	testExpectedClientCreate  = "expected client creation success, got %v"
+	testExpectedStart         = "expected start success, got %v"
+	testExpectedClose         = "expected close success, got %v"
+	testExpectedClientRuntime = "expected client runtime success, got %v"
+	testReadFileError         = "read %s: %v"
+	testExpectedOutputContain = "expected output to contain %q, got:\n%s"
+)
+
 func TestNewClientRejectsNoEnabledRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -37,7 +56,7 @@ func TestNewClientAppliesDefaultListenAddressForProxyModes(t *testing.T) {
 		HTTP: HTTPOptions{Enabled: true},
 	})
 	if err != nil {
-		t.Fatalf("expected client creation success, got %v", err)
+		t.Fatalf(testExpectedClientCreate, err)
 	}
 	if client.opts.Listen.Address != testkit.LocalListenSDK {
 		t.Fatalf("expected default listen address, got %q", client.opts.Listen.Address)
@@ -69,11 +88,11 @@ func TestClientStartCloseAndStatus(t *testing.T) {
 		SOCKS5: SOCKS5Options{Enabled: true},
 	})
 	if err != nil {
-		t.Fatalf("expected client creation success, got %v", err)
+		t.Fatalf(testExpectedClientCreate, err)
 	}
 
 	if err := client.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(testExpectedStart, err)
 	}
 	if runtime.startCalls != 1 {
 		t.Fatalf("expected runtime start once, got %d", runtime.startCalls)
@@ -87,7 +106,7 @@ func TestClientStartCloseAndStatus(t *testing.T) {
 	}
 
 	if err := client.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(testExpectedClose, err)
 	}
 	if runtime.closeCalls != 1 {
 		t.Fatalf("expected runtime close once, got %d", runtime.closeCalls)
@@ -106,10 +125,10 @@ func TestManagedRuntimePersistsSelectedNodeAndStatus(t *testing.T) {
 		DeviceID: "device-123",
 		Token:    "token-123",
 		Certificate: storage.Certificate{
-			PrivateKey:        "private-key-123",
-			ClientCertificate: "client-cert-123",
-			PeerPublicKey:     "peer-public-key-123",
-			ClientID:          "client-id-123",
+			PrivateKey:        testCertPrivateKey,
+			ClientCertificate: testCertClientCert,
+			PeerPublicKey:     testCertPeerPublicKey,
+			ClientID:          testCertClientID,
 		},
 	}
 	mr := &managedRuntime{
@@ -158,10 +177,10 @@ func TestManagedRuntimeFailsOverToNextEndpointOnStartFailure(t *testing.T) {
 	authState := storage.State{
 		Version: storage.CurrentVersion,
 		Certificate: storage.Certificate{
-			PrivateKey:        "private-key-123",
-			ClientCertificate: "client-cert-123",
-			PeerPublicKey:     "peer-public-key-123",
-			ClientID:          "client-id-123",
+			PrivateKey:        testCertPrivateKey,
+			ClientCertificate: testCertClientCert,
+			PeerPublicKey:     testCertPeerPublicKey,
+			ClientID:          testCertClientID,
 		},
 	}
 
@@ -278,10 +297,10 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 	authState := storage.State{
 		Version: storage.CurrentVersion,
 		Certificate: storage.Certificate{
-			PrivateKey:        "private-key-123",
-			ClientCertificate: "client-cert-123",
-			PeerPublicKey:     "peer-public-key-123",
-			ClientID:          "client-id-123",
+			PrivateKey:        testCertPrivateKey,
+			ClientCertificate: testCertClientCert,
+			PeerPublicKey:     testCertPeerPublicKey,
+			ClientID:          testCertClientID,
 		},
 	}
 
@@ -334,7 +353,7 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 	mr.handleFailureEvent(failure.Event{
 		Component: failure.ComponentSession,
 		Endpoint:  testkit.WarpIPv4Primary443,
-		Err:       errors.New("ensure connect-ip ready: protocol mismatch"),
+		Err:       errors.New(testConnectIPMismatchErr),
 	})
 
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -495,10 +514,10 @@ func TestOptionsNormalizedAndClientLifecycle(t *testing.T) {
 	}
 	client, err := NewClient(Options{HTTP: HTTPOptions{Enabled: true}})
 	if err != nil {
-		t.Fatalf("expected client creation success, got %v", err)
+		t.Fatalf(testExpectedClientCreate, err)
 	}
 	if err := client.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(testExpectedStart, err)
 	}
 	if err := client.Run(); err != nil {
 		t.Fatalf("expected run success, got %v", err)
@@ -510,7 +529,7 @@ func TestOptionsNormalizedAndClientLifecycle(t *testing.T) {
 		t.Fatal("expected running status")
 	}
 	if err := client.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(testExpectedClose, err)
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("expected double close success, got %v", err)
@@ -531,7 +550,7 @@ func TestClientErrorsAndNoopRuntime(t *testing.T) {
 	buildSDKRuntime = func(Options) (sdkRuntime, error) { return stub, nil }
 	client, err := NewClient(Options{HTTP: HTTPOptions{Enabled: true}})
 	if err != nil {
-		t.Fatalf("expected client creation success, got %v", err)
+		t.Fatalf(testExpectedClientCreate, err)
 	}
 	if err := client.Start(context.Background()); err == nil {
 		t.Fatal("expected start error")
@@ -592,7 +611,7 @@ func TestManagedRuntimeMethodBranches(t *testing.T) {
 	}
 	stub := &extraSDKRuntime{status: Status{Running: true, ListenAddress: "127.0.0.1:8000"}}
 	mr.runtime = stub
-	mr.endpoint = "endpoint-1"
+	mr.endpoint = testCurrentEndpoint
 	mr.registered = true
 	mr.refreshStatusLocked(stub)
 	if err := mr.HealthCheck(context.Background()); err != nil {
@@ -601,19 +620,19 @@ func TestManagedRuntimeMethodBranches(t *testing.T) {
 	if got := mr.ListenAddress(); got != "127.0.0.1:8000" {
 		t.Fatalf("unexpected listen address: %q", got)
 	}
-	if status := mr.Status(); !status.Running || status.Endpoint != "endpoint-1" {
+	if status := mr.Status(); !status.Running || status.Endpoint != testCurrentEndpoint {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 }
 
 func TestManagedRuntimeFailurePublishingBranches(t *testing.T) {
 	seen := make(chan failure.Event, 1)
-	mr := &managedRuntime{endpoint: "endpoint-1", failureBus: failure.NewBus(1, func(event failure.Event) { seen <- event })}
+	mr := &managedRuntime{endpoint: testCurrentEndpoint, failureBus: failure.NewBus(1, func(event failure.Event) { seen <- event })}
 	defer mr.failureBus.Close()
 	mr.publishFailure(failure.Event{Err: errors.New("boom")})
 	select {
 	case event := <-seen:
-		if event.Endpoint != "endpoint-1" {
+		if event.Endpoint != testCurrentEndpoint {
 			t.Fatalf("expected default endpoint injection, got %+v", event)
 		}
 	case <-time.After(200 * time.Millisecond):
@@ -631,10 +650,10 @@ func TestManagedRuntimeFailurePublishingBranches(t *testing.T) {
 }
 
 func TestRuntimeAdapterAndBuildRuntimeProxyOnly(t *testing.T) {
-	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: "127.0.0.1:0", state: "idle"})
+	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: testkit.LocalListenZero, state: "idle"})
 	clientRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{HTTP: httpRuntime})
 	if err != nil {
-		t.Fatalf("expected client runtime success, got %v", err)
+		t.Fatalf(testExpectedClientRuntime, err)
 	}
 	adapter := &runtimeAdapter{runtime: clientRT}
 	if err := adapter.HealthCheck(context.Background()); err != nil {
@@ -643,8 +662,8 @@ func TestRuntimeAdapterAndBuildRuntimeProxyOnly(t *testing.T) {
 	_ = adapter.ListenAddress()
 	_ = adapter.Status()
 
-	mr := &managedRuntime{opts: Options{Listen: ListenOptions{Address: "127.0.0.1:0"}, HTTP: HTTPOptions{Enabled: true}, SOCKS5: SOCKS5Options{Enabled: true}}}
-	rt, err := mr.buildRuntime("162.159.198.2:500", storage.DefaultState())
+	mr := &managedRuntime{opts: Options{Listen: ListenOptions{Address: testkit.LocalListenZero}, HTTP: HTTPOptions{Enabled: true}, SOCKS5: SOCKS5Options{Enabled: true}}}
+	rt, err := mr.buildRuntime(testkit.WarpIPv4Alt500, storage.DefaultState())
 	if err != nil {
 		t.Fatalf("expected buildRuntime success, got %v", err)
 	}
@@ -654,10 +673,10 @@ func TestRuntimeAdapterAndBuildRuntimeProxyOnly(t *testing.T) {
 }
 
 func TestRuntimeAdapterAndManagedRuntimeRunBranches(t *testing.T) {
-	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: "127.0.0.1:0", state: "idle"})
+	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: testkit.LocalListenZero, state: "idle"})
 	clientRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{HTTP: httpRuntime})
 	if err != nil {
-		t.Fatalf("expected client runtime success, got %v", err)
+		t.Fatalf(testExpectedClientRuntime, err)
 	}
 	adapter := &runtimeAdapter{runtime: clientRT}
 	runDone := make(chan error, 1)
@@ -694,7 +713,7 @@ func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 		Mode:           internalconfig.ModeHTTP,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected current http manager success, got %v", err)
@@ -706,31 +725,31 @@ func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 		Mode:           internalconfig.ModeSOCKS,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected current socks manager success, got %v", err)
 	}
 	nextHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       "next-endpoint",
+		Endpoint:       testNextEndpoint,
 		SNI:            internalconfig.DefaultSNI,
 		MTU:            internalconfig.DefaultMTU,
 		Mode:           internalconfig.ModeHTTP,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected next http manager success, got %v", err)
 	}
 	nextSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       "next-endpoint",
+		Endpoint:       testNextEndpoint,
 		SNI:            internalconfig.DefaultSNI,
 		MTU:            internalconfig.DefaultMTU,
 		Mode:           internalconfig.ModeSOCKS,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected next socks manager success, got %v", err)
@@ -753,16 +772,16 @@ func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 		opts:      Options{},
 		store:     store,
 		endpoint:  "current-endpoint",
-		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "current-endpoint"}, {Address: "next-endpoint"}}},
+		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "current-endpoint"}, {Address: testNextEndpoint}}},
 	}
-	ok := mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, "next-endpoint", storage.DefaultState(), mr.selection, 1, errors.New("boom"))
+	ok := mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom"))
 	if !ok {
 		t.Fatal("expected hot swap runtime success")
 	}
-	if mr.endpoint != "next-endpoint" {
+	if mr.endpoint != testNextEndpoint {
 		t.Fatalf("expected endpoint updated, got %q", mr.endpoint)
 	}
-	if got := store.saved[len(store.saved)-1].SelectedNode; got != "next-endpoint" {
+	if got := store.saved[len(store.saved)-1].SelectedNode; got != testNextEndpoint {
 		t.Fatalf("expected saved selected node updated, got %q", got)
 	}
 }
@@ -782,7 +801,7 @@ func TestManagedRuntimeTryHotSwapRuntimeFailureBranches(t *testing.T) {
 		Mode:           internalconfig.ModeHTTP,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected current http manager success, got %v", err)
@@ -794,31 +813,31 @@ func TestManagedRuntimeTryHotSwapRuntimeFailureBranches(t *testing.T) {
 		Mode:           internalconfig.ModeSOCKS,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected current socks manager success, got %v", err)
 	}
 	nextHTTP, err := internalruntime.NewHTTPManager(internalconfig.KernelConfig{
-		Endpoint:       "next-endpoint",
+		Endpoint:       testNextEndpoint,
 		SNI:            internalconfig.DefaultSNI,
 		MTU:            internalconfig.DefaultMTU,
 		Mode:           internalconfig.ModeHTTP,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		HTTP:           internalconfig.HTTPConfig{ListenAddress: "127.0.0.1:0"},
+		HTTP:           internalconfig.HTTPConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected next http manager success, got %v", err)
 	}
 	nextSOCKS, err := internalruntime.NewSOCKS5Manager(&internalconfig.KernelConfig{
-		Endpoint:       "next-endpoint",
+		Endpoint:       testNextEndpoint,
 		SNI:            internalconfig.DefaultSNI,
 		MTU:            internalconfig.DefaultMTU,
 		Mode:           internalconfig.ModeSOCKS,
 		ConnectTimeout: internalconfig.DefaultConnectTimeout,
 		Keepalive:      internalconfig.DefaultKeepalive,
-		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: "127.0.0.1:0"},
+		SOCKS:          internalconfig.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
 	})
 	if err != nil {
 		t.Fatalf("expected next socks manager success, got %v", err)
@@ -837,7 +856,7 @@ func TestManagedRuntimeTryHotSwapRuntimeFailureBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected next client runtime success, got %v", err)
 	}
-	if mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, "next-endpoint", storage.DefaultState(), endpointSelection{}, 0, errors.New("boom")) {
+	if mr.tryHotSwapRuntime(&runtimeAdapter{runtime: currentRT}, &runtimeAdapter{runtime: nextRT}, testNextEndpoint, storage.DefaultState(), endpointSelection{}, 0, errors.New("boom")) {
 		t.Fatal("expected hot swap to fail when save fails")
 	}
 }
@@ -890,28 +909,28 @@ func TestManagedRuntimeBuildRuntimeAdditionalModesAndFailureHandlerNoops(t *test
 	}
 	state.Interface = storage.InterfaceAddresses{V4: "1.1.1.1", V6: "::1"}
 
-	socksOnly := &managedRuntime{opts: Options{Listen: ListenOptions{Address: "127.0.0.1:0"}, SOCKS5: SOCKS5Options{Enabled: true}}}
-	if rt, err := socksOnly.buildRuntime("162.159.198.2:500", state); err != nil || rt == nil {
+	socksOnly := &managedRuntime{opts: Options{Listen: ListenOptions{Address: testkit.LocalListenZero}, SOCKS5: SOCKS5Options{Enabled: true}}}
+	if rt, err := socksOnly.buildRuntime(testkit.WarpIPv4Alt500, state); err != nil || rt == nil {
 		t.Fatalf("expected socks-only runtime build success, got rt=%v err=%v", rt, err)
 	}
 
 	tunOnly := &managedRuntime{opts: Options{TUN: TUNOptions{Enabled: true}}}
-	if rt, err := tunOnly.buildRuntime("162.159.198.2:500", state); err != nil || rt == nil {
+	if rt, err := tunOnly.buildRuntime(testkit.WarpIPv4Alt500, state); err != nil || rt == nil {
 		t.Fatalf("expected tun-only runtime build success, got rt=%v err=%v", rt, err)
 	}
 
 	mr := &managedRuntime{
-		endpoint:  "endpoint-1",
+		endpoint:  testCurrentEndpoint,
 		status:    Status{Running: true},
-		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "endpoint-1"}}},
+		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: testCurrentEndpoint}}},
 	}
-	mr.handleFailureEvent(failure.Event{Endpoint: "endpoint-1", Err: errors.New("plain transport error")})
+	mr.handleFailureEvent(failure.Event{Endpoint: testCurrentEndpoint, Err: errors.New("plain transport error")})
 	mr.switching = true
-	mr.handleFailureEvent(failure.Event{Endpoint: "endpoint-1", Err: errors.New("ensure connect-ip ready: protocol mismatch")})
+	mr.handleFailureEvent(failure.Event{Endpoint: testCurrentEndpoint, Err: errors.New(testConnectIPMismatchErr)})
 	mr.switching = false
-	mr.handleFailureEvent(failure.Event{Endpoint: "other-endpoint", Err: errors.New("ensure connect-ip ready: protocol mismatch")})
+	mr.handleFailureEvent(failure.Event{Endpoint: "other-endpoint", Err: errors.New(testConnectIPMismatchErr)})
 	mr.status.Running = false
-	mr.handleFailureEvent(failure.Event{Endpoint: "endpoint-1", Err: errors.New("ensure connect-ip ready: protocol mismatch")})
+	mr.handleFailureEvent(failure.Event{Endpoint: testCurrentEndpoint, Err: errors.New(testConnectIPMismatchErr)})
 }
 
 func TestLoggingHelperBranchesAndSelectionDiagnostics(t *testing.T) {
@@ -949,17 +968,17 @@ func TestLoggingHelperBranchesAndSelectionDiagnostics(t *testing.T) {
 		t.Fatal("expected nil observer for nil logger")
 	}
 	obs := observer.(*loggingProbeObserver)
-	obs.OnProbeStart(discovery.Candidate{Address: "candidate", Source: discovery.SourceFixed}, 1, 1)
-	obs.OnProbeDone(discovery.Candidate{Address: "candidate", Source: discovery.SourceFixed}, discovery.ProbeResult{Available: false, Reason: "down"}, time.Millisecond, 1, 1)
-	obs.OnWarpCheckStart(discovery.Candidate{Address: "candidate", Source: discovery.SourceFixed})
-	obs.OnWarpCheckDone(discovery.Candidate{Address: "candidate", Source: discovery.SourceFixed}, false, nil, time.Millisecond)
+	obs.OnProbeStart(discovery.Candidate{Address: testCandidateAddress, Source: discovery.SourceFixed}, 1, 1)
+	obs.OnProbeDone(discovery.Candidate{Address: testCandidateAddress, Source: discovery.SourceFixed}, discovery.ProbeResult{Available: false, Reason: "down"}, time.Millisecond, 1, 1)
+	obs.OnWarpCheckStart(discovery.Candidate{Address: testCandidateAddress, Source: discovery.SourceFixed})
+	obs.OnWarpCheckDone(discovery.Candidate{Address: testCandidateAddress, Source: discovery.SourceFixed}, false, nil, time.Millisecond)
 
 	checkerBase := discovery.WarpStatusFunc(func(context.Context, discovery.Candidate) (bool, error) { return false, errors.New("boom") })
 	checker := newLoggingWarpStatusChecker(logger, checkerBase)
 	if checker == nil {
 		t.Fatal("expected logging warp checker")
 	}
-	if _, err := checker.CheckWarp(context.Background(), discovery.Candidate{Address: "candidate", Source: discovery.SourceFixed}); err == nil {
+	if _, err := checker.CheckWarp(context.Background(), discovery.Candidate{Address: testCandidateAddress, Source: discovery.SourceFixed}); err == nil {
 		t.Fatal("expected wrapped checker error")
 	}
 	if newLoggingWarpStatusChecker(nil, checkerBase) == nil {
@@ -968,10 +987,10 @@ func TestLoggingHelperBranchesAndSelectionDiagnostics(t *testing.T) {
 }
 
 func TestRuntimeAdapterLifecycleMethods(t *testing.T) {
-	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: "127.0.0.1:0", state: "idle"})
+	httpRuntime := internalruntime.NewHTTPRuntime(localHTTPStarter{listenAddress: testkit.LocalListenZero, state: "idle"})
 	clientRT, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{HTTP: httpRuntime})
 	if err != nil {
-		t.Fatalf("expected client runtime success, got %v", err)
+		t.Fatalf(testExpectedClientRuntime, err)
 	}
 	adapter := &runtimeAdapter{runtime: clientRT}
 	if err := adapter.Start(context.Background()); err != nil {
@@ -1016,7 +1035,7 @@ func (s *failingStateStore) Save(storage.State) error     { return s.err }
 func TestSDKLayoutRemovesMigratedTopLevelDirs(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	for _, name := range []string{"cloudflare", "observe", "session"} {
@@ -1052,7 +1071,7 @@ func TestSDKLayoutRemovesMigratedTopLevelDirs(t *testing.T) {
 func TestSDKLayoutStopsUsingTopLevelSessionInProductionPaths(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	for _, rel := range []string{
@@ -1061,7 +1080,7 @@ func TestSDKLayoutStopsUsingTopLevelSessionInProductionPaths(t *testing.T) {
 	} {
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+			t.Fatalf(testReadFileError, rel, err)
 		}
 		if strings.Contains(string(data), `"github.com/skye-z/amz/session"`) {
 			t.Fatalf("expected %s to stop importing top-level session package", rel)
@@ -1072,7 +1091,7 @@ func TestSDKLayoutStopsUsingTopLevelSessionInProductionPaths(t *testing.T) {
 func TestInternalManagersStopUsingTypesSanitizers(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	for _, rel := range []string{
@@ -1082,7 +1101,7 @@ func TestInternalManagersStopUsingTypesSanitizers(t *testing.T) {
 	} {
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+			t.Fatalf(testReadFileError, rel, err)
 		}
 		text := string(data)
 		if strings.Contains(text, "types.SanitizeText") || strings.Contains(text, "types.SanitizeError") {
@@ -1094,7 +1113,7 @@ func TestInternalManagersStopUsingTypesSanitizers(t *testing.T) {
 func TestInternalSessionCloudflareStopsUsingTopLevelTypes(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	data, err := os.ReadFile(filepath.Join(root, "internal", "session", "cloudflare.go"))
@@ -1109,7 +1128,7 @@ func TestInternalSessionCloudflareStopsUsingTopLevelTypes(t *testing.T) {
 func TestConfigStopsUsingTopLevelTypes(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	data, err := os.ReadFile(filepath.Join(root, "internal", "config", "config.go"))
@@ -1124,7 +1143,7 @@ func TestConfigStopsUsingTopLevelTypes(t *testing.T) {
 func TestProductionCodeStopsUsingTopLevelConfigPackage(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("expected caller info")
+		t.Fatal(testExpectedCallerInfo)
 	}
 	root := filepath.Dir(file)
 	for _, rel := range []string{
@@ -1143,7 +1162,7 @@ func TestProductionCodeStopsUsingTopLevelConfigPackage(t *testing.T) {
 	} {
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+			t.Fatalf(testReadFileError, rel, err)
 		}
 		text := string(data)
 		if strings.Contains(text, `"github.com/skye-z/amz/config"`) {
@@ -1165,10 +1184,10 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 		DeviceID: "device-123",
 		Token:    "token-123",
 		Certificate: storage.Certificate{
-			PrivateKey:        "private-key-123",
-			ClientCertificate: "client-cert-123",
-			PeerPublicKey:     "peer-public-key-123",
-			ClientID:          "client-id-123",
+			PrivateKey:        testCertPrivateKey,
+			ClientCertificate: testCertClientCert,
+			PeerPublicKey:     testCertPeerPublicKey,
+			ClientID:          testCertClientID,
 		},
 		NodeCache: []storage.Node{
 			{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443},
@@ -1200,10 +1219,10 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 	}
 
 	if err := mr.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(testExpectedStart, err)
 	}
 	if err := mr.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(testExpectedClose, err)
 	}
 
 	output := logger.String()
@@ -1212,7 +1231,7 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 	for _, want := range []string{
 		"[START]",
 		"[REGISTER]",
-		"[SELECT]",
+		testSelectLogAction,
 		"[STATE]",
 		"[BUILD]",
 		"[CONNECT]",
@@ -1241,7 +1260,7 @@ func TestLogEventUsesReadableActionFormat(t *testing.T) {
 	output := logger.String()
 	expectedEndpoint := fmt.Sprintf("endpoint=%q", testkit.WarpIPv4Alt443)
 	for _, want := range []string{
-		"[SELECT]",
+		testSelectLogAction,
 		"selected endpoint",
 		expectedEndpoint,
 		"source=\"fixed\"",
@@ -1326,7 +1345,7 @@ func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
 
 	output := logger.String()
 	for _, want := range []string{
-		"[SELECT]",
+		testSelectLogAction,
 		"probing candidate",
 		"probe finished",
 		"candidate=\"" + testkit.WarpIPv4Alt443 + "\"",
@@ -1360,7 +1379,7 @@ func TestLoggingWarpStatusCheckerEmitsDiagnostics(t *testing.T) {
 
 	output := logger.String()
 	for _, want := range []string{
-		"[SELECT]",
+		testSelectLogAction,
 		"checking warp availability",
 		"warp availability confirmed",
 		"candidate=\"" + testkit.WarpIPv4Alt443 + "\"",
@@ -1419,10 +1438,10 @@ func TestTUNCandidateCheckerRequiresConnectIPReady(t *testing.T) {
 
 	state := storage.State{
 		Certificate: storage.Certificate{
-			PrivateKey:        "private-key-123",
-			ClientCertificate: "client-cert-123",
-			PeerPublicKey:     "peer-public-key-123",
-			ClientID:          "client-id-123",
+			PrivateKey:        testCertPrivateKey,
+			ClientCertificate: testCertClientCert,
+			PeerPublicKey:     testCertPeerPublicKey,
+			ClientID:          testCertClientID,
 		},
 		Interface: storage.InterfaceAddresses{
 			V4: testkit.TunIPv4Addr,

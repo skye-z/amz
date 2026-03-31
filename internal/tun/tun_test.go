@@ -13,6 +13,19 @@ import (
 	"github.com/skye-z/amz/internal/tun"
 )
 
+const (
+	testTUNDeviceName             = "amz0"
+	testTUNPlatformLinux          = "linux"
+	testTUNMutatedValue           = "mutated"
+	testTUNPlaceholderProvider    = "provider"
+	testTUNPlaceholderAdapter     = "adapter"
+	testTUNConfigureRoutesReason  = "configure tun routes"
+	testTUNCreateDeviceOperation  = "create-device"
+	testTUNApplyRoutesStage       = "apply-routes"
+	testTUNRestoreRoutesSnapshot  = "restore previous routes snapshot"
+	testTUNClosePlaceholderDevice = "close placeholder device handle"
+)
+
 type fakePlatformProvider struct {
 	platform string
 	delegate *tun.FakeProvider
@@ -21,7 +34,7 @@ type fakePlatformProvider struct {
 func (p *fakePlatformProvider) Platform() string { return p.platform }
 func (p *fakePlatformProvider) IsFake() bool     { return true }
 func (p *fakePlatformProvider) PlaceholderError() error {
-	return &tun.PlaceholderError{Platform: p.platform, Component: "provider"}
+	return &tun.PlaceholderError{Platform: p.platform, Component: testTUNPlaceholderProvider}
 }
 func (p *fakePlatformProvider) Open(ctx context.Context, cfg tun.DeviceConfig) (tun.Device, error) {
 	return p.delegate.Open(ctx, cfg)
@@ -138,7 +151,7 @@ func TestSelectProviderByPlatform(t *testing.T) {
 		wantName string
 		wantFake bool
 	}{
-		{name: "linux", goos: "linux", wantName: "linux", wantFake: false},
+		{name: testTUNPlatformLinux, goos: testTUNPlatformLinux, wantName: testTUNPlatformLinux, wantFake: false},
 		{name: "darwin", goos: "darwin", wantName: "darwin", wantFake: false},
 		{name: "windows", goos: "windows", wantName: "windows", wantFake: false},
 	}
@@ -184,7 +197,7 @@ func TestNewProvider(t *testing.T) {
 	if _, err := tun.NewProviderForOS("plan9"); err == nil {
 		t.Fatal("expected unsupported platform error")
 	}
-	if got := tun.PlatformName("linux"); got != "linux" {
+	if got := tun.PlatformName(testTUNPlatformLinux); got != testTUNPlatformLinux {
 		t.Fatalf("expected linux platform name, got %q", got)
 	}
 }
@@ -194,7 +207,7 @@ func TestFakeProviderOpenDevice(t *testing.T) {
 	provider := tun.NewFakeProvider()
 
 	devValue, err := provider.Open(context.Background(), tun.DeviceConfig{
-		Name: "amz0",
+		Name: testTUNDeviceName,
 		MTU:  1400,
 	})
 	if err != nil {
@@ -207,7 +220,7 @@ func TestFakeProviderOpenDevice(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected fake device, got %T", devValue)
 	}
-	if dev.Name() != "amz0" {
+	if dev.Name() != testTUNDeviceName {
 		t.Fatalf("expected device name amz0, got %q", dev.Name())
 	}
 	if dev.MTU() != 1400 {
@@ -256,9 +269,9 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 	t.Parallel()
 
 	adapter := tun.NewSystemAdapter()
-	dev := &configurableDevice{name: "amz0", mtu: 1280}
+	dev := &configurableDevice{name: testTUNDeviceName, mtu: 1280}
 	config := tun.Config{
-		Device: tun.DeviceConfig{Name: "amz0", MTU: 1400},
+		Device: tun.DeviceConfig{Name: testTUNDeviceName, MTU: 1400},
 		Addresses: []tun.Address{
 			{CIDR: testkit.TunIPv4CIDR},
 			{CIDR: testkit.TunIPv6CIDR},
@@ -281,7 +294,7 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 	if !snapshot.ConfigApplied || !snapshot.RoutesApplied {
 		t.Fatalf("expected both apply flags true, got %+v", snapshot)
 	}
-	if snapshot.BoundDevice != "amz0" {
+	if snapshot.BoundDevice != testTUNDeviceName {
 		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
 	}
 	if len(dev.config.Addresses) != 2 {
@@ -305,7 +318,7 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 func TestFakeAdapterApplySnapshot(t *testing.T) {
 	provider := tun.NewFakeProvider()
 	dev, err := provider.Open(context.Background(), tun.DeviceConfig{
-		Name: "amz0",
+		Name: testTUNDeviceName,
 		MTU:  1280,
 	})
 	if err != nil {
@@ -314,7 +327,7 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 
 	adapter := tun.NewFakeAdapter()
 	config := tun.Config{
-		Device: tun.DeviceConfig{Name: "amz0", MTU: 1280},
+		Device: tun.DeviceConfig{Name: testTUNDeviceName, MTU: 1280},
 		Addresses: []tun.Address{
 			{CIDR: testkit.TunIPv4CIDR},
 			{CIDR: testkit.TunIPv6CIDR},
@@ -337,7 +350,7 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 	if !snapshot.ConfigApplied || !snapshot.RoutesApplied {
 		t.Fatalf("expected both apply flags true, got %+v", snapshot)
 	}
-	if snapshot.BoundDevice != "amz0" {
+	if snapshot.BoundDevice != testTUNDeviceName {
 		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
 	}
 	if len(snapshot.Config.Addresses) != 2 {
@@ -347,8 +360,8 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 		t.Fatalf("unexpected route snapshot: %+v", snapshot.Routes)
 	}
 
-	config.Addresses[0].CIDR = "mutated"
-	routes.Routes[0] = "mutated"
+	config.Addresses[0].CIDR = testTUNMutatedValue
+	routes.Routes[0] = testTUNMutatedValue
 	snapshot = adapter.Snapshot()
 	if snapshot.Config.Addresses[0].CIDR != testkit.TunIPv4CIDR {
 		t.Fatalf("expected config snapshot isolation, got %+v", snapshot.Config.Addresses)
@@ -381,12 +394,12 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 
 // 验证装配入口支持注入 provider 与 adapter，并返回绑定到同一设备的结果。
 func TestAssemblePlaceholderBinding(t *testing.T) {
-	provider := &fakePlatformProvider{platform: "linux", delegate: tun.NewFakeProvider()}
+	provider := &fakePlatformProvider{platform: testTUNPlatformLinux, delegate: tun.NewFakeProvider()}
 	adapter := tun.NewFakeAdapter()
 	assembled, err := tun.Assemble(tun.AssembleOptions{
-		Platform: "linux",
+		Platform: testTUNPlatformLinux,
 		Device: tun.DeviceConfig{
-			Name: "amz0",
+			Name: testTUNDeviceName,
 			MTU:  1400,
 		},
 		Provider: provider,
@@ -395,7 +408,7 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected assemble success, got %v", err)
 	}
-	if assembled.Platform != "linux" {
+	if assembled.Platform != testTUNPlatformLinux {
 		t.Fatalf("expected platform linux, got %q", assembled.Platform)
 	}
 	if assembled.Provider == nil || !assembled.Provider.IsFake() {
@@ -404,18 +417,18 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 	if assembled.Device == nil {
 		t.Fatal("expected assembled device")
 	}
-	if assembled.Device.Name() != "amz0" {
+	if assembled.Device.Name() != testTUNDeviceName {
 		t.Fatalf("expected device name amz0, got %q", assembled.Device.Name())
 	}
 
 	snapshot := assembled.Adapter.Snapshot()
-	if snapshot.BoundDevice != "amz0" {
+	if snapshot.BoundDevice != testTUNDeviceName {
 		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
 	}
 	if !snapshot.ConfigApplied {
 		t.Fatalf("expected config applied snapshot, got %+v", snapshot)
 	}
-	if snapshot.Config.Device.Name != "amz0" || snapshot.Config.Device.MTU != 1400 {
+	if snapshot.Config.Device.Name != testTUNDeviceName || snapshot.Config.Device.MTU != 1400 {
 		t.Fatalf("unexpected config snapshot: %+v", snapshot.Config)
 	}
 
@@ -435,7 +448,7 @@ func TestAssembleValidation(t *testing.T) {
 	if _, err := tun.Assemble(tun.AssembleOptions{
 		Platform: "plan9",
 		Device: tun.DeviceConfig{
-			Name: "amz0",
+			Name: testTUNDeviceName,
 			MTU:  1400,
 		},
 	}); err == nil {
@@ -444,7 +457,7 @@ func TestAssembleValidation(t *testing.T) {
 
 	assembled, err := tun.Assemble(tun.AssembleOptions{
 		Device: tun.DeviceConfig{
-			Name: "amz0",
+			Name: testTUNDeviceName,
 			MTU:  1400,
 		},
 		Provider: &fakePlatformProvider{platform: runtime.GOOS, delegate: tun.NewFakeProvider()},
@@ -463,7 +476,7 @@ func TestAssembleValidation(t *testing.T) {
 
 // 验证注入的占位 provider、adapter 与装配结果都会暴露明确的未实现信号。
 func TestPlaceholderSignalsNotImplemented(t *testing.T) {
-	provider := &fakePlatformProvider{platform: "linux", delegate: tun.NewFakeProvider()}
+	provider := &fakePlatformProvider{platform: testTUNPlatformLinux, delegate: tun.NewFakeProvider()}
 
 	providerErr := provider.PlaceholderError()
 	if providerErr == nil {
@@ -476,7 +489,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if !errors.As(providerErr, &typedErr) {
 		t.Fatalf("expected typed placeholder error, got %T", providerErr)
 	}
-	if typedErr.Platform != "linux" || typedErr.Component != "provider" {
+	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
 		t.Fatalf("unexpected provider placeholder error: %+v", typedErr)
 	}
 
@@ -491,14 +504,14 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if !errors.As(adapterErr, &typedErr) {
 		t.Fatalf("expected typed adapter placeholder error, got %T", adapterErr)
 	}
-	if typedErr.Platform != runtime.GOOS || typedErr.Component != "adapter" {
+	if typedErr.Platform != runtime.GOOS || typedErr.Component != testTUNPlaceholderAdapter {
 		t.Fatalf("unexpected adapter placeholder error: %+v", typedErr)
 	}
 
 	assembled, err := tun.Assemble(tun.AssembleOptions{
-		Platform: "linux",
+		Platform: testTUNPlatformLinux,
 		Device: tun.DeviceConfig{
-			Name: "amz0",
+			Name: testTUNDeviceName,
 			MTU:  1400,
 		},
 		Provider: provider,
@@ -517,7 +530,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	if !errors.As(assemblyErr, &typedErr) {
 		t.Fatalf("expected typed assembly placeholder error, got %T", assemblyErr)
 	}
-	if typedErr.Platform != "linux" || typedErr.Component != "provider" {
+	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
 		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
 	}
 	if err := assembled.Close(); err != nil {
@@ -528,7 +541,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 // 验证最小平台无关模型会拒绝缺失关键字段的输入。
 func TestValidatePlatformNeutralModels(t *testing.T) {
 	validConfig := tun.Config{
-		Device: tun.DeviceConfig{Name: "amz0", MTU: 1280},
+		Device: tun.DeviceConfig{Name: testTUNDeviceName, MTU: 1280},
 		Addresses: []tun.Address{
 			{CIDR: testkit.TunIPv4CIDR},
 		},
@@ -570,8 +583,8 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 	plan := tun.ProtectionPlan{
 		Requirement: tun.PrivilegeRequirement{
 			Level:      tun.PrivilegeLevelElevated,
-			Reason:     "configure tun routes",
-			Operations: []string{"create-device", "apply-routes"},
+			Reason:     testTUNConfigureRoutesReason,
+			Operations: []string{testTUNCreateDeviceOperation, testTUNApplyRoutesStage},
 		},
 		Warnings: []tun.SecurityWarning{
 			{
@@ -583,7 +596,7 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 		Rollback: []tun.RollbackStep{
 			{
 				Stage:  "routes",
-				Action: "restore previous routes snapshot",
+				Action: testTUNRestoreRoutesSnapshot,
 			},
 		},
 	}
@@ -602,21 +615,21 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 	if len(snapshot.Warnings) != 1 || snapshot.Warnings[0].Code != "route-change" {
 		t.Fatalf("unexpected warning snapshot: %+v", snapshot.Warnings)
 	}
-	if len(snapshot.Rollback) != 1 || snapshot.Rollback[0].Action != "restore previous routes snapshot" {
+	if len(snapshot.Rollback) != 1 || snapshot.Rollback[0].Action != testTUNRestoreRoutesSnapshot {
 		t.Fatalf("unexpected rollback snapshot: %+v", snapshot.Rollback)
 	}
 
 	cloned := snapshot
-	plan.Requirement.Operations[0] = "mutated"
-	plan.Warnings[0].Code = "mutated"
-	plan.Rollback[0].Action = "mutated"
-	if cloned.Requirement.Operations[0] != "create-device" {
+	plan.Requirement.Operations[0] = testTUNMutatedValue
+	plan.Warnings[0].Code = testTUNMutatedValue
+	plan.Rollback[0].Action = testTUNMutatedValue
+	if cloned.Requirement.Operations[0] != testTUNCreateDeviceOperation {
 		t.Fatalf("expected requirement isolation, got %+v", cloned.Requirement.Operations)
 	}
 	if cloned.Warnings[0].Code != "route-change" {
 		t.Fatalf("expected warning isolation, got %+v", cloned.Warnings)
 	}
-	if cloned.Rollback[0].Action != "restore previous routes snapshot" {
+	if cloned.Rollback[0].Action != testTUNRestoreRoutesSnapshot {
 		t.Fatalf("expected rollback isolation, got %+v", cloned.Rollback)
 	}
 }
@@ -628,8 +641,8 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	recovery := tun.NewFailureRecovery(tun.ProtectionPlan{
 		Requirement: tun.PrivilegeRequirement{
 			Level:      tun.PrivilegeLevelElevated,
-			Reason:     "configure tun routes",
-			Operations: []string{"create-device", "apply-routes"},
+			Reason:     testTUNConfigureRoutesReason,
+			Operations: []string{testTUNCreateDeviceOperation, testTUNApplyRoutesStage},
 		},
 		Warnings: []tun.SecurityWarning{
 			{
@@ -641,23 +654,23 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 		Rollback: []tun.RollbackStep{
 			{
 				Stage:  "device",
-				Action: "close placeholder device handle",
+				Action: testTUNClosePlaceholderDevice,
 			},
 			{
 				Stage:  "routes",
-				Action: "restore previous routes snapshot",
+				Action: testTUNRestoreRoutesSnapshot,
 			},
 		},
 	})
 
 	result, err := recovery.Recover(tun.FailureEvent{
-		Stage: "apply-routes",
+		Stage: testTUNApplyRoutesStage,
 		Err:   context.DeadlineExceeded,
 	})
 	if err != nil {
 		t.Fatalf("expected recover success, got %v", err)
 	}
-	if result.Stage != "apply-routes" {
+	if result.Stage != testTUNApplyRoutesStage {
 		t.Fatalf("expected stage apply-routes, got %q", result.Stage)
 	}
 	if result.Cause != context.DeadlineExceeded.Error() {
@@ -676,13 +689,13 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 		t.Fatal("expected non-empty user hint")
 	}
 
-	result.Rollback[0].Action = "mutated"
-	result.Warnings[0].Code = "mutated"
-	second, err := recovery.Recover(tun.FailureEvent{Stage: "apply-routes", Err: context.Canceled})
+	result.Rollback[0].Action = testTUNMutatedValue
+	result.Warnings[0].Code = testTUNMutatedValue
+	second, err := recovery.Recover(tun.FailureEvent{Stage: testTUNApplyRoutesStage, Err: context.Canceled})
 	if err != nil {
 		t.Fatalf("expected second recover success, got %v", err)
 	}
-	if second.Rollback[0].Action != "close placeholder device handle" {
+	if second.Rollback[0].Action != testTUNClosePlaceholderDevice {
 		t.Fatalf("expected rollback isolation, got %+v", second.Rollback)
 	}
 	if second.Warnings[0].Code != "admin-needed" {

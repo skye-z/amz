@@ -15,29 +15,47 @@ import (
 	"github.com/skye-z/amz/internal/testkit"
 )
 
+const (
+	testAuthDeviceID             = "device-123"
+	testAuthAccountID            = "account-123"
+	testAuthTokenRegister        = "token-register"
+	testAuthTokenEnrolled        = "token-enrolled"
+	testAuthAccountTypePlus      = "plus"
+	testAuthAccountStateRegister = "registered"
+	testAuthClientID             = "client-id-123"
+	testAuthPeerPublicKey        = "peer-public-key-123"
+	testAuthRegisterDeviceID     = "dev-1"
+	testAuthRegisterToken        = "tok-1"
+	testAuthEnrollToken          = "tok-2"
+	testAuthIPv4Addr             = "1.1.1.1"
+	testAuthIPv6Addr             = "::1"
+	testAuthHost                 = "host"
+	testDevicePrivateKeyBase64   = "MHcCAQEEIP2wC9ZwTe74MkRUYw35vj0IadB1iKsFcfoTmyaKOAqvoAoGCCqGSM49AwEHoUQDQgAEiKxuxMxDPZWS9Vyuk3F7S3w7Dnk3a1JpN96CB2A+qsSVqS+8CA0nVddOZXS6jttuPAHyBs+K6TfGsDz3jACzmw=="
+)
+
 func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 	store := &stubStateStore{loadErr: os.ErrNotExist}
 	client := &stubAuthClient{
 		registerResponse: Response{
-			ID:    "device-123",
-			Token: "token-register",
+			ID:    testAuthDeviceID,
+			Token: testAuthTokenRegister,
 			Account: ResponseAccount{
-				ID:   "account-123",
+				ID:   testAuthAccountID,
 				Type: "free",
 			},
 		},
 		enrollResponse: Response{
-			ID:    "device-123",
-			Token: "token-enrolled",
+			ID:    testAuthDeviceID,
+			Token: testAuthTokenEnrolled,
 			Account: ResponseAccount{
-				ID:      "account-123",
-				Type:    "plus",
+				ID:      testAuthAccountID,
+				Type:    testAuthAccountTypePlus,
 				License: "license-123",
 			},
 			Config: ResponseConfig{
-				ClientID: "client-id-123",
+				ClientID: testAuthClientID,
 				Peers: []ResponsePeer{{
-					PublicKey: "peer-public-key-123",
+					PublicKey: testAuthPeerPublicKey,
 					Endpoint: ResponseEndpoint{
 						ResponseEndpointObject: ResponseEndpointObject{
 							Host:  testkit.WarpHostPrimary,
@@ -75,10 +93,10 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 	if client.enrollCalls != 1 {
 		t.Fatalf("expected one enroll call, got %d", client.enrollCalls)
 	}
-	if result.State.DeviceID != "device-123" {
+	if result.State.DeviceID != testAuthDeviceID {
 		t.Fatalf("expected device id in result, got %q", result.State.DeviceID)
 	}
-	if result.State.Token != "token-enrolled" {
+	if result.State.Token != testAuthTokenEnrolled {
 		t.Fatalf("expected final token in result, got %q", result.State.Token)
 	}
 	if result.State.Certificate.PrivateKey != testDevicePrivateKeyBase64 {
@@ -87,16 +105,16 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 	if result.State.Certificate.ClientCertificate == "" {
 		t.Fatal("expected generated client certificate")
 	}
-	if result.State.Certificate.PeerPublicKey != "peer-public-key-123" {
+	if result.State.Certificate.PeerPublicKey != testAuthPeerPublicKey {
 		t.Fatalf("expected peer public key, got %q", result.State.Certificate.PeerPublicKey)
 	}
-	if result.State.Certificate.ClientID != "client-id-123" {
+	if result.State.Certificate.ClientID != testAuthClientID {
 		t.Fatalf("expected client id, got %q", result.State.Certificate.ClientID)
 	}
-	if result.State.Account.State != "registered" {
+	if result.State.Account.State != testAuthAccountStateRegister {
 		t.Fatalf("expected registered state, got %q", result.State.Account.State)
 	}
-	if result.State.Account.AccountType != "plus" {
+	if result.State.Account.AccountType != testAuthAccountTypePlus {
 		t.Fatalf("expected plus account type, got %q", result.State.Account.AccountType)
 	}
 	if len(result.State.NodeCache) != 1 {
@@ -105,10 +123,10 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 	if result.State.SelectedNode != result.State.NodeCache[0].ID {
 		t.Fatalf("expected selected node to default to first node, got %q", result.State.SelectedNode)
 	}
-	if store.saved.DeviceID != "device-123" {
+	if store.saved.DeviceID != testAuthDeviceID {
 		t.Fatalf("expected saved device id, got %q", store.saved.DeviceID)
 	}
-	if store.saved.Token != "token-enrolled" {
+	if store.saved.Token != testAuthTokenEnrolled {
 		t.Fatalf("expected saved token, got %q", store.saved.Token)
 	}
 }
@@ -116,13 +134,13 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 	store := &stubStateStore{
 		state: storage.State{
-			DeviceID: "device-123",
+			DeviceID: testAuthDeviceID,
 			Token:    "token-existing",
 			Certificate: storage.Certificate{
 				PrivateKey: testDevicePrivateKeyBase64,
 			},
 			Account: storage.AccountStatus{
-				State:       "registered",
+				State:       testAuthAccountStateRegister,
 				AccountType: "free",
 			},
 			SelectedNode: "node-keep",
@@ -138,15 +156,15 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 	}
 	client := &stubAuthClient{
 		enrollResponse: Response{
-			ID:    "device-123",
+			ID:    testAuthDeviceID,
 			Token: "token-refreshed",
 			Account: ResponseAccount{
-				ID:      "account-123",
-				Type:    "plus",
+				ID:      testAuthAccountID,
+				Type:    testAuthAccountTypePlus,
 				License: "license-123",
 			},
 			Config: ResponseConfig{
-				ClientID: "client-id-123",
+				ClientID: testAuthClientID,
 				Peers: []ResponsePeer{{
 					PublicKey: "peer-new",
 					Endpoint: ResponseEndpoint{
@@ -186,7 +204,7 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 	if client.enrollCalls != 1 {
 		t.Fatalf("expected one enroll call, got %d", client.enrollCalls)
 	}
-	if client.lastEnrollDeviceID != "device-123" {
+	if client.lastEnrollDeviceID != testAuthDeviceID {
 		t.Fatalf("expected reuse device id, got %q", client.lastEnrollDeviceID)
 	}
 	if client.lastEnrollToken != "token-existing" {
@@ -217,19 +235,19 @@ func TestServiceEnsureFallsBackToRegisterWhenReuseUnauthorized(t *testing.T) {
 		enrollErr: &APIError{StatusCode: 401, Message: "unauthorized"},
 		registerResponse: Response{
 			ID:    "device-new",
-			Token: "token-register",
+			Token: testAuthTokenRegister,
 			Account: ResponseAccount{
-				ID:   "account-123",
+				ID:   testAuthAccountID,
 				Type: "free",
 			},
 		},
 		enrollResponses: []Response{
 			{
 				ID:    "device-new",
-				Token: "token-enrolled",
+				Token: testAuthTokenEnrolled,
 				Account: ResponseAccount{
-					ID:      "account-123",
-					Type:    "plus",
+					ID:      testAuthAccountID,
+					Type:    testAuthAccountTypePlus,
 					License: "license-123",
 				},
 			},
@@ -275,7 +293,7 @@ func TestServiceEnsureFallsBackToRegisterWhenReuseUnauthorized(t *testing.T) {
 func TestServiceEnsureReturnsReuseErrorWhenRateLimited(t *testing.T) {
 	store := &stubStateStore{
 		state: storage.State{
-			DeviceID: "device-123",
+			DeviceID: testAuthDeviceID,
 			Token:    "token-123",
 			Certificate: storage.Certificate{
 				PrivateKey: testDevicePrivateKeyBase64,
@@ -367,16 +385,15 @@ func (s *stubAuthClient) Enroll(_ context.Context, deviceID, token string, _ Enr
 	return s.enrollResponse, nil
 }
 
-const testDevicePrivateKeyBase64 = "MHcCAQEEIP2wC9ZwTe74MkRUYw35vj0IadB1iKsFcfoTmyaKOAqvoAoGCCqGSM49AwEHoUQDQgAEiKxuxMxDPZWS9Vyuk3F7S3w7Dnk3a1JpN96CB2A+qsSVqS+8CA0nVddOZXS6jttuPAHyBs+K6TfGsDz3jACzmw=="
-
-
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 type transportFunc func(context.Context, TransportRequest) ([]byte, error)
 
-func (f transportFunc) Do(ctx context.Context, req TransportRequest) ([]byte, error) { return f(ctx, req) }
+func (f transportFunc) Do(ctx context.Context, req TransportRequest) ([]byte, error) {
+	return f(ctx, req)
+}
 
 func TestNewServiceValidatesDependencies(t *testing.T) {
 	if _, err := NewService(nil, &stubStateStore{}); !errors.Is(err, ErrClientRequired) {
@@ -399,16 +416,16 @@ func TestClientRegisterAndEnrollRequests(t *testing.T) {
 			if req.Path != "/reg" {
 				t.Fatalf("expected register path, got %q", req.Path)
 			}
-			return []byte(`{"id":"dev-1","token":"tok-1"}`), nil
+			return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthRegisterToken + `"}`), nil
 		}
 		if req.Method == http.MethodPatch {
-			if req.Path != "/reg/dev-1" {
+			if req.Path != "/reg/"+testAuthRegisterDeviceID {
 				t.Fatalf("expected enroll path, got %q", req.Path)
 			}
-			if req.BearerToken != "tok-1" {
+			if req.BearerToken != testAuthRegisterToken {
 				t.Fatalf("expected bearer token, got %q", req.BearerToken)
 			}
-			return []byte(`{"id":"dev-1","token":"tok-2"}`), nil
+			return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthEnrollToken + `"}`), nil
 		}
 		return nil, fmt.Errorf("unexpected method %s", req.Method)
 	}))
@@ -420,15 +437,15 @@ func TestClientRegisterAndEnrollRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected register success, got %v", err)
 	}
-	if registered.ID != "dev-1" || registered.Token != "tok-1" {
+	if registered.ID != testAuthRegisterDeviceID || registered.Token != testAuthRegisterToken {
 		t.Fatalf("unexpected register response: %+v", registered)
 	}
 
-	enrolled, err := client.Enroll(context.Background(), "dev-1", "tok-1", EnrollRequest{Key: "pub"})
+	enrolled, err := client.Enroll(context.Background(), testAuthRegisterDeviceID, testAuthRegisterToken, EnrollRequest{Key: "pub"})
 	if err != nil {
 		t.Fatalf("expected enroll success, got %v", err)
 	}
-	if enrolled.Token != "tok-2" {
+	if enrolled.Token != testAuthEnrollToken {
 		t.Fatalf("unexpected enroll response: %+v", enrolled)
 	}
 }
@@ -585,13 +602,13 @@ func TestModelHelpersAndBuildState(t *testing.T) {
 		t.Fatal("expected invalid private key error")
 	}
 
-	previous := storage.State{SelectedNode: "node-keep", NodeCache: []storage.Node{{ID: "node-keep", PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: "1.1.1.1"}, Services: storage.Services{HTTPProxy: "http://old"}}
-	final := Response{ID: "dev-1", Token: "tok-2", Account: ResponseAccount{Type: "plus", License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: "1.2.3.4", Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
+	previous := storage.State{SelectedNode: "node-keep", NodeCache: []storage.Node{{ID: "node-keep", PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: testAuthIPv4Addr}, Services: storage.Services{HTTPProxy: "http://old"}}
+	final := Response{ID: testAuthRegisterDeviceID, Token: testAuthEnrollToken, Account: ResponseAccount{Type: testAuthAccountTypePlus, License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: "1.2.3.4", Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
 	state, err := buildState(previous, pair.PrivateKey, "fallback-token", final)
 	if err != nil {
 		t.Fatalf("expected buildState success, got %v", err)
 	}
-	if state.Token != "tok-2" || state.Certificate.PeerPublicKey == "" || len(state.NodeCache) != 2 {
+	if state.Token != testAuthEnrollToken || state.Certificate.PeerPublicKey == "" || len(state.NodeCache) != 2 {
 		t.Fatalf("unexpected built state: %+v", state)
 	}
 	if state.SelectedNode != "node-keep" {
@@ -616,7 +633,7 @@ func TestResponseEndpointAndInterfaceUnmarshal(t *testing.T) {
 	if endpoint.PreferredAddress() != "host.example:443" {
 		t.Fatalf("unexpected preferred address: %q", endpoint.PreferredAddress())
 	}
-	if err := endpoint.UnmarshalJSON([]byte(`{"host":"api.example","v4":"1.1.1.1","ports":[443]}`)); err != nil {
+	if err := endpoint.UnmarshalJSON([]byte(`{"host":"api.example","v4":"` + testAuthIPv4Addr + `","ports":[443]}`)); err != nil {
 		t.Fatalf("expected object endpoint success, got %v", err)
 	}
 	if endpoint.PreferredAddress() != "api.example" {
@@ -626,7 +643,7 @@ func TestResponseEndpointAndInterfaceUnmarshal(t *testing.T) {
 		t.Fatal("expected unsupported endpoint payload error")
 	}
 	var iface ResponseConfigInterface
-	if err := iface.UnmarshalJSON([]byte(`{"v4":"1.1.1.1","v6":"::1"}`)); err != nil {
+	if err := iface.UnmarshalJSON([]byte(`{"v4":"` + testAuthIPv4Addr + `","v6":"` + testAuthIPv6Addr + `"}`)); err != nil {
 		t.Fatalf("expected flat interface success, got %v", err)
 	}
 	if iface.Addresses.V4 == "" || iface.Addresses.V6 == "" {
@@ -699,12 +716,12 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 		t.Fatal("expected fallback api error on empty error envelope")
 	}
 
-	endpoint := ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.1", V6: "::1", Addr: "raw"}}
-	if got := endpoint.PreferredAddress(); got != "1.1.1.1" {
+	endpoint := ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr, V6: testAuthIPv6Addr, Addr: "raw"}}
+	if got := endpoint.PreferredAddress(); got != testAuthIPv4Addr {
 		t.Fatalf("unexpected preferred address: %q", got)
 	}
-	endpoint = ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: "::1", Addr: "raw"}}
-	if got := endpoint.PreferredAddress(); got != "::1" {
+	endpoint = ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testAuthIPv6Addr, Addr: "raw"}}
+	if got := endpoint.PreferredAddress(); got != testAuthIPv6Addr {
 		t.Fatalf("unexpected preferred ipv6 address: %q", got)
 	}
 	endpoint = ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Addr: "raw"}}
@@ -712,20 +729,20 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 		t.Fatalf("unexpected preferred raw address: %q", got)
 	}
 
-	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: "host"}}}); got != "host" {
+	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost}}}); got != testAuthHost {
 		t.Fatalf("unexpected node id from host: %q", got)
 	}
-	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.1", Ports: []uint16{443}}}}); got == "" {
+	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr, Ports: []uint16{443}}}}); got == "" {
 		t.Fatal("expected node id from ipv4 endpoint")
 	}
 	if got := comparePeer(
-		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: "host", V4: "1.1.1.1", Ports: []uint16{443}}}},
+		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost, V4: testAuthIPv4Addr, Ports: []uint16{443}}}},
 		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.2"}}},
 	); got <= 0 {
 		t.Fatalf("expected richer peer to compare greater, got %d", got)
 	}
 	if got := comparePeer(
-		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.1"}}},
+		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr}}},
 		ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.2"}}},
 	); got >= 0 {
 		t.Fatalf("expected lexical compare ordering, got %d", got)
@@ -740,8 +757,8 @@ func TestAdditionalAuthModelBranches(t *testing.T) {
 		t.Fatal("expected node id from ipv6 endpoint")
 	}
 	if got := selectPeer([]ResponsePeer{
-		{PublicKey: "a", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: "1.1.1.1"}}},
-		{PublicKey: "b", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: "host", V4: "1.1.1.2", Ports: []uint16{443}}}},
+		{PublicKey: "a", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr}}},
+		{PublicKey: "b", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost, V4: "1.1.1.2", Ports: []uint16{443}}}},
 	}); got.PublicKey != "b" {
 		t.Fatalf("expected richer peer selected, got %+v", got)
 	}
@@ -761,4 +778,3 @@ func ioNopCloser(body string) *readCloser { return &readCloser{Reader: strings.N
 type readCloser struct{ *strings.Reader }
 
 func (r *readCloser) Close() error { return nil }
-

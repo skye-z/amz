@@ -15,11 +15,19 @@ import (
 	"github.com/skye-z/amz/internal/testkit"
 )
 
+const (
+	testStatePath           = "./state.json"
+	testRunListenAddress    = "127.0.0.1:19811"
+	testFailureListenAddr   = "127.0.0.1:1"
+	testIPField             = "ip"
+	testExpectedExitCodeOne = "expected exit code 1, got %d"
+)
+
 func TestBuildClientOptionsInjectsLoggerAndEndpoint(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newAMZLogger(&buf)
 
-	opts := buildClientOptions(testkit.LocalListenSDK, "./state.json", testkit.WarpIPv4Primary443, logger)
+	opts := buildClientOptions(testkit.LocalListenSDK, testStatePath, testkit.WarpIPv4Primary443, logger)
 
 	if opts.Logger == nil {
 		t.Fatal("expected logger to be injected into amz options")
@@ -36,7 +44,7 @@ func TestBuildClientOptionsCanEnableTUNOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newAMZLogger(&buf)
 
-	opts := buildClientOptionsForModes(testkit.LocalListenSDK, "./state.json", "", logger, false, false, true)
+	opts := buildClientOptionsForModes(testkit.LocalListenSDK, testStatePath, "", logger, false, false, true)
 
 	if !opts.TUN.Enabled {
 		t.Fatal("expected tun to be enabled")
@@ -85,7 +93,6 @@ func TestDefaultIPTransportDisablesConnectionReuse(t *testing.T) {
 	}
 }
 
-
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -104,7 +111,7 @@ func TestFetchIPSuccessAndHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected fetch success, got %v", err)
 	}
-	if ip != "1.2.3.4" || raw["ip"].(string) != "1.2.3.4" {
+	if ip != "1.2.3.4" || raw[testIPField].(string) != "1.2.3.4" {
 		t.Fatalf("unexpected fetch result: %s %+v", ip, raw)
 	}
 }
@@ -115,8 +122,12 @@ func TestFetchIPErrorBranches(t *testing.T) {
 		rt   http.RoundTripper
 	}{
 		{name: "request error", rt: roundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("boom") })},
-		{name: "bad json", rt: roundTripperFunc(func(*http.Request) (*http.Response, error) { return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`oops`))}, nil })},
-		{name: "missing ip", rt: roundTripperFunc(func(*http.Request) (*http.Response, error) { return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"country":"x"}`))}, nil })},
+		{name: "bad json", rt: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`oops`))}, nil
+		})},
+		{name: "missing ip", rt: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"country":"x"}`))}, nil
+		})},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -155,7 +166,7 @@ func TestPrintHelpers(t *testing.T) {
 	printInfo("info %s", "x")
 	printPass("pass %s", "x")
 	printFail("fail %s", "x")
-	printIPInfo("TAG", "1.1.1.1", map[string]any{"city": "A", "country": "B", "org": "C"})
+	printIPInfo("TAG", testkit.PublicDNSV4, map[string]any{"city": "A", "country": "B", "org": "C"})
 	stdout := oldStdout()
 	stderr := oldStderr()
 	if !strings.Contains(stdout, "Banner") || !strings.Contains(stdout, "[PASS]") || !strings.Contains(stdout, "[TAG] IP") {
@@ -200,8 +211,6 @@ func captureStderr(t *testing.T) func() string {
 	}
 }
 
-
-
 type fakeClient struct {
 	status   amz.Status
 	startErr error
@@ -231,44 +240,48 @@ func (f *fakeFactory) NewClient(amz.Options) (clientRuntime, error) {
 }
 
 func TestRunE2EReturnsFailureWhenDirectFetchFails(t *testing.T) {
-	cfg := runConfig{listen: "127.0.0.1:1", statePath: "./state.json", timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: true}
+	cfg := runConfig{listen: testFailureListenAddr, statePath: testStatePath, timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: true}
 	deps := runDeps{
-		fetchIP: func(context.Context, transportRoundTripper) (string, map[string]any, error) { return "", nil, errors.New("direct failed") },
+		fetchIP: func(context.Context, transportRoundTripper) (string, map[string]any, error) {
+			return "", nil, errors.New("direct failed")
+		},
 		newClient: (&fakeFactory{}).NewClient,
-		sleep: func(time.Duration) {},
+		sleep:     func(time.Duration) {},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+		t.Fatalf(testExpectedExitCodeOne, code)
 	}
 }
 
 func TestRunE2EReturnsFailureWhenClientCreationFails(t *testing.T) {
-	cfg := runConfig{listen: "127.0.0.1:1", statePath: "./state.json", timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: false}
+	cfg := runConfig{listen: testFailureListenAddr, statePath: testStatePath, timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: false}
 	deps := runDeps{
-		fetchIP: func(context.Context, transportRoundTripper) (string, map[string]any, error) { return "1.1.1.1", map[string]any{"ip": "1.1.1.1"}, nil },
+		fetchIP: func(context.Context, transportRoundTripper) (string, map[string]any, error) {
+			return testkit.PublicDNSV4, map[string]any{testIPField: testkit.PublicDNSV4}, nil
+		},
 		newClient: (&fakeFactory{err: errors.New("create failed")}).NewClient,
-		sleep: func(time.Duration) {},
+		sleep:     func(time.Duration) {},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+		t.Fatalf(testExpectedExitCodeOne, code)
 	}
 }
 
 func TestRunE2EReturnsSuccessWhenAllModesPass(t *testing.T) {
-	cfg := runConfig{listen: "127.0.0.1:19811", statePath: "./state.json", timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: true}
+	cfg := runConfig{listen: testRunListenAddress, statePath: testStatePath, timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: true}
 	factory := &fakeFactory{clients: []*fakeClient{
-		{status: amz.Status{Running: true, ListenAddress: "127.0.0.1:19811", Endpoint: "162.159.198.2:500", Registered: true, HTTPEnabled: true, SOCKS5Enabled: true}},
-		{status: amz.Status{Running: true, Endpoint: "162.159.198.2:500", Registered: true, TUNEnabled: true}},
+		{status: amz.Status{Running: true, ListenAddress: testRunListenAddress, Endpoint: testkit.WarpIPv4Alt500, Registered: true, HTTPEnabled: true, SOCKS5Enabled: true}},
+		{status: amz.Status{Running: true, Endpoint: testkit.WarpIPv4Alt500, Registered: true, TUNEnabled: true}},
 	}}
-	ips := []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"}
+	ips := []string{testkit.PublicDNSV4, "2.2.2.2", "3.3.3.3", "4.4.4.4"}
 	deps := runDeps{
 		fetchIP: func(_ context.Context, _ transportRoundTripper) (string, map[string]any, error) {
 			ip := ips[0]
 			ips = ips[1:]
-			return ip, map[string]any{"ip": ip}, nil
+			return ip, map[string]any{testIPField: ip}, nil
 		},
 		newClient: factory.NewClient,
-		sleep: func(time.Duration) {},
+		sleep:     func(time.Duration) {},
 	}
 	if code := runE2E(cfg, deps); code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
@@ -276,26 +289,25 @@ func TestRunE2EReturnsSuccessWhenAllModesPass(t *testing.T) {
 }
 
 func TestRunE2EReturnsFailureWhenHTTPCheckFails(t *testing.T) {
-	cfg := runConfig{listen: "127.0.0.1:19811", statePath: "./state.json", timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: false}
-	factory := &fakeFactory{clients: []*fakeClient{{status: amz.Status{Running: true, ListenAddress: "127.0.0.1:19811", Endpoint: "162.159.198.2:500", Registered: true, HTTPEnabled: true, SOCKS5Enabled: true}}}}
+	cfg := runConfig{listen: testRunListenAddress, statePath: testStatePath, timeout: time.Second, runHTTP: true, runSOCKS5: true, runTUN: false}
+	factory := &fakeFactory{clients: []*fakeClient{{status: amz.Status{Running: true, ListenAddress: testRunListenAddress, Endpoint: testkit.WarpIPv4Alt500, Registered: true, HTTPEnabled: true, SOCKS5Enabled: true}}}}
 	calls := 0
 	deps := runDeps{
 		fetchIP: func(_ context.Context, _ transportRoundTripper) (string, map[string]any, error) {
 			calls++
 			switch calls {
 			case 1:
-				return "1.1.1.1", map[string]any{"ip": "1.1.1.1"}, nil
+				return testkit.PublicDNSV4, map[string]any{testIPField: testkit.PublicDNSV4}, nil
 			case 2:
 				return "", nil, errors.New("http failed")
 			default:
-				return "3.3.3.3", map[string]any{"ip": "3.3.3.3"}, nil
+				return "3.3.3.3", map[string]any{testIPField: "3.3.3.3"}, nil
 			}
 		},
 		newClient: factory.NewClient,
-		sleep: func(time.Duration) {},
+		sleep:     func(time.Duration) {},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+		t.Fatalf(testExpectedExitCodeOne, code)
 	}
 }
-
