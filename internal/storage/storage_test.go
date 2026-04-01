@@ -31,7 +31,23 @@ func TestDefaultPathUsesAMZStateJSON(t *testing.T) {
 func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, storageStateFileName)
-	input := State{
+	input := testAMZState()
+
+	if err := Write(path, input); err != nil {
+		t.Fatalf("expected write success, got %v", err)
+	}
+
+	assertAMZStateFileShape(t, path)
+
+	output, err := Read(path)
+	if err != nil {
+		t.Fatalf("expected read success, got %v", err)
+	}
+	assertAMZStateRoundTrip(t, input, output)
+}
+
+func testAMZState() State {
+	return State{
 		DeviceID: "device-123",
 		Token:    "token-123",
 		Certificate: Certificate{
@@ -64,10 +80,10 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 			},
 		},
 	}
+}
 
-	if err := Write(path, input); err != nil {
-		t.Fatalf("expected write success, got %v", err)
-	}
+func assertAMZStateFileShape(t *testing.T, path string) {
+	t.Helper()
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -80,46 +96,36 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 	if !strings.Contains(text, "\"device_id\"") {
 		t.Fatalf("expected device id in state file, got %s", text)
 	}
+}
 
-	output, err := Read(path)
-	if err != nil {
-		t.Fatalf("expected read success, got %v", err)
-	}
+func assertAMZStateRoundTrip(t *testing.T, input, output State) {
+	t.Helper()
+
 	if output.Version != CurrentVersion {
 		t.Fatalf("expected version %q, got %q", CurrentVersion, output.Version)
 	}
-	if output.DeviceID != input.DeviceID {
-		t.Fatalf("expected device id round trip, got %q", output.DeviceID)
-	}
-	if output.Token != input.Token {
-		t.Fatalf("expected token round trip, got %q", output.Token)
-	}
-	if output.Certificate.PrivateKey != input.Certificate.PrivateKey {
-		t.Fatalf("expected private key round trip, got %q", output.Certificate.PrivateKey)
-	}
-	if output.Certificate.ClientCertificate != input.Certificate.ClientCertificate {
-		t.Fatalf("expected client certificate round trip, got %q", output.Certificate.ClientCertificate)
-	}
-	if output.Certificate.PeerPublicKey != input.Certificate.PeerPublicKey {
-		t.Fatalf("expected peer public key round trip, got %q", output.Certificate.PeerPublicKey)
-	}
-	if output.Certificate.ClientID != input.Certificate.ClientID {
-		t.Fatalf("expected client id round trip, got %q", output.Certificate.ClientID)
-	}
-	if output.Account.State != input.Account.State {
-		t.Fatalf("expected account state round trip, got %q", output.Account.State)
-	}
-	if output.Account.AccountType != input.Account.AccountType {
-		t.Fatalf("expected account type round trip, got %q", output.Account.AccountType)
-	}
-	if output.SelectedNode != input.SelectedNode {
-		t.Fatalf("expected selected node round trip, got %q", output.SelectedNode)
-	}
+	assertStringEqual(t, "device id", input.DeviceID, output.DeviceID)
+	assertStringEqual(t, "token", input.Token, output.Token)
+	assertStringEqual(t, "private key", input.Certificate.PrivateKey, output.Certificate.PrivateKey)
+	assertStringEqual(t, "client certificate", input.Certificate.ClientCertificate, output.Certificate.ClientCertificate)
+	assertStringEqual(t, "peer public key", input.Certificate.PeerPublicKey, output.Certificate.PeerPublicKey)
+	assertStringEqual(t, "client id", input.Certificate.ClientID, output.Certificate.ClientID)
+	assertStringEqual(t, "account state", input.Account.State, output.Account.State)
+	assertStringEqual(t, "account type", input.Account.AccountType, output.Account.AccountType)
+	assertStringEqual(t, "selected node", input.SelectedNode, output.SelectedNode)
 	if len(output.NodeCache) != len(input.NodeCache) {
 		t.Fatalf("expected node cache length %d, got %d", len(input.NodeCache), len(output.NodeCache))
 	}
 	if output.NodeCache[1].ID != storageNodeSecondary {
 		t.Fatalf("expected node cache to preserve second node, got %+v", output.NodeCache[1])
+	}
+}
+
+func assertStringEqual(t *testing.T, name, want, got string) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("expected %s round trip, got %q", name, got)
 	}
 }
 

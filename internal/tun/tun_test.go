@@ -209,63 +209,11 @@ func TestNewProvider(t *testing.T) {
 // 验证假 provider 会校验输入并返回可收发的内存设备。
 func TestFakeProviderOpenDevice(t *testing.T) {
 	provider := tun.NewFakeProvider()
+	dev := openFakeDevice(t, provider, 1400)
 
-	devValue, err := provider.Open(context.Background(), tun.DeviceConfig{
-		Name: testTUNDeviceName,
-		MTU:  1400,
-	})
-	if err != nil {
-		t.Fatalf("expected open success, got %v", err)
-	}
-	if provider.OpenCount() != 1 {
-		t.Fatalf("expected one open call, got %d", provider.OpenCount())
-	}
-	dev, ok := devValue.(*tun.FakeDevice)
-	if !ok {
-		t.Fatalf("expected fake device, got %T", devValue)
-	}
-	if dev.Name() != testTUNDeviceName {
-		t.Fatalf("expected device name amz0, got %q", dev.Name())
-	}
-	if dev.MTU() != 1400 {
-		t.Fatalf("expected mtu 1400, got %d", dev.MTU())
-	}
-
-	inbound := []byte{0x45, 0x00, 0x00, 0x14}
-	if err := dev.InjectInbound(inbound); err != nil {
-		t.Fatalf("expected inject success, got %v", err)
-	}
-
-	buf := make([]byte, 32)
-	n, err := dev.ReadPacket(context.Background(), buf)
-	if err != nil {
-		t.Fatalf("expected read success, got %v", err)
-	}
-	if n != len(inbound) {
-		t.Fatalf("expected read length %d, got %d", len(inbound), n)
-	}
-	if string(buf[:n]) != string(inbound) {
-		t.Fatalf("expected inbound packet %v, got %v", inbound, buf[:n])
-	}
-
-	outbound := []byte{0x60, 0x00, 0x00, 0x00}
-	n, err = dev.WritePacket(context.Background(), outbound)
-	if err != nil {
-		t.Fatalf("expected write success, got %v", err)
-	}
-	if n != len(outbound) {
-		t.Fatalf("expected write length %d, got %d", len(outbound), n)
-	}
-	if len(dev.WrittenPackets()) != 1 {
-		t.Fatalf("expected one written packet, got %d", len(dev.WrittenPackets()))
-	}
-
-	if _, err := provider.Open(context.Background(), tun.DeviceConfig{}); err == nil {
-		t.Fatal("expected invalid device config error")
-	}
-	if err := provider.Close(); err != nil {
-		t.Fatalf("expected provider close success, got %v", err)
-	}
+	assertFakeDevicePackets(t, dev)
+	assertFakeProviderValidation(t, provider)
+	closeFakeProvider(t, provider)
 }
 
 // 验证真实系统 adapter 会把地址配置应用到可配置设备并记录快照。
@@ -320,80 +268,17 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 
 // 验证假 adapter 只记录平台无关配置与路由快照。
 func TestFakeAdapterApplySnapshot(t *testing.T) {
-	provider := tun.NewFakeProvider()
-	dev, err := provider.Open(context.Background(), tun.DeviceConfig{
-		Name: testTUNDeviceName,
-		MTU:  1280,
-	})
-	if err != nil {
-		t.Fatalf("expected open success, got %v", err)
-	}
-
+	provider, dev := openDefaultFakeDevice(t, 1280)
 	adapter := tun.NewFakeAdapter()
-	config := tun.Config{
-		Device: tun.DeviceConfig{Name: testTUNDeviceName, MTU: 1280},
-		Addresses: []tun.Address{
-			{CIDR: testkit.TunIPv4CIDR},
-			{CIDR: testkit.TunIPv6CIDR},
-		},
-	}
-	routes := tun.RoutePlan{
-		Mode:           tun.RouteModeSplit,
-		Routes:         []string{testkit.RouteSplitV4},
-		EndpointRoutes: []string{testkit.EndpointRouteV4},
-	}
+	config := testAdapterConfig(1280)
+	routes := testAdapterRoutes()
 
-	if err := adapter.ApplyConfig(context.Background(), dev, config); err != nil {
-		t.Fatalf("expected apply config success, got %v", err)
-	}
-	if err := adapter.ApplyRoutes(context.Background(), dev, routes); err != nil {
-		t.Fatalf("expected apply routes success, got %v", err)
-	}
-
-	snapshot := adapter.Snapshot()
-	if !snapshot.ConfigApplied || !snapshot.RoutesApplied {
-		t.Fatalf("expected both apply flags true, got %+v", snapshot)
-	}
-	if snapshot.BoundDevice != testTUNDeviceName {
-		t.Fatalf(errTestTUNBoundDevice, snapshot.BoundDevice)
-	}
-	if len(snapshot.Config.Addresses) != 2 {
-		t.Fatalf("expected two addresses, got %d", len(snapshot.Config.Addresses))
-	}
-	if len(snapshot.Routes.Routes) != 1 || snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
-		t.Fatalf("unexpected route snapshot: %+v", snapshot.Routes)
-	}
-
-	config.Addresses[0].CIDR = testTUNMutatedValue
-	routes.Routes[0] = testTUNMutatedValue
-	snapshot = adapter.Snapshot()
-	if snapshot.Config.Addresses[0].CIDR != testkit.TunIPv4CIDR {
-		t.Fatalf("expected config snapshot isolation, got %+v", snapshot.Config.Addresses)
-	}
-	if snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
-		t.Fatalf("expected route snapshot isolation, got %+v", snapshot.Routes.Routes)
-	}
-
-	if err := adapter.Reset(context.Background()); err != nil {
-		t.Fatalf("expected reset success, got %v", err)
-	}
-	reset := adapter.Snapshot()
-	if reset.ConfigApplied || reset.RoutesApplied || reset.BoundDevice != "" {
-		t.Fatalf("expected cleared snapshot, got %+v", reset)
-	}
-
-	if err := adapter.ApplyConfig(context.Background(), nil, config); err == nil {
-		t.Fatal("expected nil device config error")
-	}
-	if err := adapter.ApplyRoutes(context.Background(), dev, tun.RoutePlan{}); err == nil {
-		t.Fatal("expected invalid route plan error")
-	}
-	if err := dev.Close(); err != nil {
-		t.Fatalf("expected device close success, got %v", err)
-	}
-	if err := provider.Close(); err != nil {
-		t.Fatalf("expected provider close success, got %v", err)
-	}
+	applyFakeAdapterSnapshot(t, adapter, dev, config, routes)
+	assertFakeAdapterSnapshotState(t, adapter.Snapshot())
+	assertFakeAdapterSnapshotIsolation(t, adapter, config, routes)
+	assertFakeAdapterReset(t, adapter)
+	assertFakeAdapterValidation(t, adapter, dev, config)
+	closeFakeDeviceAndProvider(t, dev, provider)
 }
 
 // 验证装配入口支持注入 provider 与 adapter，并返回绑定到同一设备的结果。
@@ -481,65 +366,14 @@ func TestAssembleValidation(t *testing.T) {
 // 验证注入的占位 provider、adapter 与装配结果都会暴露明确的未实现信号。
 func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 	provider := &fakePlatformProvider{platform: testTUNPlatformLinux, delegate: tun.NewFakeProvider()}
-
-	providerErr := provider.PlaceholderError()
-	if providerErr == nil {
-		t.Fatal("expected provider placeholder error")
-	}
-	if !errors.Is(providerErr, config.ErrNotImplemented) {
-		t.Fatalf("expected provider placeholder to wrap ErrNotImplemented, got %v", providerErr)
-	}
-	var typedErr *tun.PlaceholderError
-	if !errors.As(providerErr, &typedErr) {
-		t.Fatalf("expected typed placeholder error, got %T", providerErr)
-	}
-	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
-		t.Fatalf("unexpected provider placeholder error: %+v", typedErr)
-	}
+	assertProviderPlaceholder(t, provider.PlaceholderError())
 
 	adapter := tun.NewFakeAdapter()
-	adapterErr := adapter.PlaceholderError()
-	if adapterErr == nil {
-		t.Fatal("expected adapter placeholder error")
-	}
-	if !errors.Is(adapterErr, config.ErrNotImplemented) {
-		t.Fatalf("expected adapter placeholder to wrap ErrNotImplemented, got %v", adapterErr)
-	}
-	if !errors.As(adapterErr, &typedErr) {
-		t.Fatalf("expected typed adapter placeholder error, got %T", adapterErr)
-	}
-	if typedErr.Platform != runtime.GOOS || typedErr.Component != testTUNPlaceholderAdapter {
-		t.Fatalf("unexpected adapter placeholder error: %+v", typedErr)
-	}
+	assertAdapterPlaceholder(t, adapter.PlaceholderError())
 
-	assembled, err := tun.Assemble(tun.AssembleOptions{
-		Platform: testTUNPlatformLinux,
-		Device: tun.DeviceConfig{
-			Name: testTUNDeviceName,
-			MTU:  1400,
-		},
-		Provider: provider,
-		Adapter:  adapter,
-	})
-	if err != nil {
-		t.Fatalf("expected assemble success, got %v", err)
-	}
-	assemblyErr := assembled.PlaceholderError()
-	if assemblyErr == nil {
-		t.Fatal("expected assembly placeholder error")
-	}
-	if !errors.Is(assemblyErr, config.ErrNotImplemented) {
-		t.Fatalf("expected assembly placeholder to wrap ErrNotImplemented, got %v", assemblyErr)
-	}
-	if !errors.As(assemblyErr, &typedErr) {
-		t.Fatalf("expected typed assembly placeholder error, got %T", assemblyErr)
-	}
-	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
-		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
-	}
-	if err := assembled.Close(); err != nil {
-		t.Fatalf(errTestTUNCloseSuccess, err)
-	}
+	assembled := assembleFakeBinding(t, provider, adapter)
+	assertAssemblyPlaceholder(t, assembled.PlaceholderError())
+	closeAssembly(t, assembled)
 }
 
 // 验证最小平台无关模型会拒绝缺失关键字段的输入。
@@ -642,31 +476,7 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	t.Parallel()
 
-	recovery := tun.NewFailureRecovery(tun.ProtectionPlan{
-		Requirement: tun.PrivilegeRequirement{
-			Level:      tun.PrivilegeLevelElevated,
-			Reason:     testTUNConfigureRoutesReason,
-			Operations: []string{testTUNCreateDeviceOperation, testTUNApplyRoutesStage},
-		},
-		Warnings: []tun.SecurityWarning{
-			{
-				Code:       testTUNAdminNeededCode,
-				Summary:    "privileged operations may fail without elevation",
-				Mitigation: "rerun with appropriate privileges after confirmation",
-			},
-		},
-		Rollback: []tun.RollbackStep{
-			{
-				Stage:  "device",
-				Action: testTUNClosePlaceholderDevice,
-			},
-			{
-				Stage:  "routes",
-				Action: testTUNRestoreRoutesSnapshot,
-			},
-		},
-	})
-
+	recovery := newTestFailureRecovery()
 	result, err := recovery.Recover(tun.FailureEvent{
 		Stage: testTUNApplyRoutesStage,
 		Err:   context.DeadlineExceeded,
@@ -674,11 +484,292 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected recover success, got %v", err)
 	}
+
+	assertRecoveryResult(t, result, context.DeadlineExceeded.Error())
+	assertRecoveryIsolation(t, recovery, result)
+	assertRecoveryValidation(t)
+}
+
+func openDefaultFakeDevice(t *testing.T, mtu int) (*tun.FakeProvider, *tun.FakeDevice) {
+	t.Helper()
+
+	provider := tun.NewFakeProvider()
+	return provider, openFakeDevice(t, provider, mtu)
+}
+
+func openFakeDevice(t *testing.T, provider *tun.FakeProvider, mtu int) *tun.FakeDevice {
+	t.Helper()
+
+	devValue, err := provider.Open(context.Background(), tun.DeviceConfig{
+		Name: testTUNDeviceName,
+		MTU:  mtu,
+	})
+	if err != nil {
+		t.Fatalf("expected open success, got %v", err)
+	}
+	if provider.OpenCount() != 1 {
+		t.Fatalf("expected one open call, got %d", provider.OpenCount())
+	}
+	dev, ok := devValue.(*tun.FakeDevice)
+	if !ok {
+		t.Fatalf("expected fake device, got %T", devValue)
+	}
+	if dev.Name() != testTUNDeviceName {
+		t.Fatalf("expected device name amz0, got %q", dev.Name())
+	}
+	if dev.MTU() != mtu {
+		t.Fatalf("expected mtu %d, got %d", mtu, dev.MTU())
+	}
+	return dev
+}
+
+func assertFakeDevicePackets(t *testing.T, dev *tun.FakeDevice) {
+	t.Helper()
+
+	inbound := []byte{0x45, 0x00, 0x00, 0x14}
+	if err := dev.InjectInbound(inbound); err != nil {
+		t.Fatalf("expected inject success, got %v", err)
+	}
+	buf := make([]byte, 32)
+	n, err := dev.ReadPacket(context.Background(), buf)
+	if err != nil {
+		t.Fatalf("expected read success, got %v", err)
+	}
+	if n != len(inbound) {
+		t.Fatalf("expected read length %d, got %d", len(inbound), n)
+	}
+	if string(buf[:n]) != string(inbound) {
+		t.Fatalf("expected inbound packet %v, got %v", inbound, buf[:n])
+	}
+
+	outbound := []byte{0x60, 0x00, 0x00, 0x00}
+	n, err = dev.WritePacket(context.Background(), outbound)
+	if err != nil {
+		t.Fatalf("expected write success, got %v", err)
+	}
+	if n != len(outbound) {
+		t.Fatalf("expected write length %d, got %d", len(outbound), n)
+	}
+	if len(dev.WrittenPackets()) != 1 {
+		t.Fatalf("expected one written packet, got %d", len(dev.WrittenPackets()))
+	}
+}
+
+func assertFakeProviderValidation(t *testing.T, provider *tun.FakeProvider) {
+	t.Helper()
+
+	if _, err := provider.Open(context.Background(), tun.DeviceConfig{}); err == nil {
+		t.Fatal("expected invalid device config error")
+	}
+}
+
+func closeFakeProvider(t *testing.T, provider *tun.FakeProvider) {
+	t.Helper()
+
+	if err := provider.Close(); err != nil {
+		t.Fatalf("expected provider close success, got %v", err)
+	}
+}
+
+func testAdapterConfig(mtu int) tun.Config {
+	return tun.Config{
+		Device: tun.DeviceConfig{Name: testTUNDeviceName, MTU: mtu},
+		Addresses: []tun.Address{
+			{CIDR: testkit.TunIPv4CIDR},
+			{CIDR: testkit.TunIPv6CIDR},
+		},
+	}
+}
+
+func testAdapterRoutes() tun.RoutePlan {
+	return tun.RoutePlan{
+		Mode:           tun.RouteModeSplit,
+		Routes:         []string{testkit.RouteSplitV4},
+		EndpointRoutes: []string{testkit.EndpointRouteV4},
+	}
+}
+
+func applyFakeAdapterSnapshot(t *testing.T, adapter *tun.FakeAdapter, dev tun.Device, config tun.Config, routes tun.RoutePlan) {
+	t.Helper()
+
+	if err := adapter.ApplyConfig(context.Background(), dev, config); err != nil {
+		t.Fatalf("expected apply config success, got %v", err)
+	}
+	if err := adapter.ApplyRoutes(context.Background(), dev, routes); err != nil {
+		t.Fatalf("expected apply routes success, got %v", err)
+	}
+}
+
+func assertFakeAdapterSnapshotState(t *testing.T, snapshot tun.Snapshot) {
+	t.Helper()
+
+	if !snapshot.ConfigApplied || !snapshot.RoutesApplied {
+		t.Fatalf("expected both apply flags true, got %+v", snapshot)
+	}
+	if snapshot.BoundDevice != testTUNDeviceName {
+		t.Fatalf(errTestTUNBoundDevice, snapshot.BoundDevice)
+	}
+	if len(snapshot.Config.Addresses) != 2 {
+		t.Fatalf("expected two addresses, got %d", len(snapshot.Config.Addresses))
+	}
+	if len(snapshot.Routes.Routes) != 1 || snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
+		t.Fatalf("unexpected route snapshot: %+v", snapshot.Routes)
+	}
+}
+
+func assertFakeAdapterSnapshotIsolation(t *testing.T, adapter *tun.FakeAdapter, config tun.Config, routes tun.RoutePlan) {
+	t.Helper()
+
+	config.Addresses[0].CIDR = testTUNMutatedValue
+	routes.Routes[0] = testTUNMutatedValue
+	snapshot := adapter.Snapshot()
+	if snapshot.Config.Addresses[0].CIDR != testkit.TunIPv4CIDR {
+		t.Fatalf("expected config snapshot isolation, got %+v", snapshot.Config.Addresses)
+	}
+	if snapshot.Routes.Routes[0] != testkit.RouteSplitV4 {
+		t.Fatalf("expected route snapshot isolation, got %+v", snapshot.Routes.Routes)
+	}
+}
+
+func assertFakeAdapterReset(t *testing.T, adapter *tun.FakeAdapter) {
+	t.Helper()
+
+	if err := adapter.Reset(context.Background()); err != nil {
+		t.Fatalf("expected reset success, got %v", err)
+	}
+	reset := adapter.Snapshot()
+	if reset.ConfigApplied || reset.RoutesApplied || reset.BoundDevice != "" {
+		t.Fatalf("expected cleared snapshot, got %+v", reset)
+	}
+}
+
+func assertFakeAdapterValidation(t *testing.T, adapter *tun.FakeAdapter, dev tun.Device, config tun.Config) {
+	t.Helper()
+
+	if err := adapter.ApplyConfig(context.Background(), nil, config); err == nil {
+		t.Fatal("expected nil device config error")
+	}
+	if err := adapter.ApplyRoutes(context.Background(), dev, tun.RoutePlan{}); err == nil {
+		t.Fatal("expected invalid route plan error")
+	}
+}
+
+func closeFakeDeviceAndProvider(t *testing.T, dev tun.Device, provider *tun.FakeProvider) {
+	t.Helper()
+
+	if err := dev.Close(); err != nil {
+		t.Fatalf("expected device close success, got %v", err)
+	}
+	closeFakeProvider(t, provider)
+}
+
+func assertProviderPlaceholder(t *testing.T, providerErr error) {
+	t.Helper()
+
+	if providerErr == nil {
+		t.Fatal("expected provider placeholder error")
+	}
+	if !errors.Is(providerErr, config.ErrNotImplemented) {
+		t.Fatalf("expected provider placeholder to wrap ErrNotImplemented, got %v", providerErr)
+	}
+	var typedErr *tun.PlaceholderError
+	if !errors.As(providerErr, &typedErr) {
+		t.Fatalf("expected typed placeholder error, got %T", providerErr)
+	}
+	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
+		t.Fatalf("unexpected provider placeholder error: %+v", typedErr)
+	}
+}
+
+func assertAdapterPlaceholder(t *testing.T, adapterErr error) {
+	t.Helper()
+
+	if adapterErr == nil {
+		t.Fatal("expected adapter placeholder error")
+	}
+	if !errors.Is(adapterErr, config.ErrNotImplemented) {
+		t.Fatalf("expected adapter placeholder to wrap ErrNotImplemented, got %v", adapterErr)
+	}
+	var typedErr *tun.PlaceholderError
+	if !errors.As(adapterErr, &typedErr) {
+		t.Fatalf("expected typed adapter placeholder error, got %T", adapterErr)
+	}
+	if typedErr.Platform != runtime.GOOS || typedErr.Component != testTUNPlaceholderAdapter {
+		t.Fatalf("unexpected adapter placeholder error: %+v", typedErr)
+	}
+}
+
+func assembleFakeBinding(t *testing.T, provider tun.PlatformProvider, adapter tun.Adapter) *tun.Assembly {
+	t.Helper()
+
+	assembled, err := tun.Assemble(tun.AssembleOptions{
+		Platform: testTUNPlatformLinux,
+		Device: tun.DeviceConfig{
+			Name: testTUNDeviceName,
+			MTU:  1400,
+		},
+		Provider: provider,
+		Adapter:  adapter,
+	})
+	if err != nil {
+		t.Fatalf("expected assemble success, got %v", err)
+	}
+	return assembled
+}
+
+func assertAssemblyPlaceholder(t *testing.T, assemblyErr error) {
+	t.Helper()
+
+	if assemblyErr == nil {
+		t.Fatal("expected assembly placeholder error")
+	}
+	if !errors.Is(assemblyErr, config.ErrNotImplemented) {
+		t.Fatalf("expected assembly placeholder to wrap ErrNotImplemented, got %v", assemblyErr)
+	}
+	var typedErr *tun.PlaceholderError
+	if !errors.As(assemblyErr, &typedErr) {
+		t.Fatalf("expected typed assembly placeholder error, got %T", assemblyErr)
+	}
+	if typedErr.Platform != testTUNPlatformLinux || typedErr.Component != testTUNPlaceholderProvider {
+		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
+	}
+}
+
+func closeAssembly(t *testing.T, assembled *tun.Assembly) {
+	t.Helper()
+
+	if err := assembled.Close(); err != nil {
+		t.Fatalf(errTestTUNCloseSuccess, err)
+	}
+}
+
+func newTestFailureRecovery() *tun.FailureRecovery {
+	return tun.NewFailureRecovery(tun.ProtectionPlan{
+		Requirement: tun.PrivilegeRequirement{
+			Level:      tun.PrivilegeLevelElevated,
+			Reason:     testTUNConfigureRoutesReason,
+			Operations: []string{testTUNCreateDeviceOperation, testTUNApplyRoutesStage},
+		},
+		Warnings: []tun.SecurityWarning{{
+			Code:       testTUNAdminNeededCode,
+			Summary:    "privileged operations may fail without elevation",
+			Mitigation: "rerun with appropriate privileges after confirmation",
+		}},
+		Rollback: []tun.RollbackStep{
+			{Stage: "device", Action: testTUNClosePlaceholderDevice},
+			{Stage: "routes", Action: testTUNRestoreRoutesSnapshot},
+		},
+	})
+}
+
+func assertRecoveryResult(t *testing.T, result tun.RecoveryResult, wantCause string) {
+	t.Helper()
+
 	if result.Stage != testTUNApplyRoutesStage {
 		t.Fatalf("expected stage apply-routes, got %q", result.Stage)
 	}
-	if result.Cause != context.DeadlineExceeded.Error() {
-		t.Fatalf("expected cause %q, got %q", context.DeadlineExceeded.Error(), result.Cause)
+	if result.Cause != wantCause {
+		t.Fatalf("expected cause %q, got %q", wantCause, result.Cause)
 	}
 	if !result.RollbackRequired {
 		t.Fatal("expected rollback required")
@@ -692,6 +783,10 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	if result.UserHint == "" {
 		t.Fatal("expected non-empty user hint")
 	}
+}
+
+func assertRecoveryIsolation(t *testing.T, recovery *tun.FailureRecovery, result tun.RecoveryResult) {
+	t.Helper()
 
 	result.Rollback[0].Action = testTUNMutatedValue
 	result.Warnings[0].Code = testTUNMutatedValue
@@ -705,7 +800,12 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	if second.Warnings[0].Code != testTUNAdminNeededCode {
 		t.Fatalf("expected warning isolation, got %+v", second.Warnings)
 	}
+}
 
+func assertRecoveryValidation(t *testing.T) {
+	t.Helper()
+
+	recovery := newTestFailureRecovery()
 	if _, err := recovery.Recover(tun.FailureEvent{}); err == nil {
 		t.Fatal("expected invalid failure event")
 	}

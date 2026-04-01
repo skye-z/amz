@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -90,33 +91,81 @@ func main() {
 }
 
 func runE2E(cfg runConfig, deps runDeps) int {
-	if deps.fetchIP == nil {
-		deps.fetchIP = fetchIP
-	}
-	if deps.newClient == nil {
-		deps.newClient = defaultRunDeps().newClient
-	}
-	if deps.sleep == nil {
-		deps.sleep = time.Sleep
-	}
+	deps = normalizeRunDeps(deps)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
-	passed := true
-	var httpProxyIP, socksProxyIP, tunIP string
-
 	printBanner("AMZ Full-Chain E2E Test")
+	directIP, err := printDirectIPStep(ctx, deps)
+	if err != nil {
+		return 1
+	}
 
+	logger := newAMZLogger(os.Stdout)
+	client, proxyAddr, err := startPrimaryClient(ctx, cfg, deps, logger)
+	if err != nil {
+		return 1
+	}
+	defer client.Close()
+	deps.sleep(500 * time.Millisecond)
+
+	summary := e2eSummary{passed: true}
+	step := 3
+	if cfg.runHTTP {
+		summary.httpProxyIP, summary.passed = runHTTPCheck(ctx, deps, proxyAddr, directIP, summary.passed, step)
+		step++
+	}
+	if cfg.runSOCKS5 {
+		summary.socksProxyIP, summary.passed = runSOCKS5Check(ctx, deps, proxyAddr, directIP, summary.passed, step)
+		step++
+	}
+	if cfg.runTUN {
+		summary.tunIP, summary.passed = runTUNCheck(ctx, cfg, deps, logger, client, directIP, summary.passed, step)
+	}
+
+	printE2ESummary(directIP, summary)
+	if summary.passed {
+		printPass("=== ALL TESTS PASSED ===")
+		return 0
+	}
+	printFail("=== SOME TESTS FAILED ===")
+	return 1
+}
+
+type e2eSummary struct {
+	passed       bool
+	httpProxyIP  string
+	socksProxyIP string
+	tunIP        string
+}
+
+func normalizeRunDeps(deps runDeps) runDeps {
+	defaultDeps := defaultRunDeps()
+	if deps.fetchIP == nil {
+		deps.fetchIP = defaultDeps.fetchIP
+	}
+	if deps.newClient == nil {
+		deps.newClient = defaultDeps.newClient
+	}
+	if deps.sleep == nil {
+		deps.sleep = defaultDeps.sleep
+	}
+	return deps
+}
+
+func printDirectIPStep(ctx context.Context, deps runDeps) (string, error) {
 	directIP, directRaw, err := deps.fetchIP(ctx, nil)
 	if err != nil {
 		printFail("Failed to get direct IP: %v", err)
-		return 1
+		return "", err
 	}
 	printStep(1, "Fetching direct exit IP (no proxy)")
 	printIPInfo(tagDirect, directIP, directRaw)
+	return directIP, nil
+}
 
-	logger := newAMZLogger(os.Stdout)
+func startPrimaryClient(ctx context.Context, cfg runConfig, deps runDeps, logger amz.Logger) (clientRuntime, string, error) {
 	opts := buildClientOptionsForModes(cfg.listen, cfg.statePath, cfg.endpoint, logger, cfg.runHTTP, cfg.runSOCKS5, false)
 	if cfg.endpoint != "" {
 		printInfo("  Using fixed endpoint: %s", cfg.endpoint)
@@ -124,19 +173,32 @@ func runE2E(cfg runConfig, deps runDeps) int {
 	client, err := deps.newClient(opts)
 	if err != nil {
 		printFail("Failed to create client: %v", err)
-		return 1
+		return nil, "", err
 	}
-	defer client.Close()
+	status, elapsed, err := startClient(ctx, client)
+	if err != nil {
+		return nil, "", err
+	}
+	printClientStatus(status, elapsed)
+	return client, resolveProxyAddress(status, cfg.listen), nil
+}
 
+func startClient(ctx context.Context, client clientRuntime) (amz.Status, time.Duration, error) {
 	startTime := time.Now()
 	if err := client.Start(ctx); err != nil {
 		printFail("Failed to start client: %v", err)
-		return 1
+		return amz.Status{}, 0, err
 	}
-	elapsed := time.Since(startTime)
-
-	printStep(2, "Starting amz client (register -> node select -> connect WARP)")
 	status := client.Status()
+	if !status.Running {
+		printFail("Client is not running after Start()")
+		return amz.Status{}, 0, errors.New("client not running after start")
+	}
+	return status, time.Since(startTime), nil
+}
+
+func printClientStatus(status amz.Status, elapsed time.Duration) {
+	printStep(2, "Starting amz client (register -> node select -> connect WARP)")
 	printInfo("  Started in:      %s", elapsed.Round(time.Millisecond))
 	printInfo("  Running:         %v", status.Running)
 	printInfo("  Listen address:  %s", status.ListenAddress)
@@ -145,120 +207,89 @@ func runE2E(cfg runConfig, deps runDeps) int {
 	printInfo("  HTTP enabled:    %v", status.HTTPEnabled)
 	printInfo("  SOCKS5 enabled:  %v", status.SOCKS5Enabled)
 	printInfo("  TUN enabled:     %v", status.TUNEnabled)
+}
 
-	if !status.Running {
-		printFail("Client is not running after Start()")
-		return 1
+func resolveProxyAddress(status amz.Status, fallback string) string {
+	if status.ListenAddress != "" {
+		return status.ListenAddress
 	}
+	return fallback
+}
 
-	proxyAddr := status.ListenAddress
-	if proxyAddr == "" {
-		proxyAddr = cfg.listen
+func runHTTPCheck(ctx context.Context, deps runDeps, proxyAddr, directIP string, passed bool, step int) (string, bool) {
+	printStep(step, "Fetching exit IP via HTTP proxy")
+	ip, ok := runProxyCheck(ctx, deps, tagHTTP, directIP, httpProxyTransport(proxyAddr), "HTTP proxy request failed: %v", "HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!", "HTTP proxy IP (%s) differs from direct IP (%s)")
+	return ip, passed && ok
+}
+
+func runSOCKS5Check(ctx context.Context, deps runDeps, proxyAddr, directIP string, passed bool, step int) (string, bool) {
+	printStep(step, "Fetching exit IP via SOCKS5 proxy")
+	transport, err := socks5ProxyTransport(proxyAddr)
+	if err != nil {
+		printFail("Failed to create SOCKS5 transport: %v", err)
+		return "", false
 	}
+	ip, ok := runProxyCheck(ctx, deps, tagSOCKS5, directIP, transport, "SOCKS5 proxy request failed: %v", "SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!", "SOCKS5 proxy IP (%s) differs from direct IP (%s)")
+	return ip, passed && ok
+}
 
-	deps.sleep(500 * time.Millisecond)
-
-	step := 3
-	if cfg.runHTTP {
-		printStep(step, "Fetching exit IP via HTTP proxy")
-		httpTransport := httpProxyTransport(proxyAddr)
-		ip, raw, err := deps.fetchIP(ctx, httpTransport)
-		if err != nil {
-			printFail("HTTP proxy request failed: %v", err)
-			passed = false
-		} else {
-			httpProxyIP = ip
-			printIPInfo(tagHTTP, ip, raw)
-			if ip == directIP {
-				printFail("HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
-				passed = false
-			} else {
-				printPass("HTTP proxy IP (%s) differs from direct IP (%s)", ip, directIP)
-			}
-		}
-		step++
+func runProxyCheck(ctx context.Context, deps runDeps, tag, directIP string, transport transportRoundTripper, requestErrFmt, sameIPFmt, diffIPFmt string) (string, bool) {
+	ip, raw, err := deps.fetchIP(ctx, transport)
+	if err != nil {
+		printFail(requestErrFmt, err)
+		return "", false
 	}
-
-	if cfg.runSOCKS5 {
-		printStep(step, "Fetching exit IP via SOCKS5 proxy")
-		socksTransport, err := socks5ProxyTransport(proxyAddr)
-		if err != nil {
-			printFail("Failed to create SOCKS5 transport: %v", err)
-			passed = false
-		} else {
-			ip, raw, err := deps.fetchIP(ctx, socksTransport)
-			if err != nil {
-				printFail("SOCKS5 proxy request failed: %v", err)
-				passed = false
-			} else {
-				socksProxyIP = ip
-				printIPInfo(tagSOCKS5, ip, raw)
-				if ip == directIP {
-					printFail("SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!", ip)
-					passed = false
-				} else {
-					printPass("SOCKS5 proxy IP (%s) differs from direct IP (%s)", ip, directIP)
-				}
-			}
-		}
-		step++
+	printIPInfo(tag, ip, raw)
+	if ip == directIP {
+		printFail(sameIPFmt, ip)
+		return ip, false
 	}
+	printPass(diffIPFmt, ip, directIP)
+	return ip, true
+}
 
-	if cfg.runTUN {
-		printStep(step, "Fetching exit IP via TUN")
-		_ = client.Close()
+func runTUNCheck(ctx context.Context, cfg runConfig, deps runDeps, logger amz.Logger, client clientRuntime, directIP string, passed bool, step int) (string, bool) {
+	printStep(step, "Fetching exit IP via TUN")
+	_ = client.Close()
 
-		tunOpts := buildClientOptionsForModes("", cfg.statePath+".tun", cfg.endpoint, logger, false, false, true)
-		tunClient, err := deps.newClient(tunOpts)
-		if err != nil {
-			printFail("Failed to create TUN client: %v", err)
-			passed = false
-		} else {
-			func() {
-				defer tunClient.Close()
-				if err := tunClient.Start(ctx); err != nil {
-					printFail("TUN start failed: %v", err)
-					passed = false
-					return
-				}
-				deps.sleep(2 * time.Second)
-				ip, raw, err := deps.fetchIP(ctx, nil)
-				if err != nil {
-					printFail("TUN request failed: %v", err)
-					passed = false
-					return
-				}
-				tunIP = ip
-				printIPInfo(tagTUN, ip, raw)
-				if ip == directIP {
-					printFail("TUN IP is the same as direct IP (%s) -- tunnel not working!", ip)
-					passed = false
-				} else {
-					printPass("TUN IP (%s) differs from direct IP (%s)", ip, directIP)
-				}
-			}()
-		}
+	tunClient, err := deps.newClient(buildClientOptionsForModes("", cfg.statePath+".tun", cfg.endpoint, logger, false, false, true))
+	if err != nil {
+		printFail("Failed to create TUN client: %v", err)
+		return "", false
 	}
+	defer tunClient.Close()
+	if err := tunClient.Start(ctx); err != nil {
+		printFail("TUN start failed: %v", err)
+		return "", false
+	}
+	deps.sleep(2 * time.Second)
+	ip, raw, err := deps.fetchIP(ctx, nil)
+	if err != nil {
+		printFail("TUN request failed: %v", err)
+		return "", false
+	}
+	printIPInfo(tagTUN, ip, raw)
+	if ip == directIP {
+		printFail("TUN IP is the same as direct IP (%s) -- tunnel not working!", ip)
+		return ip, false
+	}
+	printPass("TUN IP (%s) differs from direct IP (%s)", ip, directIP)
+	return ip, passed
+}
 
+func printE2ESummary(directIP string, summary e2eSummary) {
 	printBanner("Test Summary")
 	fmt.Printf("  Direct IP:  %s\n", directIP)
-	if httpProxyIP != "" {
-		fmt.Printf("  HTTP IP:    %s\n", httpProxyIP)
+	if summary.httpProxyIP != "" {
+		fmt.Printf("  HTTP IP:    %s\n", summary.httpProxyIP)
 	}
-	if socksProxyIP != "" {
-		fmt.Printf("  SOCKS5 IP:  %s\n", socksProxyIP)
+	if summary.socksProxyIP != "" {
+		fmt.Printf("  SOCKS5 IP:  %s\n", summary.socksProxyIP)
 	}
-	if tunIP != "" {
-		fmt.Printf("  TUN IP:     %s\n", tunIP)
+	if summary.tunIP != "" {
+		fmt.Printf("  TUN IP:     %s\n", summary.tunIP)
 	}
 	fmt.Println()
-
-	if passed {
-		printPass("=== ALL TESTS PASSED ===")
-		return 0
-	}
-	printFail("=== SOME TESTS FAILED ===")
-	return 1
 }
 
 func fetchIP(ctx context.Context, transport transportRoundTripper) (string, map[string]any, error) {

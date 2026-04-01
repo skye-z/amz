@@ -42,100 +42,15 @@ const (
 
 func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 	store := &stubStateStore{loadErr: os.ErrNotExist}
-	client := &stubAuthClient{
-		registerResponse: Response{
-			ID:    testAuthDeviceID,
-			Token: testAuthTokenRegister,
-			Account: ResponseAccount{
-				ID:   testAuthAccountID,
-				Type: "free",
-			},
-		},
-		enrollResponse: Response{
-			ID:    testAuthDeviceID,
-			Token: testAuthTokenEnrolled,
-			Account: ResponseAccount{
-				ID:      testAuthAccountID,
-				Type:    testAuthAccountTypePlus,
-				License: testAuthLicense,
-			},
-			Config: ResponseConfig{
-				ClientID: testAuthClientID,
-				Peers: []ResponsePeer{{
-					PublicKey: testAuthPeerPublicKey,
-					Endpoint: ResponseEndpoint{
-						ResponseEndpointObject: ResponseEndpointObject{
-							Host:  testkit.WarpHostPrimary,
-							V4:    testkit.WarpIPv4Enroll10,
-							V6:    testkit.WarpIPv6Enroll10,
-							Ports: []uint16{443},
-						},
-					},
-				}},
-			},
-		},
-	}
-	svc := &Service{
-		client: client,
-		store:  store,
-		generateKeyPair: func(keyType string) (DeviceKeyPair, error) {
-			return DeviceKeyPair{
-				Type:       keyType,
-				PublicKey:  "public-key-123",
-				PrivateKey: testDevicePrivateKeyBase64,
-			}, nil
-		},
-	}
+	client := newRegisteringAuthClient()
+	svc := newRegisteringService(store, client)
 
 	result, err := svc.Ensure(context.Background())
 	if err != nil {
 		t.Fatalf("expected ensure success, got %v", err)
 	}
-	if result.Action != ActionRegister {
-		t.Fatalf("expected action %q, got %q", ActionRegister, result.Action)
-	}
-	if client.registerCalls != 1 {
-		t.Fatalf("expected one register call, got %d", client.registerCalls)
-	}
-	if client.enrollCalls != 1 {
-		t.Fatalf("expected one enroll call, got %d", client.enrollCalls)
-	}
-	if result.State.DeviceID != testAuthDeviceID {
-		t.Fatalf("expected device id in result, got %q", result.State.DeviceID)
-	}
-	if result.State.Token != testAuthTokenEnrolled {
-		t.Fatalf("expected final token in result, got %q", result.State.Token)
-	}
-	if result.State.Certificate.PrivateKey != testDevicePrivateKeyBase64 {
-		t.Fatalf("expected private key saved, got %q", result.State.Certificate.PrivateKey)
-	}
-	if result.State.Certificate.ClientCertificate == "" {
-		t.Fatal("expected generated client certificate")
-	}
-	if result.State.Certificate.PeerPublicKey != testAuthPeerPublicKey {
-		t.Fatalf("expected peer public key, got %q", result.State.Certificate.PeerPublicKey)
-	}
-	if result.State.Certificate.ClientID != testAuthClientID {
-		t.Fatalf("expected client id, got %q", result.State.Certificate.ClientID)
-	}
-	if result.State.Account.State != testAuthAccountStateRegister {
-		t.Fatalf("expected registered state, got %q", result.State.Account.State)
-	}
-	if result.State.Account.AccountType != testAuthAccountTypePlus {
-		t.Fatalf("expected plus account type, got %q", result.State.Account.AccountType)
-	}
-	if len(result.State.NodeCache) != 1 {
-		t.Fatalf("expected one cached node, got %d", len(result.State.NodeCache))
-	}
-	if result.State.SelectedNode != result.State.NodeCache[0].ID {
-		t.Fatalf("expected selected node to default to first node, got %q", result.State.SelectedNode)
-	}
-	if store.saved.DeviceID != testAuthDeviceID {
-		t.Fatalf("expected saved device id, got %q", store.saved.DeviceID)
-	}
-	if store.saved.Token != testAuthTokenEnrolled {
-		t.Fatalf("expected saved token, got %q", store.saved.Token)
-	}
+
+	assertEnsureRegisterResult(t, result, client, store.saved)
 }
 
 func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
@@ -418,22 +333,7 @@ func TestNewClientValidatesTransport(t *testing.T) {
 
 func TestClientRegisterAndEnrollRequests(t *testing.T) {
 	client, err := NewClient(transportFunc(func(_ context.Context, req TransportRequest) ([]byte, error) {
-		if req.Method == http.MethodPost {
-			if req.Path != "/reg" {
-				t.Fatalf("expected register path, got %q", req.Path)
-			}
-			return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthRegisterToken + `"}`), nil
-		}
-		if req.Method == http.MethodPatch {
-			if req.Path != "/reg/"+testAuthRegisterDeviceID {
-				t.Fatalf("expected enroll path, got %q", req.Path)
-			}
-			if req.BearerToken != testAuthRegisterToken {
-				t.Fatalf("expected bearer token, got %q", req.BearerToken)
-			}
-			return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthEnrollToken + `"}`), nil
-		}
-		return nil, fmt.Errorf("unexpected method %s", req.Method)
+		return authClientTransportResponse(t, req)
 	}))
 	if err != nil {
 		t.Fatalf("expected client creation success, got %v", err)
@@ -443,17 +343,13 @@ func TestClientRegisterAndEnrollRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected register success, got %v", err)
 	}
-	if registered.ID != testAuthRegisterDeviceID || registered.Token != testAuthRegisterToken {
-		t.Fatalf("unexpected register response: %+v", registered)
-	}
+	assertRegisterResponse(t, registered)
 
 	enrolled, err := client.Enroll(context.Background(), testAuthRegisterDeviceID, testAuthRegisterToken, EnrollRequest{Key: "pub"})
 	if err != nil {
 		t.Fatalf("expected enroll success, got %v", err)
 	}
-	if enrolled.Token != testAuthEnrollToken {
-		t.Fatalf("unexpected enroll response: %+v", enrolled)
-	}
+	assertEnrollResponse(t, enrolled)
 }
 
 func TestClientErrorsWrapMarshalAndTransportFailures(t *testing.T) {
@@ -576,58 +472,17 @@ func TestAPIErrorCategoryClassification(t *testing.T) {
 }
 
 func TestModelHelpersAndBuildState(t *testing.T) {
-	device := (DeviceIdentity{}).withDefaults()
-	if device.Model != DefaultDeviceModel || device.KeyType != DefaultDeviceKeyType || device.TunnelType != DefaultDeviceTunnelType {
-		t.Fatalf("expected defaults, got %+v", device)
-	}
+	assertDeviceIdentityDefaults(t)
+
 	pair, err := GenerateDeviceKeyPair(DefaultDeviceKeyType)
 	if err != nil {
 		t.Fatalf("expected generated pair, got %v", err)
 	}
-	reg := BuildRegisterRequest(pair, DeviceIdentity{})
-	if reg.Type != "Android" || reg.Key != pair.PublicKey || reg.KeyType != DefaultDeviceKeyType {
-		t.Fatalf("unexpected register request: %+v", reg)
-	}
-	enroll := BuildEnrollRequest(pair, DeviceIdentity{})
-	if enroll.Key != pair.PublicKey || enroll.TunType != DefaultDeviceTunnelType {
-		t.Fatalf("unexpected enroll request: %+v", enroll)
-	}
-	cert, err := GenerateClientCertificate(pair.PrivateKey)
-	if err != nil {
-		t.Fatalf("expected client certificate, got %v", err)
-	}
-	rawCert, err := base64.StdEncoding.DecodeString(cert)
-	if err != nil {
-		t.Fatalf("expected base64 cert, got %v", err)
-	}
-	if _, err := x509.ParseCertificate(rawCert); err != nil {
-		t.Fatalf("expected parsable cert, got %v", err)
-	}
-	if _, err := GenerateClientCertificate("not-base64"); err == nil {
-		t.Fatal("expected invalid private key error")
-	}
 
-	previous := storage.State{SelectedNode: testAuthSelectedNode, NodeCache: []storage.Node{{ID: testAuthSelectedNode, PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: testAuthIPv4Addr}, Services: storage.Services{HTTPProxy: "http://old"}}
-	final := Response{ID: testAuthRegisterDeviceID, Token: testAuthEnrollToken, Account: ResponseAccount{Type: testAuthAccountTypePlus, License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: testkit.TestIPv4Echo, Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
-	state, err := buildState(previous, pair.PrivateKey, "fallback-token", final)
-	if err != nil {
-		t.Fatalf("expected buildState success, got %v", err)
-	}
-	if state.Token != testAuthEnrollToken || state.Certificate.PeerPublicKey == "" || len(state.NodeCache) != 2 {
-		t.Fatalf("unexpected built state: %+v", state)
-	}
-	if state.SelectedNode != testAuthSelectedNode {
-		t.Fatalf("expected selected node preserved, got %q", state.SelectedNode)
-	}
-	if got := normalizePeerEndpoint(testkit.TestIPv6Doc, 443); !strings.HasPrefix(got, "[") {
-		t.Fatalf("expected ipv6 endpoint to be bracketed, got %q", got)
-	}
-	if got := firstNonEmpty("", " a "); got != "a" {
-		t.Fatalf("unexpected firstNonEmpty result: %q", got)
-	}
-	if got := selectPeerPort([]uint16{0, 500}); got != 500 {
-		t.Fatalf("unexpected selected port: %d", got)
-	}
+	assertRegisterAndEnrollRequests(t, pair)
+	assertClientCertificateGeneration(t, pair.PrivateKey)
+	assertBuildStateResult(t, pair.PrivateKey)
+	assertAuthModelHelpers(t)
 }
 
 func TestResponseEndpointAndInterfaceUnmarshal(t *testing.T) {
@@ -677,12 +532,276 @@ func TestServiceErrorBranches(t *testing.T) {
 }
 
 func TestAuthHelperBranchesAndFormatting(t *testing.T) {
+	assertServiceConstructors(t)
+	assertAPIErrorFormatting(t)
+	assertAPIErrorCategories(t)
+	assertAPIErrorExtraction(t)
+	assertEndpointPreferredAddress(t)
+	assertPeerHelperBranches(t)
+}
+
+func newRegisteringAuthClient() *stubAuthClient {
+	return &stubAuthClient{
+		registerResponse: Response{
+			ID:    testAuthDeviceID,
+			Token: testAuthTokenRegister,
+			Account: ResponseAccount{
+				ID:   testAuthAccountID,
+				Type: "free",
+			},
+		},
+		enrollResponse: Response{
+			ID:    testAuthDeviceID,
+			Token: testAuthTokenEnrolled,
+			Account: ResponseAccount{
+				ID:      testAuthAccountID,
+				Type:    testAuthAccountTypePlus,
+				License: testAuthLicense,
+			},
+			Config: ResponseConfig{
+				ClientID: testAuthClientID,
+				Peers: []ResponsePeer{{
+					PublicKey: testAuthPeerPublicKey,
+					Endpoint: ResponseEndpoint{
+						ResponseEndpointObject: ResponseEndpointObject{
+							Host:  testkit.WarpHostPrimary,
+							V4:    testkit.WarpIPv4Enroll10,
+							V6:    testkit.WarpIPv6Enroll10,
+							Ports: []uint16{443},
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+func newRegisteringService(store *stubStateStore, client *stubAuthClient) *Service {
+	return &Service{
+		client: client,
+		store:  store,
+		generateKeyPair: func(keyType string) (DeviceKeyPair, error) {
+			return DeviceKeyPair{
+				Type:       keyType,
+				PublicKey:  "public-key-123",
+				PrivateKey: testDevicePrivateKeyBase64,
+			}, nil
+		},
+	}
+}
+
+func assertEnsureRegisterResult(t *testing.T, result Result, client *stubAuthClient, saved storage.State) {
+	t.Helper()
+
+	if result.Action != ActionRegister {
+		t.Fatalf("expected action %q, got %q", ActionRegister, result.Action)
+	}
+	if client.registerCalls != 1 {
+		t.Fatalf("expected one register call, got %d", client.registerCalls)
+	}
+	if client.enrollCalls != 1 {
+		t.Fatalf("expected one enroll call, got %d", client.enrollCalls)
+	}
+	if result.State.DeviceID != testAuthDeviceID {
+		t.Fatalf("expected device id in result, got %q", result.State.DeviceID)
+	}
+	if result.State.Token != testAuthTokenEnrolled {
+		t.Fatalf("expected final token in result, got %q", result.State.Token)
+	}
+	if result.State.Certificate.PrivateKey != testDevicePrivateKeyBase64 {
+		t.Fatalf("expected private key saved, got %q", result.State.Certificate.PrivateKey)
+	}
+	if result.State.Certificate.ClientCertificate == "" {
+		t.Fatal("expected generated client certificate")
+	}
+	if result.State.Certificate.PeerPublicKey != testAuthPeerPublicKey {
+		t.Fatalf("expected peer public key, got %q", result.State.Certificate.PeerPublicKey)
+	}
+	if result.State.Certificate.ClientID != testAuthClientID {
+		t.Fatalf("expected client id, got %q", result.State.Certificate.ClientID)
+	}
+	if result.State.Account.State != testAuthAccountStateRegister {
+		t.Fatalf("expected registered state, got %q", result.State.Account.State)
+	}
+	if result.State.Account.AccountType != testAuthAccountTypePlus {
+		t.Fatalf("expected plus account type, got %q", result.State.Account.AccountType)
+	}
+	if len(result.State.NodeCache) != 1 {
+		t.Fatalf("expected one cached node, got %d", len(result.State.NodeCache))
+	}
+	if result.State.SelectedNode != result.State.NodeCache[0].ID {
+		t.Fatalf("expected selected node to default to first node, got %q", result.State.SelectedNode)
+	}
+	if saved.DeviceID != testAuthDeviceID {
+		t.Fatalf("expected saved device id, got %q", saved.DeviceID)
+	}
+	if saved.Token != testAuthTokenEnrolled {
+		t.Fatalf("expected saved token, got %q", saved.Token)
+	}
+}
+
+func authClientTransportResponse(t *testing.T, req TransportRequest) ([]byte, error) {
+	t.Helper()
+
+	switch req.Method {
+	case http.MethodPost:
+		return assertRegisterTransportRequest(t, req), nil
+	case http.MethodPatch:
+		return assertEnrollTransportRequest(t, req), nil
+	default:
+		return nil, fmt.Errorf("unexpected method %s", req.Method)
+	}
+}
+
+func assertRegisterTransportRequest(t *testing.T, req TransportRequest) []byte {
+	t.Helper()
+
+	if req.Path != "/reg" {
+		t.Fatalf("expected register path, got %q", req.Path)
+	}
+	return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthRegisterToken + `"}`)
+}
+
+func assertEnrollTransportRequest(t *testing.T, req TransportRequest) []byte {
+	t.Helper()
+
+	if req.Path != "/reg/"+testAuthRegisterDeviceID {
+		t.Fatalf("expected enroll path, got %q", req.Path)
+	}
+	if req.BearerToken != testAuthRegisterToken {
+		t.Fatalf("expected bearer token, got %q", req.BearerToken)
+	}
+	return []byte(`{"id":"` + testAuthRegisterDeviceID + `","token":"` + testAuthEnrollToken + `"}`)
+}
+
+func assertRegisterResponse(t *testing.T, registered Response) {
+	t.Helper()
+
+	if registered.ID != testAuthRegisterDeviceID || registered.Token != testAuthRegisterToken {
+		t.Fatalf("unexpected register response: %+v", registered)
+	}
+}
+
+func assertEnrollResponse(t *testing.T, enrolled Response) {
+	t.Helper()
+
+	if enrolled.Token != testAuthEnrollToken {
+		t.Fatalf("unexpected enroll response: %+v", enrolled)
+	}
+}
+
+func assertDeviceIdentityDefaults(t *testing.T) {
+	t.Helper()
+
+	device := (DeviceIdentity{}).withDefaults()
+	if device.Model != DefaultDeviceModel || device.KeyType != DefaultDeviceKeyType || device.TunnelType != DefaultDeviceTunnelType {
+		t.Fatalf("expected defaults, got %+v", device)
+	}
+}
+
+func assertRegisterAndEnrollRequests(t *testing.T, pair DeviceKeyPair) {
+	t.Helper()
+
+	reg := BuildRegisterRequest(pair, DeviceIdentity{})
+	if reg.Type != "Android" || reg.Key != pair.PublicKey || reg.KeyType != DefaultDeviceKeyType {
+		t.Fatalf("unexpected register request: %+v", reg)
+	}
+	enroll := BuildEnrollRequest(pair, DeviceIdentity{})
+	if enroll.Key != pair.PublicKey || enroll.TunType != DefaultDeviceTunnelType {
+		t.Fatalf("unexpected enroll request: %+v", enroll)
+	}
+}
+
+func assertClientCertificateGeneration(t *testing.T, privateKey string) {
+	t.Helper()
+
+	cert, err := GenerateClientCertificate(privateKey)
+	if err != nil {
+		t.Fatalf("expected client certificate, got %v", err)
+	}
+	rawCert, err := base64.StdEncoding.DecodeString(cert)
+	if err != nil {
+		t.Fatalf("expected base64 cert, got %v", err)
+	}
+	if _, err := x509.ParseCertificate(rawCert); err != nil {
+		t.Fatalf("expected parsable cert, got %v", err)
+	}
+	if _, err := GenerateClientCertificate("not-base64"); err == nil {
+		t.Fatal("expected invalid private key error")
+	}
+}
+
+func assertBuildStateResult(t *testing.T, privateKey string) {
+	t.Helper()
+
+	state, err := buildState(testBuildStatePrevious(), privateKey, "fallback-token", testBuildStateResponse())
+	if err != nil {
+		t.Fatalf("expected buildState success, got %v", err)
+	}
+	if state.Token != testAuthEnrollToken || state.Certificate.PeerPublicKey == "" || len(state.NodeCache) != 2 {
+		t.Fatalf("unexpected built state: %+v", state)
+	}
+	if state.SelectedNode != testAuthSelectedNode {
+		t.Fatalf("expected selected node preserved, got %q", state.SelectedNode)
+	}
+}
+
+func testBuildStatePrevious() storage.State {
+	return storage.State{
+		SelectedNode: testAuthSelectedNode,
+		NodeCache:    []storage.Node{{ID: testAuthSelectedNode, PublicKey: "old"}},
+		Interface:    storage.InterfaceAddresses{V4: testAuthIPv4Addr},
+		Services:     storage.Services{HTTPProxy: "http://old"},
+	}
+}
+
+func testBuildStateResponse() Response {
+	return Response{
+		ID:    testAuthRegisterDeviceID,
+		Token: testAuthEnrollToken,
+		Account: ResponseAccount{
+			Type:    testAuthAccountTypePlus,
+			License: "lic",
+		},
+		Config: ResponseConfig{
+			ClientID:  "cid",
+			Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}},
+			Services:  ResponseConfigServices{HTTPProxy: "http://new"},
+			Peers: []ResponsePeer{
+				{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: testkit.TestIPv4Echo, Ports: []uint16{500}}}},
+				{PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}},
+			},
+		},
+	}
+}
+
+func assertAuthModelHelpers(t *testing.T) {
+	t.Helper()
+
+	if got := normalizePeerEndpoint(testkit.TestIPv6Doc, 443); !strings.HasPrefix(got, "[") {
+		t.Fatalf("expected ipv6 endpoint to be bracketed, got %q", got)
+	}
+	if got := firstNonEmpty("", " a "); got != "a" {
+		t.Fatalf("unexpected firstNonEmpty result: %q", got)
+	}
+	if got := selectPeerPort([]uint16{0, 500}); got != 500 {
+		t.Fatalf("unexpected selected port: %d", got)
+	}
+}
+
+func assertServiceConstructors(t *testing.T) {
+	t.Helper()
+
 	if svc, err := NewService(&stubAuthClient{}, &stubStateStore{}); err != nil || svc == nil {
 		t.Fatalf("expected NewService success, got svc=%v err=%v", svc, err)
 	}
 	if svc, err := NewDefaultService(""); err != nil || svc == nil {
 		t.Fatalf("expected NewDefaultService success, got svc=%v err=%v", svc, err)
 	}
+}
+
+func assertAPIErrorFormatting(t *testing.T) {
+	t.Helper()
 
 	if got := (&APIError{StatusCode: 400, Code: 7, Message: "bad"}).Error(); !strings.Contains(got, "code=7") {
 		t.Fatalf(errUnexpectedAPIErrorString, got)
@@ -696,6 +815,10 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if ((*APIError)(nil)).Error() == "" {
 		t.Fatal("expected nil api error string")
 	}
+}
+
+func assertAPIErrorCategories(t *testing.T) {
+	t.Helper()
 
 	if got := (&APIError{StatusCode: 418, Message: "unknown"}).Category(); got != APIErrorCategoryUnknown {
 		t.Fatalf("expected unknown api category, got %q", got)
@@ -703,6 +826,10 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if got := (&APIError{StatusCode: 418, Message: "too many requests"}).Category(); got != APIErrorCategoryRateLimited {
 		t.Fatalf("expected rate limited api category, got %q", got)
 	}
+}
+
+func assertAPIErrorExtraction(t *testing.T) {
+	t.Helper()
 
 	if err := parseAPIError(500, nil); err == nil {
 		t.Fatal("expected parseAPIError fallback error")
@@ -719,6 +846,10 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if extractAPIError(500, []byte(`{}`)) == nil {
 		t.Fatal("expected fallback api error on empty error envelope")
 	}
+}
+
+func assertEndpointPreferredAddress(t *testing.T) {
+	t.Helper()
 
 	endpoint := ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr, V6: testAuthIPv6Addr, Addr: "raw"}}
 	if got := endpoint.PreferredAddress(); got != testAuthIPv4Addr {
@@ -732,6 +863,10 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if got := endpoint.PreferredAddress(); got != "raw" {
 		t.Fatalf("unexpected preferred raw address: %q", got)
 	}
+}
+
+func assertPeerHelperBranches(t *testing.T) {
+	t.Helper()
 
 	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost}}}); got != testAuthHost {
 		t.Fatalf("unexpected node id from host: %q", got)

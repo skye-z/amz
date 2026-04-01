@@ -730,7 +730,7 @@ func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 		endpoint:  "current-endpoint",
 		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "current-endpoint"}, {Address: testNextEndpoint}}},
 	}
-	if ok := mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom")); !ok {
+	if !mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom")) {
 		t.Fatal("expected hot swap runtime success")
 	}
 	if mr.endpoint != testNextEndpoint {

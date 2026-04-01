@@ -34,121 +34,12 @@ const (
 func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	t.Parallel()
 
-	httpManager, err := internalruntime.NewHTTPManager(config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf(errHTTPManagerCreate, err)
-	}
-	httpManager.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(clientRuntimeHTTPBody)),
-		}, nil
-	}))
-
-	socksManager, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeSOCKS,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf(errSOCKSManagerCreate, err)
-	}
-	socksManager.SetStreamManager(echoStreamOpener{})
-
-	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: testkit.LocalListenZero,
-		HTTP:          internalruntime.NewHTTPRuntime(httpManager),
-		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager),
-	})
-	if err != nil {
-		t.Fatalf(errClientRuntimeNew, err)
-	}
+	runtime := newClientRuntimeWithHTTPAndSOCKS(t, clientRuntimeHTTPBody)
 	defer runtime.Close()
 
-	if err := runtime.Start(context.Background()); err != nil {
-		t.Fatalf(errRuntimeStart, err)
-	}
-
-	listenAddress := runtime.ListenAddress()
-	if listenAddress == "" || listenAddress == testkit.LocalListenZero {
-		t.Fatalf("expected resolved listen address, got %q", listenAddress)
-	}
-
-	req, err := http.NewRequest(http.MethodGet, clientRuntimeHTTPResourceURL, nil)
-	if err != nil {
-		t.Fatalf("expected request construction success, got %v", err)
-	}
-	httpConn, err := net.Dial("tcp", listenAddress)
-	if err != nil {
-		t.Fatalf("expected http dial success, got %v", err)
-	}
-	if err := req.Write(httpConn); err != nil {
-		_ = httpConn.Close()
-		t.Fatalf("expected http request write success, got %v", err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(httpConn), req)
-	_ = httpConn.Close()
-	if err != nil {
-		t.Fatalf("expected http response read success, got %v", err)
-	}
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatalf("expected http response body read success, got %v", err)
-	}
-	if string(body) != clientRuntimeHTTPBody {
-		t.Fatalf("expected http body %q, got %q", clientRuntimeHTTPBody, string(body))
-	}
-
-	socksConn, err := net.Dial("tcp", listenAddress)
-	if err != nil {
-		t.Fatalf("expected socks dial success, got %v", err)
-	}
-	defer socksConn.Close()
-	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		t.Fatalf(errSOCKSGreetingWrite, err)
-	}
-	greetingReply := make([]byte, 2)
-	if _, err := io.ReadFull(socksConn, greetingReply); err != nil {
-		t.Fatalf("expected socks greeting reply success, got %v", err)
-	}
-	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
-		t.Fatalf(errGreetingReply, want, greetingReply)
-	}
-	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
-	if _, err := socksConn.Write(connectRequest); err != nil {
-		t.Fatalf("expected socks connect request write success, got %v", err)
-	}
-	connectReply, err := readSOCKSReply(socksConn)
-	if err != nil {
-		t.Fatalf("expected socks connect reply success, got %v", err)
-	}
-	if connectReply[1] != 0x00 {
-		t.Fatalf("expected socks connect success reply, got %v", connectReply)
-	}
-	if _, err := socksConn.Write([]byte(clientRuntimeEchoPayload)); err != nil {
-		t.Fatalf("expected socks payload write success, got %v", err)
-	}
-	echoReply := make([]byte, len(clientRuntimeEchoPayload))
-	if _, err := io.ReadFull(socksConn, echoReply); err != nil {
-		t.Fatalf("expected socks payload echo success, got %v", err)
-	}
-	if string(echoReply) != clientRuntimeEchoPayload {
-		t.Fatalf("expected echo payload %q, got %q", clientRuntimeEchoPayload, string(echoReply))
-	}
+	listenAddress := startClientRuntime(t, runtime)
+	assertRuntimeHTTPBody(t, listenAddress, clientRuntimeHTTPBody)
+	assertRuntimeSOCKSEcho(t, listenAddress, clientRuntimeEchoPayload)
 }
 
 func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
@@ -312,133 +203,19 @@ func TestClientRuntimeHealthCheckReturnsFirstComponentError(t *testing.T) {
 func TestClientRuntimeCanHotSwapProxyBackends(t *testing.T) {
 	t.Parallel()
 
-	httpManager1, err := internalruntime.NewHTTPManager(config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf(errHTTPManagerCreate, err)
-	}
-	httpManager1.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("old"))}, nil
-	}))
-	socksManager1, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeSOCKS,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf(errSOCKSManagerCreate, err)
-	}
-	socksManager1.SetStreamManager(echoStreamOpener{})
-
-	runtime1, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: testkit.LocalListenZero,
-		HTTP:          internalruntime.NewHTTPRuntime(httpManager1),
-		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager1),
-	})
-	if err != nil {
-		t.Fatalf("expected first runtime creation success, got %v", err)
-	}
+	runtime1 := newClientRuntimeWithHTTPAndSOCKS(t, "old")
 	defer runtime1.Close()
-	if err := runtime1.Start(context.Background()); err != nil {
-		t.Fatalf("expected first runtime start success, got %v", err)
-	}
-	listenAddress := runtime1.ListenAddress()
+	listenAddress := startClientRuntime(t, runtime1)
 
-	httpManager2, err := internalruntime.NewHTTPManager(config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected second http manager creation success, got %v", err)
-	}
-	httpManager2.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("new"))}, nil
-	}))
-	socksManager2, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeSOCKS,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf("expected second socks manager creation success, got %v", err)
-	}
-	socksManager2.SetStreamManager(echoStreamOpener{})
-
-	runtime2, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
-		ListenAddress: testkit.LocalListenZero,
-		HTTP:          internalruntime.NewHTTPRuntime(httpManager2),
-		SOCKS5:        internalruntime.NewSOCKS5Runtime(socksManager2),
-	})
-	if err != nil {
-		t.Fatalf("expected second runtime creation success, got %v", err)
-	}
+	runtime2 := newClientRuntimeWithHTTPAndSOCKS(t, "new")
 	defer runtime2.Close()
 
-	if ok := runtime1.HotSwapProxyBackendsFrom(runtime2); !ok {
+	if !runtime1.HotSwapProxyBackendsFrom(runtime2) {
 		t.Fatal("expected hot swap to succeed")
 	}
 
-	req, err := http.NewRequest(http.MethodGet, clientRuntimeHTTPResourceURL, nil)
-	if err != nil {
-		t.Fatalf("expected request construction success, got %v", err)
-	}
-	httpConn, err := net.Dial("tcp", listenAddress)
-	if err != nil {
-		t.Fatalf("expected reused http dial success, got %v", err)
-	}
-	if err := req.Write(httpConn); err != nil {
-		_ = httpConn.Close()
-		t.Fatalf("expected request write success, got %v", err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(httpConn), req)
-	_ = httpConn.Close()
-	if err != nil {
-		t.Fatalf("expected http response read success, got %v", err)
-	}
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatalf("expected http response body read success, got %v", err)
-	}
-	if string(body) != "new" {
-		t.Fatalf("expected hot swap response body %q, got %q", "new", string(body))
-	}
-
-	socksConn, err := net.Dial("tcp", listenAddress)
-	if err != nil {
-		t.Fatalf("expected socks dial success after hot swap, got %v", err)
-	}
-	defer socksConn.Close()
-	if _, err := socksConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		t.Fatalf(errSOCKSGreetingWrite, err)
-	}
-	greetingReply := make([]byte, 2)
-	if _, err := io.ReadFull(socksConn, greetingReply); err != nil {
-		t.Fatalf("expected socks greeting reply success after hot swap, got %v", err)
-	}
-	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
-		t.Fatalf(errGreetingReply, want, greetingReply)
-	}
+	assertRuntimeHTTPBody(t, listenAddress, "new")
+	assertRuntimeSOCKSGreeting(t, listenAddress, " after hot swap")
 }
 
 func TestNewClientRuntimeRejectsEmptyConfig(t *testing.T) {
@@ -647,6 +424,198 @@ func TestNewSOCKS5RuntimeFromSharedDialerUsesStreamManager(t *testing.T) {
 	}
 	if string(echoReply) != clientRuntimeEchoPayload {
 		t.Fatalf("expected echo payload %q, got %q", clientRuntimeEchoPayload, string(echoReply))
+	}
+}
+
+func newClientRuntimeWithHTTPAndSOCKS(t *testing.T, httpBody string) *internalruntime.ClientRuntime {
+	t.Helper()
+
+	runtime, err := internalruntime.NewClientRuntime(internalruntime.ClientRuntimeOptions{
+		ListenAddress: testkit.LocalListenZero,
+		HTTP:          internalruntime.NewHTTPRuntime(newTestHTTPManager(t, httpBody)),
+		SOCKS5:        internalruntime.NewSOCKS5Runtime(newTestSOCKSManager(t)),
+	})
+	if err != nil {
+		t.Fatalf(errClientRuntimeNew, err)
+	}
+	return runtime
+}
+
+func newTestHTTPManager(t *testing.T, body string) *internalruntime.HTTPManager {
+	t.Helper()
+
+	manager, err := internalruntime.NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf(errHTTPManagerCreate, err)
+	}
+	manager.SetHTTPRoundTripper(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	}))
+	return manager
+}
+
+func newTestSOCKSManager(t *testing.T) *internalruntime.SOCKS5Manager {
+	t.Helper()
+
+	manager, err := internalruntime.NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf(errSOCKSManagerCreate, err)
+	}
+	manager.SetStreamManager(echoStreamOpener{})
+	return manager
+}
+
+func startClientRuntime(t *testing.T, runtime *internalruntime.ClientRuntime) string {
+	t.Helper()
+
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf(errRuntimeStart, err)
+	}
+	listenAddress := runtime.ListenAddress()
+	if listenAddress == "" || listenAddress == testkit.LocalListenZero {
+		t.Fatalf("expected resolved listen address, got %q", listenAddress)
+	}
+	return listenAddress
+}
+
+func assertRuntimeHTTPBody(t *testing.T, listenAddress, wantBody string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, clientRuntimeHTTPResourceURL, nil)
+	if err != nil {
+		t.Fatalf("expected request construction success, got %v", err)
+	}
+	conn := dialRuntimeConn(t, listenAddress, "expected http dial success, got %v")
+	writeHTTPRequest(t, conn, req, "expected http request write success, got %v")
+	resp := readHTTPResponse(t, conn, req)
+	gotBody := readResponseBody(t, resp)
+	if gotBody != wantBody {
+		t.Fatalf("expected http body %q, got %q", wantBody, gotBody)
+	}
+}
+
+func assertRuntimeSOCKSEcho(t *testing.T, listenAddress, payload string) {
+	t.Helper()
+
+	conn := dialRuntimeConn(t, listenAddress, "expected socks dial success, got %v")
+	defer conn.Close()
+	assertRuntimeSOCKSGreetingWithConn(t, conn, "")
+	writeSOCKSConnectRequest(t, conn, "expected socks connect request write success, got %v")
+	assertSOCKSConnectReply(t, conn)
+	if _, err := conn.Write([]byte(payload)); err != nil {
+		t.Fatalf("expected socks payload write success, got %v", err)
+	}
+	echoReply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, echoReply); err != nil {
+		t.Fatalf("expected socks payload echo success, got %v", err)
+	}
+	if string(echoReply) != payload {
+		t.Fatalf("expected echo payload %q, got %q", payload, string(echoReply))
+	}
+}
+
+func assertRuntimeSOCKSGreeting(t *testing.T, listenAddress, suffix string) {
+	t.Helper()
+
+	conn := dialRuntimeConn(t, listenAddress, "expected socks dial success"+suffix+", got %v")
+	defer conn.Close()
+	assertRuntimeSOCKSGreetingWithConn(t, conn, suffix)
+}
+
+func dialRuntimeConn(t *testing.T, listenAddress, errFormat string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf(errFormat, err)
+	}
+	return conn
+}
+
+func writeHTTPRequest(t *testing.T, conn net.Conn, req *http.Request, errFormat string) {
+	t.Helper()
+
+	if err := req.Write(conn); err != nil {
+		_ = conn.Close()
+		t.Fatalf(errFormat, err)
+	}
+}
+
+func readHTTPResponse(t *testing.T, conn net.Conn, req *http.Request) *http.Response {
+	t.Helper()
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	_ = conn.Close()
+	if err != nil {
+		t.Fatalf("expected http response read success, got %v", err)
+	}
+	return resp
+}
+
+func readResponseBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("expected http response body read success, got %v", err)
+	}
+	return string(body)
+}
+
+func assertRuntimeSOCKSGreetingWithConn(t *testing.T, conn net.Conn, suffix string) {
+	t.Helper()
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf(errSOCKSGreetingWrite, err)
+	}
+	greetingReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greetingReply); err != nil {
+		t.Fatalf("expected socks greeting reply success%s, got %v", suffix, err)
+	}
+	if want := []byte{0x05, 0x00}; string(greetingReply) != string(want) {
+		t.Fatalf(errGreetingReply, want, greetingReply)
+	}
+}
+
+func writeSOCKSConnectRequest(t *testing.T, conn net.Conn, errFormat string) {
+	t.Helper()
+
+	connectRequest := buildSOCKSDomainConnectRequest(testkit.TestDomain, 80)
+	if _, err := conn.Write(connectRequest); err != nil {
+		t.Fatalf(errFormat, err)
+	}
+}
+
+func assertSOCKSConnectReply(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	connectReply, err := readSOCKSReply(conn)
+	if err != nil {
+		t.Fatalf("expected socks connect reply success, got %v", err)
+	}
+	if connectReply[1] != 0x00 {
+		t.Fatalf("expected socks connect success reply, got %v", connectReply)
 	}
 }
 

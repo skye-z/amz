@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -388,13 +389,28 @@ func TestConnectStreamManagerCloseStreamNotFound(t *testing.T) {
 }
 
 func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
+	stream, client := newFakeDialStreamClient()
+
+	conn, rsp, latency := dialFakeConnectStream(t, client)
+	assertConnectStreamDialResult(t, rsp, latency)
+	assertConnectRequestSent(t, stream)
+	assertConnectStreamReadWrite(t, conn, stream)
+	assertConnectStreamDeadlines(t, conn, stream)
+	assertConnectStreamClose(t, conn, stream)
+}
+
+func newFakeDialStreamClient() (*fakeRequestStream, *fakeBoundH3Client) {
 	stream := &fakeRequestStream{
 		readData:   []byte(connectStreamServerBytes),
 		response:   &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))},
 		localAddr:  stubAddr(testkit.LocalAddrHTTPDiag),
 		remoteAddr: stubAddr(connectStreamTestTargetEndpoint),
 	}
-	client := &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}
+	return stream, &fakeBoundH3Client{requestConn: &fakeRequestConn{stream: stream}}
+}
+
+func dialFakeConnectStream(t *testing.T, client *fakeBoundH3Client) (net.Conn, *http.Response, time.Duration) {
+	t.Helper()
 
 	conn, rsp, latency, err := realStreamDialer{}.DialStream(
 		context.Background(),
@@ -406,12 +422,23 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialStream returned error: %v", err)
 	}
+	return conn, rsp, latency
+}
+
+func assertConnectStreamDialResult(t *testing.T, rsp *http.Response, latency time.Duration) {
+	t.Helper()
+
 	if rsp == nil || rsp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 response, got %#v", rsp)
 	}
 	if latency < 0 {
 		t.Fatalf("expected non-negative latency, got %s", latency)
 	}
+}
+
+func assertConnectRequestSent(t *testing.T, stream *fakeRequestStream) {
+	t.Helper()
+
 	if stream.request == nil {
 		t.Fatal("expected CONNECT request to be sent on opened request stream")
 	}
@@ -436,6 +463,10 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if stream.request.ProtoMajor != 0 || stream.request.ProtoMinor != 0 {
 		t.Fatalf("expected CONNECT proto version unset, got %d.%d", stream.request.ProtoMajor, stream.request.ProtoMinor)
 	}
+}
+
+func assertConnectStreamReadWrite(t *testing.T, conn net.Conn, stream *fakeRequestStream) {
+	t.Helper()
 
 	buf := make([]byte, len(connectStreamServerBytes))
 	n, err := conn.Read(buf)
@@ -445,7 +476,6 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if got := string(buf[:n]); got != connectStreamServerBytes {
 		t.Fatalf("expected read bytes %q, got %q", connectStreamServerBytes, got)
 	}
-
 	if _, err := conn.Write([]byte(connectStreamClientBytes)); err != nil {
 		t.Fatalf("Write returned error: %v", err)
 	}
@@ -461,6 +491,10 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if got := conn.RemoteAddr().String(); got != connectStreamTestTargetEndpoint {
 		t.Fatalf("expected remote addr %q, got %q", connectStreamTestTargetEndpoint, got)
 	}
+}
+
+func assertConnectStreamDeadlines(t *testing.T, conn net.Conn, stream *fakeRequestStream) {
+	t.Helper()
 
 	deadline := time.Now().Add(time.Second)
 	if err := conn.SetDeadline(deadline); err != nil {
@@ -475,12 +509,156 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if !stream.deadline.Equal(deadline) || !stream.readDeadline.Equal(deadline) || !stream.writeDeadline.Equal(deadline) {
 		t.Fatal("expected deadlines to be forwarded to request stream")
 	}
+}
+
+func assertConnectStreamClose(t *testing.T, conn net.Conn, stream *fakeRequestStream) {
+	t.Helper()
 
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close returned error: %v", err)
 	}
 	if !stream.closed {
 		t.Fatal("expected closing conn to close request stream")
+	}
+}
+
+func newConnectStreamTLSTarget(t *testing.T) (net.Listener, *x509.CertPool, chan error) {
+	t.Helper()
+
+	tlsServerCfg, rootPool := newTestTLSConfig(t)
+	tlsListener, err := tls.Listen("tcp", testkit.LocalListenZero, tlsServerCfg)
+	if err != nil {
+		t.Fatalf("expected tls listener success, got %v", err)
+	}
+	handshakeDone := make(chan error, 1)
+	go func() {
+		conn, err := tlsListener.Accept()
+		if err != nil {
+			handshakeDone <- err
+			return
+		}
+		defer conn.Close()
+		tlsConn, ok := conn.(*tls.Conn)
+		if !ok {
+			handshakeDone <- errors.New("accepted connection is not tls")
+			return
+		}
+		handshakeDone <- tlsConn.Handshake()
+	}()
+	return tlsListener, rootPool, handshakeDone
+}
+
+func newConnectStreamHTTP3Server(t *testing.T, expectedTargetAddr string) (string, *x509.CertPool, *http3.Server) {
+	t.Helper()
+
+	h3TLS, h3Pool := newTestTLSConfig(t)
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(testkit.LocalhostIPv4).To4(), Port: 0})
+	if err != nil {
+		t.Fatalf("expected udp listen success, got %v", err)
+	}
+	server := &http3.Server{Handler: newConnectStreamHTTP3Handler(expectedTargetAddr), EnableDatagrams: true, TLSConfig: h3TLS}
+	go func() { _ = server.Serve(udpConn) }()
+	endpoint := net.JoinHostPort(testkit.LocalhostName, fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
+	return endpoint, h3Pool, server
+}
+
+func newConnectStreamHTTP3Handler(expectedTargetAddr string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "expected connect", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Host != expectedTargetAddr {
+			http.Error(w, "unexpected target host", http.StatusBadRequest)
+			return
+		}
+		targetConn, err := net.Dial("tcp", expectedTargetAddr)
+		if err != nil {
+			http.Error(w, "dial target failed", http.StatusBadGateway)
+			return
+		}
+		defer targetConn.Close()
+
+		w.WriteHeader(http.StatusOK)
+		if rc := http.NewResponseController(w); rc != nil {
+			_ = rc.Flush()
+		}
+		go func() { _, _ = io.Copy(targetConn, r.Body) }()
+		_, _ = io.Copy(w, targetConn)
+	})
+}
+
+func newConnectedConnectStreamManagers(t *testing.T, ctx context.Context, endpoint string, h3Pool *x509.CertPool) (*ConnectionManager, *ConnectStreamManager) {
+	t.Helper()
+
+	manager, err := NewConnectionManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            testkit.LocalhostName,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected connection manager creation success, got %v", err)
+	}
+	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: testkit.LocalhostName, RootCAs: h3Pool, NextProtos: []string{http3.NextProtoH3}}}
+	if err := manager.Connect(ctx); err != nil {
+		t.Fatalf("expected quic/http3 connection success, got %v", err)
+	}
+	streamMgr, err := NewConnectStreamManager(config.KernelConfig{
+		Endpoint:       endpoint,
+		SNI:            testkit.LocalhostName,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
+	})
+	if err != nil {
+		t.Fatalf("expected stream manager creation success, got %v", err)
+	}
+	streamMgr.BindHTTP3Conn(manager.HTTP3Conn())
+	streamMgr.h3.Authority = endpoint
+	streamMgr.SetReady()
+	return manager, streamMgr
+}
+
+func openConnectStreamTunnel(t *testing.T, ctx context.Context, streamMgr *ConnectStreamManager, addr string) net.Conn {
+	t.Helper()
+
+	targetHost, targetPort, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("expected target split success, got %v", err)
+	}
+	tunneledConn, err := streamMgr.OpenStream(ctx, targetHost, targetPort)
+	if err != nil {
+		t.Fatalf("expected connect stream open success, got %v", err)
+	}
+	return tunneledConn
+}
+
+func handshakeConnectStreamTLSClient(t *testing.T, ctx context.Context, tunneledConn net.Conn, rootPool *x509.CertPool) *tls.Conn {
+	t.Helper()
+
+	clientTLS := tls.Client(tunneledConn, &tls.Config{ServerName: testkit.LocalhostName, RootCAs: rootPool})
+	if err := clientTLS.HandshakeContext(ctx); err != nil {
+		t.Fatalf("expected tls handshake over connect stream success, got %v", err)
+	}
+	return clientTLS
+}
+
+func waitForConnectStreamServerHandshake(t *testing.T, ctx context.Context, handshakeDone <-chan error) {
+	t.Helper()
+
+	select {
+	case err := <-handshakeDone:
+		if err != nil {
+			t.Fatalf("expected server-side tls handshake success, got %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("expected server-side tls handshake completion, got %v", context.Cause(ctx))
 	}
 }
 
@@ -543,126 +721,21 @@ func TestHTTP3StreamConnWithoutStreamFailsCleanly(t *testing.T) {
 }
 
 func TestConnectStreamManagerTLSHandshakeIntegration(t *testing.T) {
-	tlsServerCfg, rootPool := newTestTLSConfig(t)
-	tlsListener, err := tls.Listen("tcp", testkit.LocalListenZero, tlsServerCfg)
-	if err != nil {
-		t.Fatalf("expected tls listener success, got %v", err)
-	}
+	tlsListener, rootPool, handshakeDone := newConnectStreamTLSTarget(t)
 	defer tlsListener.Close()
-	expectedTargetAddr := tlsListener.Addr().String()
 
-	handshakeDone := make(chan error, 1)
-	go func() {
-		conn, err := tlsListener.Accept()
-		if err != nil {
-			handshakeDone <- err
-			return
-		}
-		defer conn.Close()
-		tlsConn, ok := conn.(*tls.Conn)
-		if !ok {
-			handshakeDone <- errors.New("accepted connection is not tls")
-			return
-		}
-		handshakeDone <- tlsConn.Handshake()
-	}()
-
-	h3TLS, h3Pool := newTestTLSConfig(t)
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(testkit.LocalhostIPv4).To4(), Port: 0})
-	if err != nil {
-		t.Fatalf("expected udp listen success, got %v", err)
-	}
-	defer udpConn.Close()
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			http.Error(w, "expected connect", http.StatusMethodNotAllowed)
-			return
-		}
-		if r.Host != expectedTargetAddr {
-			http.Error(w, "unexpected target host", http.StatusBadRequest)
-			return
-		}
-		targetConn, err := net.Dial("tcp", expectedTargetAddr)
-		if err != nil {
-			http.Error(w, "dial target failed", http.StatusBadGateway)
-			return
-		}
-		defer targetConn.Close()
-
-		w.WriteHeader(http.StatusOK)
-		if rc := http.NewResponseController(w); rc != nil {
-			_ = rc.Flush()
-		}
-
-		go func() { _, _ = io.Copy(targetConn, r.Body) }()
-		_, _ = io.Copy(w, targetConn)
-	})
-	server := http3.Server{Handler: handler, EnableDatagrams: true, TLSConfig: h3TLS}
-	go func() { _ = server.Serve(udpConn) }()
+	endpoint, h3Pool, server := newConnectStreamHTTP3Server(t, tlsListener.Addr().String())
 	defer server.Close()
-
-	endpoint := net.JoinHostPort(testkit.LocalhostName, fmt.Sprintf("%d", udpConn.LocalAddr().(*net.UDPAddr).Port))
-	manager, err := NewConnectionManager(config.KernelConfig{
-		Endpoint:       endpoint,
-		SNI:            testkit.LocalhostName,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
-	})
-	if err != nil {
-		t.Fatalf("expected connection manager creation success, got %v", err)
-	}
-	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: testkit.LocalhostName, RootCAs: h3Pool, NextProtos: []string{http3.NextProtoH3}}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := manager.Connect(ctx); err != nil {
-		t.Fatalf("expected quic/http3 connection success, got %v", err)
-	}
+	manager, streamMgr := newConnectedConnectStreamManagers(t, ctx, endpoint, h3Pool)
+	defer manager.Close()
+	defer streamMgr.Close()
 
-	streamMgr, err := NewConnectStreamManager(config.KernelConfig{
-		Endpoint:       endpoint,
-		SNI:            testkit.LocalhostName,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: config.DefaultHTTPListenAddress},
-	})
-	if err != nil {
-		t.Fatalf("expected stream manager creation success, got %v", err)
-	}
-	streamMgr.BindHTTP3Conn(manager.HTTP3Conn())
-	streamMgr.h3.Authority = endpoint
-	streamMgr.SetReady()
-
-	targetHost, targetPort, err := net.SplitHostPort(tlsListener.Addr().String())
-	if err != nil {
-		t.Fatalf("expected target split success, got %v", err)
-	}
-	tunneledConn, err := streamMgr.OpenStream(ctx, targetHost, targetPort)
-	if err != nil {
-		t.Fatalf("expected connect stream open success, got %v", err)
-	}
+	tunneledConn := openConnectStreamTunnel(t, ctx, streamMgr, tlsListener.Addr().String())
 	defer tunneledConn.Close()
-
-	clientTLS := tls.Client(tunneledConn, &tls.Config{ServerName: testkit.LocalhostName, RootCAs: rootPool})
-	if err := clientTLS.HandshakeContext(ctx); err != nil {
-		t.Fatalf("expected tls handshake over connect stream success, got %v", err)
-	}
+	clientTLS := handshakeConnectStreamTLSClient(t, ctx, tunneledConn, rootPool)
 	defer clientTLS.Close()
-
-	select {
-	case err := <-handshakeDone:
-		if err != nil {
-			t.Fatalf("expected server-side tls handshake success, got %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatalf("expected server-side tls handshake completion, got %v", context.Cause(ctx))
-	}
-	_ = manager.Close()
-	_ = streamMgr.Close()
+	waitForConnectStreamServerHandshake(t, ctx, handshakeDone)
 }

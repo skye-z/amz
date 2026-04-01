@@ -603,81 +603,13 @@ func TestRuntimeFactoriesAndHealthWrappers(t *testing.T) {
 }
 
 func TestHTTPManagerUtilityHelpers(t *testing.T) {
-	manager, err := NewHTTPManager(config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeHTTP,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
-	})
-	if err != nil {
-		t.Fatalf(errManagerCreate, err)
-	}
-	if manager.State() != config.StateIdle {
-		t.Fatalf("expected idle state, got %q", manager.State())
-	}
-	if manager.ListenAddress() == "" || manager.Snapshot().ListenAddress == "" {
-		t.Fatal("expected non-empty listen address snapshot")
-	}
-	manager.AddReconnect()
-	if stats := manager.Stats(); stats.ReconnectCount != 1 {
-		t.Fatalf("expected reconnect count 1, got %+v", stats)
-	}
+	manager := newHTTPUtilityTestManager(t)
 
-	manager.SetHTTPRoundTripper(localRoundTripper(func(*http.Request) (*http.Response, error) { return nil, nil }))
-	if manager.currentRoundTripper() == nil {
-		t.Fatal("expected configured round tripper")
-	}
-	manager.SetHTTPRoundTripper(nil)
-	if manager.currentRoundTripper() == nil {
-		t.Fatal("expected fallback round tripper")
-	}
-
-	src := http.Header{}
-	src.Add("A", "1")
-	dst := http.Header{}
-	copyHeaders(dst, src)
-	if dst.Get("A") != "1" {
-		t.Fatalf("expected copied header, got %+v", dst)
-	}
-	headers := http.Header{httpConnectHeaderName: []string{"keep-alive"}, "Upgrade": []string{"h2c"}}
-	removeHopByHopHeaders(headers)
-	if headers.Get(httpConnectHeaderName) != "" || headers.Get("Upgrade") != "" {
-		t.Fatalf("expected hop-by-hop headers removed, got %+v", headers)
-	}
-	if !isClosedNetworkError(net.ErrClosed) {
-		t.Fatal("expected closed network error detection")
-	}
-	if isClosedNetworkError(errors.New(httpConnectErrBoom)) {
-		t.Fatal("expected generic error not to be treated as closed network error")
-	}
-	args := sanitizeHTTPArgs([]any{"token=secret", errors.New("bad")})
-	if len(args) != 2 {
-		t.Fatalf("unexpected sanitized args: %+v", args)
-	}
-	reader := &countingReadCloser{ReadCloser: io.NopCloser(strings.NewReader("abc"))}
-	buf := make([]byte, 2)
-	if n, err := reader.Read(buf); err != nil || n != 2 || reader.count != 2 {
-		t.Fatalf("unexpected counting reader state: n=%d err=%v count=%d", n, err, reader.count)
-	}
-
-	done := make(chan bool, 1)
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		manager.mu.Lock()
-		manager.cfg.Endpoint = httpConnectNewEndpoint
-		manager.mu.Unlock()
-		done <- true
-	}()
-	if !manager.waitForBackendRefresh(context.Background(), config.DefaultEndpoint, manager.currentBackendSignature(), 200*time.Millisecond) {
-		t.Fatal("expected backend refresh detection")
-	}
-	<-done
-	if manager.waitForEndpointChange(context.Background(), httpConnectNewEndpoint, 30*time.Millisecond) {
-		t.Fatal("expected endpoint change wait to time out when unchanged")
-	}
+	assertHTTPManagerUtilitySnapshot(t, manager)
+	assertHTTPManagerRoundTripperHelpers(t, manager)
+	assertHTTPHeaderHelpers(t)
+	assertHTTPUtilitySanitizers(t)
+	assertHTTPBackendRefreshHelpers(t, manager)
 }
 
 func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
@@ -741,104 +673,14 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 }
 
 func TestSOCKS5ManagerUtilityHelpersAndAuth(t *testing.T) {
-	manager, err := NewSOCKS5Manager(&config.KernelConfig{
-		Endpoint:       config.DefaultEndpoint,
-		SNI:            config.DefaultSNI,
-		MTU:            config.DefaultMTU,
-		Mode:           config.ModeSOCKS,
-		ConnectTimeout: config.DefaultConnectTimeout,
-		Keepalive:      config.DefaultKeepalive,
-		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero, Username: "u", Password: "p"},
-	})
-	if err != nil {
-		t.Fatalf(errSOCKSManagerCreate, err)
-	}
-	if manager.State() != config.StateIdle || manager.ListenAddress() == "" {
-		t.Fatalf("unexpected initial manager state/listen: %q %q", manager.State(), manager.ListenAddress())
-	}
-	manager.AddReconnect()
-	manager.SetUDPAssociateRelay(stubUDPRelay{})
-	if snapshot := manager.Snapshot(); snapshot.Username != "u" || snapshot.ListenAddress == "" {
-		t.Fatalf("unexpected snapshot: %+v", snapshot)
-	}
-	if stats := manager.Stats(); stats.ReconnectCount != 1 {
-		t.Fatalf("unexpected reconnect stats: %+v", stats)
-	}
-	args := sanitizeSOCKS5Args([]any{"token=secret", errors.New("bad")})
-	if len(args) != 2 {
-		t.Fatalf("unexpected sanitized socks args: %+v", args)
-	}
+	manager := newSOCKSUtilityTestManager(t)
 
-	server, client := net.Pipe()
-	defer client.Close()
-	authDone := make(chan error, 1)
-	go func() {
-		authDone <- manager.handleUserPassAuth(server)
-		server.Close()
-	}()
-	_, _ = client.Write([]byte{socksAuthVersion, 0x01, 'u', 0x01, 'p'})
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(client, reply); err != nil {
-		t.Fatalf("expected auth reply success, got %v", err)
-	}
-	if reply[1] != 0x00 {
-		t.Fatalf("expected auth success reply, got %v", reply)
-	}
-	if err := <-authDone; err != nil {
-		t.Fatalf("expected auth success, got %v", err)
-	}
-
-	server, client = net.Pipe()
-	defer client.Close()
-	authDone = make(chan error, 1)
-	go func() {
-		authDone <- manager.handleUserPassAuth(server)
-		server.Close()
-	}()
-	_, _ = client.Write([]byte{socksAuthVersion, 0x01, 'x', 0x01, 'y'})
-	if _, err := io.ReadFull(client, reply); err != nil {
-		t.Fatalf("expected auth failure reply success, got %v", err)
-	}
-	if reply[1] != 0x01 {
-		t.Fatalf("expected auth failure reply, got %v", reply)
-	}
-	if err := <-authDone; err == nil {
-		t.Fatal("expected auth failure error")
-	}
-
-	if _, _, err := parseSOCKSTargetAddress("missing-port"); err == nil {
-		t.Fatal("expected malformed socks target error")
-	}
-	if _, err := readAddressFromConn(bytes.NewReader([]byte{0x00}), 0x09); err == nil {
-		t.Fatal("expected unsupported address type error")
-	}
-	if _, err := readAddress(&bytesReader{0x09}); err == nil {
-		t.Fatal("expected unsupported bytesReader address type error")
-	}
-	done := make(chan struct{}, 1)
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		manager.mu.Lock()
-		manager.streamManager = localStreamOpener{}
-		manager.mu.Unlock()
-		done <- struct{}{}
-	}()
-	if !manager.waitForBackendRefresh(context.Background(), config.DefaultEndpoint, manager.currentBackendSignature(), 200*time.Millisecond) {
-		t.Fatal("expected socks backend refresh detection")
-	}
-	<-done
-	done = make(chan struct{}, 1)
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		manager.mu.Lock()
-		manager.cfg.Endpoint = httpConnectNewEndpoint
-		manager.mu.Unlock()
-		done <- struct{}{}
-	}()
-	if !manager.waitForEndpointChange(context.Background(), config.DefaultEndpoint, 200*time.Millisecond) {
-		t.Fatal("expected socks endpoint change detection")
-	}
-	<-done
+	assertSOCKSManagerUtilitySnapshot(t, manager)
+	assertSOCKSSanitizeHelpers(t)
+	assertSOCKSUserPassAuth(t, manager, []byte{socksAuthVersion, 0x01, 'u', 0x01, 'p'}, 0x00, false)
+	assertSOCKSUserPassAuth(t, manager, []byte{socksAuthVersion, 0x01, 'x', 0x01, 'y'}, 0x01, true)
+	assertSOCKSUtilityErrors(t)
+	assertSOCKSBackendRefreshHelpers(t, manager)
 }
 
 func TestSOCKS5ManagerStateSnapshotAndUDPAssociatePaths(t *testing.T) {
@@ -1494,12 +1336,239 @@ const (
 func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		address string
-		atyp    byte
-		check   func(*testing.T, []byte)
-	}{
+	for _, tt := range socksAddressEncodingCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertSOCKSAddressEncoding(t, tt)
+		})
+	}
+}
+
+type socksAddressEncodingCase struct {
+	name    string
+	address string
+	atyp    byte
+	check   func(*testing.T, []byte)
+}
+
+func newHTTPUtilityTestManager(t *testing.T) *HTTPManager {
+	t.Helper()
+
+	manager, err := NewHTTPManager(config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeHTTP,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		HTTP:           config.HTTPConfig{ListenAddress: testkit.LocalListenZero},
+	})
+	if err != nil {
+		t.Fatalf(errManagerCreate, err)
+	}
+	return manager
+}
+
+func assertHTTPManagerUtilitySnapshot(t *testing.T, manager *HTTPManager) {
+	t.Helper()
+
+	if manager.State() != config.StateIdle {
+		t.Fatalf("expected idle state, got %q", manager.State())
+	}
+	if manager.ListenAddress() == "" || manager.Snapshot().ListenAddress == "" {
+		t.Fatal("expected non-empty listen address snapshot")
+	}
+	manager.AddReconnect()
+	if stats := manager.Stats(); stats.ReconnectCount != 1 {
+		t.Fatalf("expected reconnect count 1, got %+v", stats)
+	}
+}
+
+func assertHTTPManagerRoundTripperHelpers(t *testing.T, manager *HTTPManager) {
+	t.Helper()
+
+	manager.SetHTTPRoundTripper(localRoundTripper(func(*http.Request) (*http.Response, error) { return nil, nil }))
+	if manager.currentRoundTripper() == nil {
+		t.Fatal("expected configured round tripper")
+	}
+	manager.SetHTTPRoundTripper(nil)
+	if manager.currentRoundTripper() == nil {
+		t.Fatal("expected fallback round tripper")
+	}
+}
+
+func assertHTTPHeaderHelpers(t *testing.T) {
+	t.Helper()
+
+	src := http.Header{}
+	src.Add("A", "1")
+	dst := http.Header{}
+	copyHeaders(dst, src)
+	if dst.Get("A") != "1" {
+		t.Fatalf("expected copied header, got %+v", dst)
+	}
+	headers := http.Header{httpConnectHeaderName: []string{"keep-alive"}, "Upgrade": []string{"h2c"}}
+	removeHopByHopHeaders(headers)
+	if headers.Get(httpConnectHeaderName) != "" || headers.Get("Upgrade") != "" {
+		t.Fatalf("expected hop-by-hop headers removed, got %+v", headers)
+	}
+}
+
+func assertHTTPUtilitySanitizers(t *testing.T) {
+	t.Helper()
+
+	if !isClosedNetworkError(net.ErrClosed) {
+		t.Fatal("expected closed network error detection")
+	}
+	if isClosedNetworkError(errors.New(httpConnectErrBoom)) {
+		t.Fatal("expected generic error not to be treated as closed network error")
+	}
+	args := sanitizeHTTPArgs([]any{"token=secret", errors.New("bad")})
+	if len(args) != 2 {
+		t.Fatalf("unexpected sanitized args: %+v", args)
+	}
+	reader := &countingReadCloser{ReadCloser: io.NopCloser(strings.NewReader("abc"))}
+	buf := make([]byte, 2)
+	if n, err := reader.Read(buf); err != nil || n != 2 || reader.count != 2 {
+		t.Fatalf("unexpected counting reader state: n=%d err=%v count=%d", n, err, reader.count)
+	}
+}
+
+func assertHTTPBackendRefreshHelpers(t *testing.T, manager *HTTPManager) {
+	t.Helper()
+
+	done := make(chan bool, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		manager.mu.Lock()
+		manager.cfg.Endpoint = httpConnectNewEndpoint
+		manager.mu.Unlock()
+		done <- true
+	}()
+	if !manager.waitForBackendRefresh(context.Background(), config.DefaultEndpoint, manager.currentBackendSignature(), 200*time.Millisecond) {
+		t.Fatal("expected backend refresh detection")
+	}
+	<-done
+	if manager.waitForEndpointChange(context.Background(), httpConnectNewEndpoint, 30*time.Millisecond) {
+		t.Fatal("expected endpoint change wait to time out when unchanged")
+	}
+}
+
+func newSOCKSUtilityTestManager(t *testing.T) *SOCKS5Manager {
+	t.Helper()
+
+	manager, err := NewSOCKS5Manager(&config.KernelConfig{
+		Endpoint:       config.DefaultEndpoint,
+		SNI:            config.DefaultSNI,
+		MTU:            config.DefaultMTU,
+		Mode:           config.ModeSOCKS,
+		ConnectTimeout: config.DefaultConnectTimeout,
+		Keepalive:      config.DefaultKeepalive,
+		SOCKS:          config.SOCKSConfig{ListenAddress: testkit.LocalListenZero, Username: "u", Password: "p"},
+	})
+	if err != nil {
+		t.Fatalf(errSOCKSManagerCreate, err)
+	}
+	return manager
+}
+
+func assertSOCKSManagerUtilitySnapshot(t *testing.T, manager *SOCKS5Manager) {
+	t.Helper()
+
+	if manager.State() != config.StateIdle || manager.ListenAddress() == "" {
+		t.Fatalf("unexpected initial manager state/listen: %q %q", manager.State(), manager.ListenAddress())
+	}
+	manager.AddReconnect()
+	manager.SetUDPAssociateRelay(stubUDPRelay{})
+	if snapshot := manager.Snapshot(); snapshot.Username != "u" || snapshot.ListenAddress == "" {
+		t.Fatalf("unexpected snapshot: %+v", snapshot)
+	}
+	if stats := manager.Stats(); stats.ReconnectCount != 1 {
+		t.Fatalf("unexpected reconnect stats: %+v", stats)
+	}
+}
+
+func assertSOCKSSanitizeHelpers(t *testing.T) {
+	t.Helper()
+
+	args := sanitizeSOCKS5Args([]any{"token=secret", errors.New("bad")})
+	if len(args) != 2 {
+		t.Fatalf("unexpected sanitized socks args: %+v", args)
+	}
+}
+
+func assertSOCKSUserPassAuth(t *testing.T, manager *SOCKS5Manager, request []byte, wantStatus byte, wantErr bool) {
+	t.Helper()
+
+	server, client := net.Pipe()
+	defer client.Close()
+	authDone := make(chan error, 1)
+	go func() {
+		authDone <- manager.handleUserPassAuth(server)
+		server.Close()
+	}()
+	_, _ = client.Write(request)
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("expected auth reply success, got %v", err)
+	}
+	if reply[1] != wantStatus {
+		t.Fatalf("expected auth reply status %d, got %v", wantStatus, reply)
+	}
+	err := <-authDone
+	if wantErr && err == nil {
+		t.Fatal("expected auth failure error")
+	}
+	if !wantErr && err != nil {
+		t.Fatalf("expected auth success, got %v", err)
+	}
+}
+
+func assertSOCKSUtilityErrors(t *testing.T) {
+	t.Helper()
+
+	if _, _, err := parseSOCKSTargetAddress("missing-port"); err == nil {
+		t.Fatal("expected malformed socks target error")
+	}
+	if _, err := readAddressFromConn(bytes.NewReader([]byte{0x00}), 0x09); err == nil {
+		t.Fatal("expected unsupported address type error")
+	}
+	if _, err := readAddress(&bytesReader{0x09}); err == nil {
+		t.Fatal("expected unsupported bytesReader address type error")
+	}
+}
+
+func assertSOCKSBackendRefreshHelpers(t *testing.T, manager *SOCKS5Manager) {
+	t.Helper()
+
+	done := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		manager.mu.Lock()
+		manager.streamManager = localStreamOpener{}
+		manager.mu.Unlock()
+		done <- struct{}{}
+	}()
+	if !manager.waitForBackendRefresh(context.Background(), config.DefaultEndpoint, manager.currentBackendSignature(), 200*time.Millisecond) {
+		t.Fatal("expected socks backend refresh detection")
+	}
+	<-done
+	done = make(chan struct{}, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		manager.mu.Lock()
+		manager.cfg.Endpoint = httpConnectNewEndpoint
+		manager.mu.Unlock()
+		done <- struct{}{}
+	}()
+	if !manager.waitForEndpointChange(context.Background(), config.DefaultEndpoint, 200*time.Millisecond) {
+		t.Fatal("expected socks endpoint change detection")
+	}
+	<-done
+}
+
+func socksAddressEncodingCases() []socksAddressEncodingCase {
+	return []socksAddressEncodingCase{
 		{
 			name:    "ipv4",
 			address: socksIPv4DNSAddress,
@@ -1544,21 +1613,19 @@ func TestEncodeSOCKSAddressSupportsIPv4DomainAndIPv6(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+func assertSOCKSAddressEncoding(t *testing.T, tt socksAddressEncodingCase) {
+	t.Helper()
 
-			encoded, err := encodeSOCKSAddress(tt.address)
-			if err != nil {
-				t.Fatalf("expected encode success, got %v", err)
-			}
-			if encoded[0] != tt.atyp {
-				t.Fatalf("expected atyp %#x, got %#x", tt.atyp, encoded[0])
-			}
-			tt.check(t, encoded)
-		})
+	encoded, err := encodeSOCKSAddress(tt.address)
+	if err != nil {
+		t.Fatalf("expected encode success, got %v", err)
 	}
+	if encoded[0] != tt.atyp {
+		t.Fatalf("expected atyp %#x, got %#x", tt.atyp, encoded[0])
+	}
+	tt.check(t, encoded)
 }
 
 func TestBuildAndParseSOCKSUDPDatagramRoundTrip(t *testing.T) {

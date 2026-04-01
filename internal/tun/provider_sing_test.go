@@ -45,17 +45,7 @@ func (f *fakeNativeTun) UpdateRouteOptions(o singtun.Options) error {
 // 验证 sing-tun 设备会将地址与路由转换为真实 route options。
 func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 	nativeTun := &fakeNativeTun{}
-	device := &singDevice{
-		tun:     nativeTun,
-		name:    "amz0",
-		mtu:     1400,
-		started: false,
-		options: singtun.Options{
-			Name:      "amz0",
-			MTU:       1400,
-			AutoRoute: false,
-		},
-	}
+	device := newTestSingDevice(nativeTun, false)
 
 	if err := device.ApplyTUNConfig(Config{
 		Device: DeviceConfig{Name: "amz0", MTU: 1400},
@@ -77,44 +67,49 @@ func TestSingDeviceApplyTUNConfigAndRoutes(t *testing.T) {
 	if len(nativeTun.options) != 0 {
 		t.Fatalf("expected no native updates before start, got %d", len(nativeTun.options))
 	}
-	got := device.options
-	if got.AutoRoute {
-		t.Fatalf("expected split mode to keep autoroute disabled, got %+v", got)
-	}
-	if len(got.Inet4Address) != 1 || got.Inet4Address[0] != netip.MustParsePrefix(testkit.TunIPv4CIDR) {
-		t.Fatalf("unexpected inet4 address options: %+v", got.Inet4Address)
-	}
-	if len(got.Inet6Address) != 1 || got.Inet6Address[0] != netip.MustParsePrefix(testkit.TunIPv6CIDR) {
-		t.Fatalf("unexpected inet6 address options: %+v", got.Inet6Address)
-	}
-	if len(got.Inet4RouteAddress) != 1 || got.Inet4RouteAddress[0] != netip.MustParsePrefix(testkit.RouteSplitV4) {
-		t.Fatalf("unexpected inet4 route options: %+v", got.Inet4RouteAddress)
-	}
-	if len(got.Inet6RouteAddress) != 1 || got.Inet6RouteAddress[0] != netip.MustParsePrefix(testkit.RouteSplitV6) {
-		t.Fatalf("unexpected inet6 route options: %+v", got.Inet6RouteAddress)
-	}
-	if len(got.Inet4RouteExcludeAddress) != 1 || got.Inet4RouteExcludeAddress[0] != netip.MustParsePrefix(testkit.EndpointRouteV4) {
-		t.Fatalf("unexpected inet4 route exclude options: %+v", got.Inet4RouteExcludeAddress)
-	}
-	if len(got.Inet6RouteExcludeAddress) != 1 || got.Inet6RouteExcludeAddress[0] != netip.MustParsePrefix(testkit.EndpointRouteV6) {
-		t.Fatalf("unexpected inet6 route exclude options: %+v", got.Inet6RouteExcludeAddress)
-	}
+	assertSingDeviceSplitOptions(t, device.options)
 }
 
-// 验证 sing-tun 设备会在路由更新失败时执行回滚。
-func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
-	nativeTun := &fakeNativeTun{failUpdateAt: 2}
-	device := &singDevice{
+func newTestSingDevice(nativeTun *fakeNativeTun, started bool) *singDevice {
+	return &singDevice{
 		tun:     nativeTun,
 		name:    "amz0",
 		mtu:     1400,
-		started: true,
+		started: started,
 		options: singtun.Options{
 			Name:      "amz0",
 			MTU:       1400,
 			AutoRoute: false,
 		},
 	}
+}
+
+func assertSingDeviceSplitOptions(t *testing.T, got singtun.Options) {
+	t.Helper()
+
+	if got.AutoRoute {
+		t.Fatalf("expected split mode to keep autoroute disabled, got %+v", got)
+	}
+	assertPrefixList(t, "inet4 address", got.Inet4Address, testkit.TunIPv4CIDR)
+	assertPrefixList(t, "inet6 address", got.Inet6Address, testkit.TunIPv6CIDR)
+	assertPrefixList(t, "inet4 route", got.Inet4RouteAddress, testkit.RouteSplitV4)
+	assertPrefixList(t, "inet6 route", got.Inet6RouteAddress, testkit.RouteSplitV6)
+	assertPrefixList(t, "inet4 route exclude", got.Inet4RouteExcludeAddress, testkit.EndpointRouteV4)
+	assertPrefixList(t, "inet6 route exclude", got.Inet6RouteExcludeAddress, testkit.EndpointRouteV6)
+}
+
+func assertPrefixList(t *testing.T, name string, got []netip.Prefix, want string) {
+	t.Helper()
+
+	wantPrefix := netip.MustParsePrefix(want)
+	if len(got) != 1 || got[0] != wantPrefix {
+		t.Fatalf("unexpected %s options: %+v", name, got)
+	}
+}
+
+func TestSingDeviceApplyTUNRoutesRollbackOnFailure(t *testing.T) {
+	nativeTun := &fakeNativeTun{failUpdateAt: 2}
+	device := newTestSingDevice(nativeTun, true)
 
 	if err := device.ApplyTUNConfig(Config{
 		Device: DeviceConfig{Name: "amz0", MTU: 1400},
