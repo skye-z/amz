@@ -162,34 +162,50 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		field("socks5_enabled", m.opts.SOCKS5.Enabled),
 		field("tun_enabled", m.opts.TUN.Enabled),
 	)
+	if reused, err := m.tryReuseRuntimeStart(ctx, logger, started); reused || err != nil {
+		return err
+	}
+	authResult, err := m.ensureAuthState(ctx, logger, started)
+	if err != nil {
+		return err
+	}
+	selection, cache, err := m.selectStartCandidates(ctx, authResult.State, logger, started)
+	if err != nil {
+		return err
+	}
+	return m.startSelectedRuntime(ctx, authResult.State, selection, cache, logger, started)
+}
 
+func (m *managedRuntime) tryReuseRuntimeStart(ctx context.Context, logger Logger, started time.Time) (bool, error) {
 	m.mu.Lock()
-	if m.runtime != nil {
-		runtime := m.runtime
-		m.mu.Unlock()
-		logEvent(logger, "managed_runtime", "start.reuse_runtime")
-		if err := runtime.Start(ctx); err != nil {
-			logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
-				field("error", err),
-				durationField("duration", time.Since(started)),
-			)
-			return err
-		}
-		m.mu.Lock()
-		m.refreshStatusLocked(runtime)
-		status := m.status
-		m.mu.Unlock()
-		logEvent(logger, "managed_runtime", "start.success",
-			field("endpoint", status.Endpoint),
-			field("listen_address", status.ListenAddress),
-			field("registered", status.Registered),
-			field("running", status.Running),
+	runtime := m.runtime
+	m.mu.Unlock()
+	if runtime == nil {
+		return false, nil
+	}
+	logEvent(logger, "managed_runtime", "start.reuse_runtime")
+	if err := runtime.Start(ctx); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
+			field("error", err),
 			durationField("duration", time.Since(started)),
 		)
-		return nil
+		return true, err
 	}
+	m.mu.Lock()
+	m.refreshStatusLocked(runtime)
+	status := m.status
 	m.mu.Unlock()
+	logEvent(logger, "managed_runtime", "start.success",
+		field("endpoint", status.Endpoint),
+		field("listen_address", status.ListenAddress),
+		field("registered", status.Registered),
+		field("running", status.Running),
+		durationField("duration", time.Since(started)),
+	)
+	return true, nil
+}
 
+func (m *managedRuntime) ensureAuthState(ctx context.Context, logger Logger, started time.Time) (auth.Result, error) {
 	authStarted := time.Now()
 	logEvent(logger, "managed_runtime", "auth.ensure.begin")
 	authResult, err := m.auth.Ensure(ctx)
@@ -202,14 +218,16 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			field("error", err),
 			durationField("duration", time.Since(started)),
 		)
-		return err
+		return auth.Result{}, err
 	}
 	logEvent(logger, "managed_runtime", "auth.ensure.success",
 		field("cache_nodes", len(authResult.State.NodeCache)),
 		durationField("duration", time.Since(authStarted)),
 	)
+	return authResult, nil
+}
 
-	state := authResult.State
+func (m *managedRuntime) selectStartCandidates(ctx context.Context, state storage.State, logger Logger, started time.Time) (endpointSelection, []storage.Node, error) {
 	selectStarted := time.Now()
 	logEvent(logger, "managed_runtime", "endpoint.select.begin",
 		field("cache_nodes", len(state.NodeCache)),
@@ -217,29 +235,13 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 	)
 	selection, cache, err := m.selectFn(ctx, state)
 	if err != nil {
-		logEvent(logger, "managed_runtime", "endpoint.select.failed",
-			field("error", err),
-			field("cache_nodes", len(state.NodeCache)),
-			durationField("duration", time.Since(selectStarted)),
-		)
-		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
-			field("error", err),
-			durationField("duration", time.Since(started)),
-		)
-		return err
+		m.logStartSelectionFailure(logger, state, started, selectStarted, err)
+		return endpointSelection{}, nil, err
 	}
 	if len(selection.Candidates) == 0 {
-		err := fmt.Errorf("no available endpoint candidates")
-		logEvent(logger, "managed_runtime", "endpoint.select.failed",
-			field("error", err),
-			field("cache_nodes", len(state.NodeCache)),
-			durationField("duration", time.Since(selectStarted)),
-		)
-		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
-			field("error", err),
-			durationField("duration", time.Since(started)),
-		)
-		return err
+		err = fmt.Errorf("no available endpoint candidates")
+		m.logStartSelectionFailure(logger, state, started, selectStarted, err)
+		return endpointSelection{}, nil, err
 	}
 	logEvent(logger, "managed_runtime", "endpoint.select.success",
 		field("endpoint", selection.Primary.Address),
@@ -248,131 +250,176 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		field("cache_nodes", len(cache)),
 		durationField("duration", time.Since(selectStarted)),
 	)
+	return selection, cache, nil
+}
+
+func (m *managedRuntime) logStartSelectionFailure(logger Logger, state storage.State, started time.Time, selectStarted time.Time, err error) {
+	logEvent(logger, "managed_runtime", "endpoint.select.failed",
+		field("error", err),
+		field("cache_nodes", len(state.NodeCache)),
+		durationField("duration", time.Since(selectStarted)),
+	)
+	logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
+		field("error", err),
+		durationField("duration", time.Since(started)),
+	)
+}
+
+func (m *managedRuntime) startSelectedRuntime(ctx context.Context, state storage.State, selection endpointSelection, cache []storage.Node, logger Logger, started time.Time) error {
 	var endpointErrors []error
 	for idx, candidate := range selection.Candidates {
-		if idx > 0 {
-			logEvent(logger, "managed_runtime", "endpoint.failover",
-				field("failed_endpoint", selection.Candidates[idx-1].Address),
-				field("next_endpoint", candidate.Address),
-				field("attempt", idx+1),
-				field("total", len(selection.Candidates)),
-			)
-		}
-
-		buildStarted := time.Now()
-		logEvent(logger, "managed_runtime", "runtime.build.begin",
-			field("endpoint", candidate.Address),
-			field("http_enabled", m.opts.HTTP.Enabled),
-			field("socks5_enabled", m.opts.SOCKS5.Enabled),
-			field("tun_enabled", m.opts.TUN.Enabled),
-		)
-		runtime, buildErr := m.buildFn(candidate.Address, state)
-		if buildErr != nil {
-			logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
-				field("endpoint", candidate.Address),
-				field("error", buildErr),
-				durationField("duration", time.Since(buildStarted)),
-			)
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s build failed: %w", candidate.Address, buildErr))
+		m.logStartFailoverCandidate(selection, idx, candidate.Address, logger)
+		runtime, persistedState, err := m.prepareCandidateRuntime(ctx, candidate.Address, state, cache, logger)
+		if err != nil {
+			endpointErrors = append(endpointErrors, err)
 			continue
 		}
-		logEvent(logger, "managed_runtime", "runtime.build.success",
-			field("endpoint", candidate.Address),
-			durationField("duration", time.Since(buildStarted)),
-		)
-
-		runtimeStartStarted := time.Now()
-		logEvent(logger, "managed_runtime", "runtime.start.begin",
-			field("endpoint", candidate.Address),
-		)
-		if startErr := runtime.Start(ctx); startErr != nil {
-			logEvent(logger, "managed_runtime", eventRuntimeStartLog,
-				field("endpoint", candidate.Address),
-				field("error", startErr),
-				durationField("duration", time.Since(runtimeStartStarted)),
-			)
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
-			if closeErr := runtime.Close(); closeErr != nil {
-				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
-					field("endpoint", candidate.Address),
-					field("error", closeErr),
-				)
-			}
-			continue
-		}
-		logEvent(logger, "managed_runtime", "runtime.start.success",
-			field("endpoint", candidate.Address),
-			durationField("duration", time.Since(runtimeStartStarted)),
-		)
-		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
-			logEvent(logger, "managed_runtime", eventRuntimeHealthFail,
-				field("endpoint", candidate.Address),
-				field("error", healthErr),
-			)
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
-			if closeErr := runtime.Close(); closeErr != nil {
-				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
-					field("endpoint", candidate.Address),
-					field("error", closeErr),
-				)
-			}
-			continue
-		}
-
-		persistedState := state
-		persistedState.SelectedNode = candidate.Address
-		persistedState.NodeCache = cache
-		saveStarted := time.Now()
-		logEvent(logger, "managed_runtime", eventStateSaveBegin,
-			field("selected_node", persistedState.SelectedNode),
-			field("cache_nodes", len(persistedState.NodeCache)),
-		)
-		if saveErr := m.store.Save(persistedState); saveErr != nil {
-			logEvent(logger, "managed_runtime", eventStateSaveFailed,
-				field("selected_node", persistedState.SelectedNode),
-				field("error", saveErr),
-				durationField("duration", time.Since(saveStarted)),
-			)
-			_ = runtime.Close()
-			logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
-				field("error", saveErr),
-				durationField("duration", time.Since(started)),
-			)
-			return saveErr
-		}
-		logEvent(logger, "managed_runtime", eventStateSaveSuccess,
-			field("selected_node", persistedState.SelectedNode),
-			field("cache_nodes", len(persistedState.NodeCache)),
-			durationField("duration", time.Since(saveStarted)),
-		)
-
-		m.mu.Lock()
-		m.runtime = runtime
-		m.registered = true
-		m.endpoint = candidate.Address
-		m.selection = selection
-		m.activeIdx = idx
-		m.lastState = persistedState
-		m.switching = false
-		m.refreshStatusLocked(runtime)
-		status := m.status
-		m.mu.Unlock()
-		logEvent(logger, "managed_runtime", "start.success",
-			field("endpoint", status.Endpoint),
-			field("listen_address", status.ListenAddress),
-			field("registered", status.Registered),
-			field("running", status.Running),
-			durationField("duration", time.Since(started)),
-		)
+		m.activateStartedRuntime(runtime, persistedState, selection, idx, logger, started)
 		return nil
 	}
-
-	err = fmt.Errorf("all candidate endpoints failed: %w", errors.Join(endpointErrors...))
+	err := fmt.Errorf("all candidate endpoints failed: %w", errors.Join(endpointErrors...))
 	logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 		field("error", err),
 		durationField("duration", time.Since(started)),
 	)
 	return err
+}
+
+func (m *managedRuntime) logStartFailoverCandidate(selection endpointSelection, idx int, endpoint string, logger Logger) {
+	if idx <= 0 {
+		return
+	}
+	logEvent(logger, "managed_runtime", "endpoint.failover",
+		field("failed_endpoint", selection.Candidates[idx-1].Address),
+		field("next_endpoint", endpoint),
+		field("attempt", idx+1),
+		field("total", len(selection.Candidates)),
+	)
+}
+
+func (m *managedRuntime) prepareCandidateRuntime(ctx context.Context, endpoint string, state storage.State, cache []storage.Node, logger Logger) (sdkRuntime, storage.State, error) {
+	runtime, err := m.buildCandidateRuntime(endpoint, state, logger)
+	if err != nil {
+		return nil, storage.State{}, fmt.Errorf("%s build failed: %w", endpoint, err)
+	}
+	if err := m.startCandidateRuntime(ctx, endpoint, runtime, logger); err != nil {
+		m.closeRuntimeWithLog(runtime, endpoint, logger)
+		return nil, storage.State{}, fmt.Errorf("%s start failed: %w", endpoint, err)
+	}
+	if err := m.runRuntimeHealthCheck(endpoint, runtime); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeHealthFail,
+			field("endpoint", endpoint),
+			field("error", err),
+		)
+		m.closeRuntimeWithLog(runtime, endpoint, logger)
+		return nil, storage.State{}, fmt.Errorf("%s health check failed: %w", endpoint, err)
+	}
+	persistedState, err := m.persistStartedState(state, endpoint, cache, logger)
+	if err != nil {
+		_ = runtime.Close()
+		return nil, storage.State{}, err
+	}
+	return runtime, persistedState, nil
+}
+
+func (m *managedRuntime) buildCandidateRuntime(endpoint string, state storage.State, logger Logger) (sdkRuntime, error) {
+	buildStarted := time.Now()
+	logEvent(logger, "managed_runtime", "runtime.build.begin",
+		field("endpoint", endpoint),
+		field("http_enabled", m.opts.HTTP.Enabled),
+		field("socks5_enabled", m.opts.SOCKS5.Enabled),
+		field("tun_enabled", m.opts.TUN.Enabled),
+	)
+	runtime, err := m.buildFn(endpoint, state)
+	if err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
+			field("endpoint", endpoint),
+			field("error", err),
+			durationField("duration", time.Since(buildStarted)),
+		)
+		return nil, err
+	}
+	logEvent(logger, "managed_runtime", "runtime.build.success",
+		field("endpoint", endpoint),
+		durationField("duration", time.Since(buildStarted)),
+	)
+	return runtime, nil
+}
+
+func (m *managedRuntime) startCandidateRuntime(ctx context.Context, endpoint string, runtime sdkRuntime, logger Logger) error {
+	runtimeStartStarted := time.Now()
+	logEvent(logger, "managed_runtime", "runtime.start.begin", field("endpoint", endpoint))
+	if err := runtime.Start(ctx); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeStartLog,
+			field("endpoint", endpoint),
+			field("error", err),
+			durationField("duration", time.Since(runtimeStartStarted)),
+		)
+		return err
+	}
+	logEvent(logger, "managed_runtime", "runtime.start.success",
+		field("endpoint", endpoint),
+		durationField("duration", time.Since(runtimeStartStarted)),
+	)
+	return nil
+}
+
+func (m *managedRuntime) persistStartedState(state storage.State, endpoint string, cache []storage.Node, logger Logger) (storage.State, error) {
+	persistedState := state
+	persistedState.SelectedNode = endpoint
+	persistedState.NodeCache = cache
+	saveStarted := time.Now()
+	logEvent(logger, "managed_runtime", eventStateSaveBegin,
+		field("selected_node", persistedState.SelectedNode),
+		field("cache_nodes", len(persistedState.NodeCache)),
+	)
+	if err := m.store.Save(persistedState); err != nil {
+		logEvent(logger, "managed_runtime", eventStateSaveFailed,
+			field("selected_node", persistedState.SelectedNode),
+			field("error", err),
+			durationField("duration", time.Since(saveStarted)),
+		)
+		return storage.State{}, err
+	}
+	logEvent(logger, "managed_runtime", eventStateSaveSuccess,
+		field("selected_node", persistedState.SelectedNode),
+		field("cache_nodes", len(persistedState.NodeCache)),
+		durationField("duration", time.Since(saveStarted)),
+	)
+	return persistedState, nil
+}
+
+func (m *managedRuntime) activateStartedRuntime(runtime sdkRuntime, persistedState storage.State, selection endpointSelection, idx int, logger Logger, started time.Time) {
+	m.mu.Lock()
+	m.runtime = runtime
+	m.registered = true
+	m.endpoint = persistedState.SelectedNode
+	m.selection = selection
+	m.activeIdx = idx
+	m.lastState = persistedState
+	m.switching = false
+	m.refreshStatusLocked(runtime)
+	status := m.status
+	m.mu.Unlock()
+	logEvent(logger, "managed_runtime", "start.success",
+		field("endpoint", status.Endpoint),
+		field("listen_address", status.ListenAddress),
+		field("registered", status.Registered),
+		field("running", status.Running),
+		durationField("duration", time.Since(started)),
+	)
+}
+
+func (m *managedRuntime) closeRuntimeWithLog(runtime sdkRuntime, endpoint string, logger Logger) {
+	if runtime == nil {
+		return
+	}
+	if err := runtime.Close(); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
+			field("endpoint", endpoint),
+			field("error", err),
+		)
+	}
 }
 
 func (m *managedRuntime) Run() error {
@@ -517,76 +564,37 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 			field("attempt", idx+1),
 			field("total", len(selection.Candidates)),
 		)
-
-		runtime, err := m.buildFn(candidate.Address, state)
+		runtime, err := m.buildFailoverRuntime(candidate.Address, state, logger)
 		if err != nil {
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s build failed: %w", candidate.Address, err))
-			logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
-				field("endpoint", candidate.Address),
-				field("error", err),
-			)
+			endpointErrors = append(endpointErrors, err)
 			continue
 		}
 		if m.tryHotSwapRuntime(current, runtime, candidate.Address, state, selection, idx, triggerErr) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		startErr := runtime.Start(ctx)
-		cancel()
-		if startErr != nil {
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
-			logEvent(logger, "managed_runtime", eventRuntimeStartLog,
-				field("endpoint", candidate.Address),
-				field("error", startErr),
-			)
-			_ = runtime.Close()
+		if err := m.startFailoverRuntime(candidate.Address, runtime, logger); err != nil {
+			endpointErrors = append(endpointErrors, err)
+			m.closeRuntimeWithLog(runtime, candidate.Address, logger)
 			continue
 		}
-		if current != nil {
-			if err := current.Close(); err != nil {
-				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
-					field("endpoint", failedEndpoint),
-					field("error", err),
-				)
-			}
-			current = nil
-		}
+		m.closeCurrentRuntime(current, failedEndpoint, logger)
+		current = nil
 		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
 			logEvent(logger, "managed_runtime", eventRuntimeHealthFail,
 				field("endpoint", candidate.Address),
 				field("error", healthErr),
 			)
-			_ = runtime.Close()
+			m.closeRuntimeWithLog(runtime, candidate.Address, logger)
 			continue
 		}
-
-		persistedState := state
-		persistedState.SelectedNode = candidate.Address
-		if saveErr := m.store.Save(persistedState); saveErr != nil {
-			logEvent(logger, "managed_runtime", eventStateSaveFailed,
-				field("selected_node", persistedState.SelectedNode),
-				field("error", saveErr),
-			)
-			_ = runtime.Close()
-			endpointErrors = append(endpointErrors, fmt.Errorf("%s save failed: %w", candidate.Address, saveErr))
+		persistedState, err := m.persistFailoverState(state, candidate.Address, logger)
+		if err != nil {
+			endpointErrors = append(endpointErrors, err)
+			m.closeRuntimeWithLog(runtime, candidate.Address, logger)
 			continue
 		}
-
-		m.mu.Lock()
-		m.runtime = runtime
-		m.endpoint = candidate.Address
-		m.selection = selection
-		m.activeIdx = idx
-		m.lastState = persistedState
-		m.switching = false
-		m.registered = true
-		m.refreshStatusLocked(runtime)
-		m.mu.Unlock()
-		logEvent(logger, "managed_runtime", "runtime.failover.success",
-			field("endpoint", candidate.Address),
-			field("trigger_error", triggerErr),
-		)
+		m.activateFailoverRuntime(runtime, persistedState, selection, idx, candidate.Address, triggerErr, logger)
 		return
 	}
 
@@ -596,6 +604,73 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 	logEvent(logger, "managed_runtime", "runtime.failover.failed",
 		field("endpoint", failedEndpoint),
 		field("error", errors.Join(endpointErrors...)),
+	)
+}
+
+func (m *managedRuntime) buildFailoverRuntime(endpoint string, state storage.State, logger Logger) (sdkRuntime, error) {
+	runtime, err := m.buildFn(endpoint, state)
+	if err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
+			field("endpoint", endpoint),
+			field("error", err),
+		)
+		return nil, fmt.Errorf("%s build failed: %w", endpoint, err)
+	}
+	return runtime, nil
+}
+
+func (m *managedRuntime) startFailoverRuntime(endpoint string, runtime sdkRuntime, logger Logger) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := runtime.Start(ctx); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeStartLog,
+			field("endpoint", endpoint),
+			field("error", err),
+		)
+		return fmt.Errorf("%s start failed: %w", endpoint, err)
+	}
+	return nil
+}
+
+func (m *managedRuntime) closeCurrentRuntime(current sdkRuntime, failedEndpoint string, logger Logger) {
+	if current == nil {
+		return
+	}
+	if err := current.Close(); err != nil {
+		logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
+			field("endpoint", failedEndpoint),
+			field("error", err),
+		)
+	}
+}
+
+func (m *managedRuntime) persistFailoverState(state storage.State, endpoint string, logger Logger) (storage.State, error) {
+	persistedState := state
+	persistedState.SelectedNode = endpoint
+	if err := m.store.Save(persistedState); err != nil {
+		logEvent(logger, "managed_runtime", eventStateSaveFailed,
+			field("selected_node", persistedState.SelectedNode),
+			field("error", err),
+		)
+		return storage.State{}, fmt.Errorf("%s save failed: %w", endpoint, err)
+	}
+	return persistedState, nil
+}
+
+func (m *managedRuntime) activateFailoverRuntime(runtime sdkRuntime, persistedState storage.State, selection endpointSelection, idx int, endpoint string, triggerErr error, logger Logger) {
+	m.mu.Lock()
+	m.runtime = runtime
+	m.endpoint = endpoint
+	m.selection = selection
+	m.activeIdx = idx
+	m.lastState = persistedState
+	m.switching = false
+	m.registered = true
+	m.refreshStatusLocked(runtime)
+	m.mu.Unlock()
+	logEvent(logger, "managed_runtime", "runtime.failover.success",
+		field("endpoint", endpoint),
+		field("trigger_error", triggerErr),
 	)
 }
 
@@ -767,103 +842,14 @@ func (m *managedRuntime) selectEndpoint(ctx context.Context, state storage.State
 }
 
 func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdkRuntime, error) {
-	var httpRT *iruntime.HTTPRuntime
-	var socksRT *iruntime.SOCKS5Runtime
-	var tunRT *iruntime.TUNRuntime
-
-	if m.opts.HTTP.Enabled || m.opts.SOCKS5.Enabled {
-		baseCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address, withAction(m.opts.Logger, "PROXY"))
-		connectionManager, err := amzsession.NewConnectionManager(baseCfg)
-		if err != nil {
-			return nil, err
-		}
-		connectIPManager, err := amzsession.NewConnectIPSessionManager(baseCfg)
-		if err != nil {
-			return nil, err
-		}
-		connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
-		delegate := &net.Dialer{Timeout: baseCfg.ConnectTimeout}
-
-		// Create one shared BootstrapDialer and PacketStackDialer for both HTTP and SOCKS5
-		sharedDialer, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, delegate)
-		if err != nil {
-			return nil, err
-		}
-		sharedDialer.SetFailureReporter(func(event failure.Event) {
-			if strings.TrimSpace(event.Endpoint) == "" {
-				event.Endpoint = endpoint
-			}
-			m.publishFailure(event)
-		})
-		sharedPacketDialer, err := amzsession.NewPacketStackDialer(sharedDialer)
-		if err != nil {
-			return nil, err
-		}
-		sharedDNSDialer := iruntime.NewExportedDNSResolvingDialer(sharedPacketDialer)
-
-		if m.opts.HTTP.Enabled {
-			httpCfg := baseCfg
-			httpCfg.Mode = amzconfig.ModeHTTP
-			httpCfg.HTTP.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewHTTPRuntimeFromSharedDialer(httpCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
-			if err != nil {
-				return nil, err
-			}
-			runtime.SetFailureReporter(func(event failure.Event) {
-				if strings.TrimSpace(event.Endpoint) == "" {
-					event.Endpoint = endpoint
-				}
-				m.publishFailure(event)
-			})
-			httpRT = runtime
-		}
-
-		if m.opts.SOCKS5.Enabled {
-			socksCfg := baseCfg
-			socksCfg.Mode = amzconfig.ModeSOCKS
-			socksCfg.SOCKS.ListenAddress = m.opts.Listen.Address
-			runtime, err := iruntime.NewSOCKS5RuntimeFromSharedDialer(&socksCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
-			if err != nil {
-				return nil, err
-			}
-			runtime.SetFailureReporter(func(event failure.Event) {
-				if strings.TrimSpace(event.Endpoint) == "" {
-					event.Endpoint = endpoint
-				}
-				m.publishFailure(event)
-			})
-			socksRT = runtime
-		}
+	httpRT, socksRT, err := m.buildProxyRuntimes(endpoint, state)
+	if err != nil {
+		return nil, err
 	}
-
-	if m.opts.TUN.Enabled {
-		tunCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeTUN, "", withAction(m.opts.Logger, "TUN"))
-		connectionManager, err := amzsession.NewConnectionManager(tunCfg)
-		if err != nil {
-			return nil, err
-		}
-		connectIPManager, err := amzsession.NewConnectIPSessionManager(tunCfg)
-		if err != nil {
-			return nil, err
-		}
-		connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
-		bootstrap, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, &net.Dialer{Timeout: tunCfg.ConnectTimeout})
-		if err != nil {
-			return nil, err
-		}
-		bootstrap.SetFailureReporter(func(event failure.Event) {
-			if strings.TrimSpace(event.Endpoint) == "" {
-				event.Endpoint = endpoint
-			}
-			m.publishFailure(event)
-		})
-		manager, err := iruntime.NewBootstrapTUNManager(&tunCfg, bootstrap)
-		if err != nil {
-			return nil, err
-		}
-		tunRT = iruntime.NewTUNRuntimeWithHealth(manager, bootstrap.HealthCheck)
+	tunRT, err := m.buildTUNRuntime(endpoint, state)
+	if err != nil {
+		return nil, err
 	}
-
 	runtime, err := iruntime.NewClientRuntime(iruntime.ClientRuntimeOptions{
 		ListenAddress: m.opts.Listen.Address,
 		HTTP:          httpRT,
@@ -874,6 +860,110 @@ func (m *managedRuntime) buildRuntime(endpoint string, state storage.State) (sdk
 		return nil, err
 	}
 	return &runtimeAdapter{runtime: runtime}, nil
+}
+
+type runtimeContextDialer interface {
+	DialContext(context.Context, string, string) (net.Conn, error)
+}
+
+func (m *managedRuntime) buildProxyRuntimes(endpoint string, state storage.State) (*iruntime.HTTPRuntime, *iruntime.SOCKS5Runtime, error) {
+	if !m.opts.HTTP.Enabled && !m.opts.SOCKS5.Enabled {
+		return nil, nil, nil
+	}
+	baseCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeHTTP, m.opts.Listen.Address, withAction(m.opts.Logger, "PROXY"))
+	connectionManager, err := amzsession.NewConnectionManager(baseCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	connectIPManager, err := amzsession.NewConnectIPSessionManager(baseCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
+	sharedDialer, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, &net.Dialer{Timeout: baseCfg.ConnectTimeout})
+	if err != nil {
+		return nil, nil, err
+	}
+	sharedDialer.SetFailureReporter(m.failureReporterForEndpoint(endpoint))
+	sharedPacketDialer, err := amzsession.NewPacketStackDialer(sharedDialer)
+	if err != nil {
+		return nil, nil, err
+	}
+	sharedDNSDialer := iruntime.NewExportedDNSResolvingDialer(sharedPacketDialer)
+	httpRT, err := m.newHTTPRuntime(endpoint, baseCfg, sharedDialer, sharedDNSDialer)
+	if err != nil {
+		return nil, nil, err
+	}
+	socksRT, err := m.newSOCKSRuntime(endpoint, baseCfg, sharedDialer, sharedDNSDialer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return httpRT, socksRT, nil
+}
+
+func (m *managedRuntime) newHTTPRuntime(endpoint string, baseCfg amzconfig.KernelConfig, sharedDialer *amzsession.CoreTunnelDialer, sharedDNSDialer runtimeContextDialer) (*iruntime.HTTPRuntime, error) {
+	if !m.opts.HTTP.Enabled {
+		return nil, nil
+	}
+	httpCfg := baseCfg
+	httpCfg.Mode = amzconfig.ModeHTTP
+	httpCfg.HTTP.ListenAddress = m.opts.Listen.Address
+	runtime, err := iruntime.NewHTTPRuntimeFromSharedDialer(httpCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
+	if err != nil {
+		return nil, err
+	}
+	runtime.SetFailureReporter(m.failureReporterForEndpoint(endpoint))
+	return runtime, nil
+}
+
+func (m *managedRuntime) newSOCKSRuntime(endpoint string, baseCfg amzconfig.KernelConfig, sharedDialer *amzsession.CoreTunnelDialer, sharedDNSDialer runtimeContextDialer) (*iruntime.SOCKS5Runtime, error) {
+	if !m.opts.SOCKS5.Enabled {
+		return nil, nil
+	}
+	socksCfg := baseCfg
+	socksCfg.Mode = amzconfig.ModeSOCKS
+	socksCfg.SOCKS.ListenAddress = m.opts.Listen.Address
+	runtime, err := iruntime.NewSOCKS5RuntimeFromSharedDialer(&socksCfg, sharedDNSDialer, amzsession.NewPreparedProxyStreamOpener(sharedDialer, sharedDialer.StreamManager()))
+	if err != nil {
+		return nil, err
+	}
+	runtime.SetFailureReporter(m.failureReporterForEndpoint(endpoint))
+	return runtime, nil
+}
+
+func (m *managedRuntime) buildTUNRuntime(endpoint string, state storage.State) (*iruntime.TUNRuntime, error) {
+	if !m.opts.TUN.Enabled {
+		return nil, nil
+	}
+	tunCfg := baseKernelConfigFromState(state, endpoint, strings.TrimSpace(m.opts.Transport.SNI), amzconfig.ModeTUN, "", withAction(m.opts.Logger, "TUN"))
+	connectionManager, err := amzsession.NewConnectionManager(tunCfg)
+	if err != nil {
+		return nil, err
+	}
+	connectIPManager, err := amzsession.NewConnectIPSessionManager(tunCfg)
+	if err != nil {
+		return nil, err
+	}
+	connectIPManager.UpdateSessionInfo(sessionInfoFromState(state))
+	bootstrap, err := amzsession.NewBootstrapDialer(connectionManager, connectIPManager, &net.Dialer{Timeout: tunCfg.ConnectTimeout})
+	if err != nil {
+		return nil, err
+	}
+	bootstrap.SetFailureReporter(m.failureReporterForEndpoint(endpoint))
+	manager, err := iruntime.NewBootstrapTUNManager(&tunCfg, bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	return iruntime.NewTUNRuntimeWithHealth(manager, bootstrap.HealthCheck), nil
+}
+
+func (m *managedRuntime) failureReporterForEndpoint(endpoint string) func(failure.Event) {
+	return func(event failure.Event) {
+		if strings.TrimSpace(event.Endpoint) == "" {
+			event.Endpoint = endpoint
+		}
+		m.publishFailure(event)
+	}
 }
 
 type runtimeAdapter struct {
