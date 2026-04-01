@@ -163,40 +163,9 @@ func allCandidatesNotProbed(candidates []Candidate) bool {
 func buildPreferredPlan(state Registration) Plan {
 	plan := Plan{}
 	if len(state.EndpointPorts) > 0 {
-		if strings.TrimSpace(state.EndpointHost) != "" {
-			host := strings.TrimSpace(state.EndpointHost)
-			if parsed, _, err := net.SplitHostPort(host); err == nil {
-				host = parsed
-			}
-			for _, port := range state.EndpointPorts {
-				plan.Domains = append(plan.Domains, net.JoinHostPort(host, strconv.Itoa(int(port))))
-			}
-		}
-		if strings.TrimSpace(state.EndpointV4) != "" {
-			host, _, err := net.SplitHostPort(strings.TrimSpace(state.EndpointV4))
-			if err == nil {
-				for _, port := range state.EndpointPorts {
-					plan.Fixed = append(plan.Fixed, net.JoinHostPort(host, strconv.Itoa(int(port))))
-				}
-				for _, fallbackHost := range observedWarpProxyFallbackHosts(host) {
-					for _, port := range state.EndpointPorts {
-						plan.Fixed = append(plan.Fixed, net.JoinHostPort(fallbackHost, strconv.Itoa(int(port))))
-					}
-				}
-			} else {
-				plan.Fixed = append(plan.Fixed, strings.TrimSpace(state.EndpointV4))
-			}
-		}
-		if strings.TrimSpace(state.EndpointV6) != "" {
-			host, _, err := net.SplitHostPort(strings.TrimSpace(state.EndpointV6))
-			if err == nil {
-				for _, port := range state.EndpointPorts {
-					plan.Fixed = append(plan.Fixed, net.JoinHostPort(host, strconv.Itoa(int(port))))
-				}
-			} else {
-				plan.Fixed = append(plan.Fixed, strings.TrimSpace(state.EndpointV6))
-			}
-		}
+		plan.Domains = append(plan.Domains, expandEndpointHost(state.EndpointHost, state.EndpointPorts)...)
+		plan.Fixed = append(plan.Fixed, expandEndpointV4(state.EndpointV4, state.EndpointPorts)...)
+		plan.Fixed = append(plan.Fixed, expandEndpointV6(state.EndpointV6, state.EndpointPorts)...)
 		return plan
 	}
 
@@ -210,6 +179,69 @@ func buildPreferredPlan(state Registration) Plan {
 		plan.Fixed = append(plan.Fixed, strings.TrimSpace(state.EndpointV6))
 	}
 	return plan
+}
+
+func expandEndpointHost(rawHost string, ports []uint16) []string {
+	host := trimEndpointHost(rawHost)
+	if host == "" {
+		return nil
+	}
+	return joinHostPorts(host, ports)
+}
+
+func expandEndpointV4(rawHost string, ports []uint16) []string {
+	trimmed := strings.TrimSpace(rawHost)
+	if trimmed == "" {
+		return nil
+	}
+	host, ok := splitEndpointHost(trimmed)
+	if !ok {
+		return []string{trimmed}
+	}
+	addresses := joinHostPorts(host, ports)
+	for _, fallbackHost := range observedWarpProxyFallbackHosts(host) {
+		addresses = append(addresses, joinHostPorts(fallbackHost, ports)...)
+	}
+	return addresses
+}
+
+func expandEndpointV6(rawHost string, ports []uint16) []string {
+	trimmed := strings.TrimSpace(rawHost)
+	if trimmed == "" {
+		return nil
+	}
+	host, ok := splitEndpointHost(trimmed)
+	if !ok {
+		return []string{trimmed}
+	}
+	return joinHostPorts(host, ports)
+}
+
+func trimEndpointHost(rawHost string) string {
+	host := strings.TrimSpace(rawHost)
+	if host == "" {
+		return ""
+	}
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		return parsed
+	}
+	return host
+}
+
+func splitEndpointHost(address string) (string, bool) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", false
+	}
+	return host, true
+}
+
+func joinHostPorts(host string, ports []uint16) []string {
+	addresses := make([]string, 0, len(ports))
+	for _, port := range ports {
+		addresses = append(addresses, net.JoinHostPort(host, strconv.Itoa(int(port))))
+	}
+	return addresses
 }
 
 func observedWarpProxyFallbackHosts(host string) []string {

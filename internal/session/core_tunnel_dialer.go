@@ -164,7 +164,7 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 	defer d.mu.Unlock()
 	h3conn := d.connection.HTTP3Conn()
 	d.session.BindHTTP3Conn(h3conn)
-	if err := d.session.Open(ctx); err != nil {
+	if err := d.openConnectIPSession(ctx); err != nil {
 		err = fmt.Errorf("ensure connect-ip ready: %w", err)
 		d.reportFailure(err)
 		return err
@@ -172,33 +172,44 @@ func (d *CoreTunnelDialer) ensureReady(ctx context.Context) error {
 	if d.connection.cfg.Mode != amzconfig.ModeTUN {
 		return nil
 	}
-	if d.assembly == nil {
-		assembly, err := d.assemblyFactory(d.buildAssembleOptions())
-		if err != nil {
-			return fmt.Errorf("ensure tun assembly ready: %w", err)
-		}
-		relayCtx, cancel := context.WithCancelCause(context.Background())
-		done := make(chan error, 1)
-		d.assembly = assembly
-		d.relayCancel = cancel
-		d.relayDone = done
-		packetRelay := d.packetRelay
-		if packetRelay == nil {
-			packetRelay = d.packetIO.Relay
-		}
-		go func(dev TUNDevice, endpoint PacketRelayEndpoint) {
-			err := packetRelay(relayCtx, dev, endpoint)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				d.mu.Lock()
-				if d.relayErr == nil {
-					d.relayErr = err
-				}
-				d.mu.Unlock()
-			}
-			done <- err
-		}(d.assembly.Device, d.session.PacketEndpoint())
+	return d.ensureTUNAssemblyLocked()
+}
+
+func (d *CoreTunnelDialer) openConnectIPSession(ctx context.Context) error {
+	return d.session.Open(ctx)
+}
+
+func (d *CoreTunnelDialer) ensureTUNAssemblyLocked() error {
+	if d.assembly != nil {
+		return nil
 	}
+	assembly, err := d.assemblyFactory(d.buildAssembleOptions())
+	if err != nil {
+		return fmt.Errorf("ensure tun assembly ready: %w", err)
+	}
+	relayCtx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	d.assembly = assembly
+	d.relayCancel = cancel
+	d.relayDone = done
+	go d.runPacketRelay(relayCtx, done, d.assembly.Device, d.session.PacketEndpoint())
 	return nil
+}
+
+func (d *CoreTunnelDialer) runPacketRelay(relayCtx context.Context, done chan<- error, dev TUNDevice, endpoint PacketRelayEndpoint) {
+	packetRelay := d.packetRelay
+	if packetRelay == nil {
+		packetRelay = d.packetIO.Relay
+	}
+	err := packetRelay(relayCtx, dev, endpoint)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		d.mu.Lock()
+		if d.relayErr == nil {
+			d.relayErr = err
+		}
+		d.mu.Unlock()
+	}
+	done <- err
 }
 
 func (d *CoreTunnelDialer) HealthCheck(ctx context.Context) error {

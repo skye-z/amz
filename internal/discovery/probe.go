@@ -244,68 +244,95 @@ func (p *RealProber) probeCandidate(batchCtx context.Context, candidate Candidat
 		return result
 	}
 
-	if p.observer != nil {
-		p.observer.OnProbeStart(candidate, index+1, total)
-	}
+	p.notifyProbeStart(candidate, index, total)
 	started := time.Now()
-
-	ctx := batchCtx
-	cancel := func() {
-		// No-op when no timeout context was created.
-	}
-	if p.timeout > 0 {
-		ctx, cancel = context.WithTimeout(batchCtx, p.timeout)
-	}
+	ctx, cancel := p.probeContext(batchCtx)
 	defer cancel()
 
-	network := p.probeNetwork(candidate)
-	conn, err := p.dialer.DialContext(ctx, network, candidate.Address)
-	latency := time.Since(started)
+	latency, err := p.probeConnectivity(ctx, candidate, started)
 	if err != nil {
 		result.Reason = fmt.Sprintf("dial_failed: %v", err)
-		if p.observer != nil {
-			p.observer.OnProbeDone(candidate, result, time.Since(started), index+1, total)
-		}
+		p.notifyProbeDone(candidate, result, started, index, total)
 		return result
 	}
-	if conn != nil {
-		_ = conn.Close()
-	}
-	if latency <= 0 {
-		latency = time.Nanosecond
-	}
-
 	result.Latency = latency
 	result.Available = true
 	result.WarpEnabled = true
-	if p.checker != nil {
-		if p.observer != nil {
-			p.observer.OnWarpCheckStart(candidate)
-		}
-		checkStarted := time.Now()
-		warpEnabled, err := p.checker.CheckWarp(ctx, candidate)
-		if p.observer != nil {
-			p.observer.OnWarpCheckDone(candidate, warpEnabled, err, time.Since(checkStarted))
-		}
-		if err != nil {
-			result.Available = false
-			result.WarpEnabled = false
-			result.Reason = fmt.Sprintf("warp_check_failed: %v", err)
-			if p.observer != nil {
-				p.observer.OnProbeDone(candidate, result, time.Since(started), index+1, total)
-			}
-			return result
-		}
-		result.Available = warpEnabled
-		result.WarpEnabled = warpEnabled
-		if !warpEnabled {
-			result.Reason = "warp_check_failed: unavailable"
-		}
+	if !p.applyWarpCheck(ctx, candidate, started, index, total, &result) {
+		return result
 	}
+	p.notifyProbeDone(candidate, result, started, index, total)
+	return result
+}
+
+func (p *RealProber) probeContext(batchCtx context.Context) (context.Context, context.CancelFunc) {
+	if p.timeout <= 0 {
+		return batchCtx, func() {}
+	}
+	return context.WithTimeout(batchCtx, p.timeout)
+}
+
+func (p *RealProber) probeConnectivity(ctx context.Context, candidate Candidate, started time.Time) (time.Duration, error) {
+	network := p.probeNetwork(candidate)
+	conn, err := p.dialer.DialContext(ctx, network, candidate.Address)
+	latency := time.Since(started)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err != nil {
+		return latency, err
+	}
+	if latency <= 0 {
+		return time.Nanosecond, nil
+	}
+	return latency, nil
+}
+
+func (p *RealProber) applyWarpCheck(ctx context.Context, candidate Candidate, started time.Time, index, total int, result *ProbeResult) bool {
+	if p.checker == nil {
+		return true
+	}
+	p.notifyWarpCheckStart(candidate)
+	checkStarted := time.Now()
+	warpEnabled, err := p.checker.CheckWarp(ctx, candidate)
+	p.notifyWarpCheckDone(candidate, warpEnabled, err, checkStarted)
+	if err != nil {
+		result.Available = false
+		result.WarpEnabled = false
+		result.Reason = fmt.Sprintf("warp_check_failed: %v", err)
+		p.notifyProbeDone(candidate, *result, started, index, total)
+		return false
+	}
+	result.Available = warpEnabled
+	result.WarpEnabled = warpEnabled
+	if !warpEnabled {
+		result.Reason = "warp_check_failed: unavailable"
+	}
+	return true
+}
+
+func (p *RealProber) notifyProbeStart(candidate Candidate, index, total int) {
+	if p.observer != nil {
+		p.observer.OnProbeStart(candidate, index+1, total)
+	}
+}
+
+func (p *RealProber) notifyProbeDone(candidate Candidate, result ProbeResult, started time.Time, index, total int) {
 	if p.observer != nil {
 		p.observer.OnProbeDone(candidate, result, time.Since(started), index+1, total)
 	}
-	return result
+}
+
+func (p *RealProber) notifyWarpCheckStart(candidate Candidate) {
+	if p.observer != nil {
+		p.observer.OnWarpCheckStart(candidate)
+	}
+}
+
+func (p *RealProber) notifyWarpCheckDone(candidate Candidate, warpEnabled bool, err error, started time.Time) {
+	if p.observer != nil {
+		p.observer.OnWarpCheckDone(candidate, warpEnabled, err, time.Since(started))
+	}
 }
 
 func (p *RealProber) probeNetwork(candidate Candidate) string {

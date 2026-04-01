@@ -110,30 +110,47 @@ func ExpandCIDRSamples(cidrs []string, port, limit int) []string {
 	}
 	results := make([]string, 0, limit)
 	for _, raw := range cidrs {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
-		if err != nil {
+		prefix, addr, ok := cidrSampleStart(raw)
+		if !ok {
 			continue
 		}
-		addr := prefix.Addr()
-		if prefix.Bits() < addr.BitLen() {
-			next := addr.Next()
-			if next.IsValid() {
-				addr = next
-			}
-		}
-		for i := 0; i < limit && prefix.Contains(addr); i++ {
-			results = append(results, net.JoinHostPort(addr.String(), fmt.Sprintf("%d", port)))
-			if len(results) >= limit {
-				return results
-			}
-			next := addr.Next()
-			if !next.IsValid() {
-				break
-			}
-			addr = next
+		var done bool
+		results, done = appendCIDRSamples(results, prefix, addr, port, limit)
+		if done {
+			return results
 		}
 	}
 	return results
+}
+
+func cidrSampleStart(raw string) (netip.Prefix, netip.Addr, bool) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+	if err != nil {
+		return netip.Prefix{}, netip.Addr{}, false
+	}
+	addr := prefix.Addr()
+	if prefix.Bits() < addr.BitLen() {
+		next := addr.Next()
+		if next.IsValid() {
+			addr = next
+		}
+	}
+	return prefix, addr, true
+}
+
+func appendCIDRSamples(results []string, prefix netip.Prefix, addr netip.Addr, port, limit int) ([]string, bool) {
+	for i := 0; i < limit && prefix.Contains(addr); i++ {
+		results = append(results, net.JoinHostPort(addr.String(), fmt.Sprintf("%d", port)))
+		if len(results) >= limit {
+			return results, true
+		}
+		next := addr.Next()
+		if !next.IsValid() {
+			return results, false
+		}
+		addr = next
+	}
+	return results, false
 }
 
 // BuildCandidatesFromPlan 将发现计划展开为候选列表。

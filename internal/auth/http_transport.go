@@ -185,38 +185,17 @@ func parseAPIError(statusCode int, body []byte) error {
 func extractAPIError(statusCode int, body []byte) *APIError {
 	apiErr := &APIError{StatusCode: statusCode}
 
-	var envelope apiErrorEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		if len(body) == 0 {
-			return apiErr
-		}
-		if statusCode >= http.StatusBadRequest {
-			apiErr.Message = strings.TrimSpace(string(body))
-			return apiErr
-		}
+	envelope, ok := decodeAPIErrorEnvelope(statusCode, body, apiErr)
+	if !ok {
 		return nil
 	}
-	if statusCode < http.StatusBadRequest && (envelope.Success == nil || *envelope.Success) {
+	if apiErrorEnvelopeSuccessful(statusCode, envelope) {
 		return nil
 	}
-	if len(envelope.Errors) > 0 {
-		apiErr.Code = envelope.Errors[0].Code
-		apiErr.Message = strings.TrimSpace(envelope.Errors[0].Message)
+	if populateAPIErrorFromEnvelope(apiErr, envelope) {
 		return apiErr
 	}
-	if len(envelope.Messages) > 0 {
-		apiErr.Message = strings.TrimSpace(envelope.Messages[0])
-		return apiErr
-	}
-	if message := strings.TrimSpace(envelope.Error); message != "" {
-		apiErr.Message = message
-		return apiErr
-	}
-	if message := strings.TrimSpace(envelope.Reason); message != "" {
-		apiErr.Message = message
-		return apiErr
-	}
-	if text := strings.TrimSpace(string(body)); text != "" && statusCode >= http.StatusBadRequest {
+	if text := fallbackAPIErrorText(statusCode, body); text != "" {
 		apiErr.Message = text
 		return apiErr
 	}
@@ -224,4 +203,49 @@ func extractAPIError(statusCode int, body []byte) *APIError {
 		return apiErr
 	}
 	return nil
+}
+
+func decodeAPIErrorEnvelope(statusCode int, body []byte, apiErr *APIError) (apiErrorEnvelope, bool) {
+	var envelope apiErrorEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		return envelope, true
+	}
+	if len(body) == 0 {
+		return envelope, true
+	}
+	if statusCode >= http.StatusBadRequest {
+		apiErr.Message = strings.TrimSpace(string(body))
+		return envelope, true
+	}
+	return envelope, false
+}
+
+func apiErrorEnvelopeSuccessful(statusCode int, envelope apiErrorEnvelope) bool {
+	return statusCode < http.StatusBadRequest && (envelope.Success == nil || *envelope.Success)
+}
+
+func populateAPIErrorFromEnvelope(apiErr *APIError, envelope apiErrorEnvelope) bool {
+	if len(envelope.Errors) > 0 {
+		apiErr.Code = envelope.Errors[0].Code
+		apiErr.Message = strings.TrimSpace(envelope.Errors[0].Message)
+		return true
+	}
+	if len(envelope.Messages) > 0 {
+		apiErr.Message = strings.TrimSpace(envelope.Messages[0])
+		return true
+	}
+	for _, message := range []string{envelope.Error, envelope.Reason} {
+		if trimmed := strings.TrimSpace(message); trimmed != "" {
+			apiErr.Message = trimmed
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackAPIErrorText(statusCode int, body []byte) string {
+	if statusCode < http.StatusBadRequest {
+		return ""
+	}
+	return strings.TrimSpace(string(body))
 }

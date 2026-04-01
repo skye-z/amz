@@ -126,17 +126,12 @@ func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint Pa
 			return err
 		}
 
-		buf := p.pool.Get()
-		n, err := dev.ReadPacket(ctx, buf.Data)
+		buf, n, err := p.readUplinkPacket(ctx, dev)
 		if err != nil {
-			p.pool.Put(buf)
-			if idle, idleErr := normalizeRelayReadError(ctx, err); idle {
-				if idleErr != nil {
-					return idleErr
-				}
-				continue
-			}
-			return fmt.Errorf("uplink read packet: %w", err)
+			return err
+		}
+		if buf == nil {
+			continue
 		}
 		if n <= 0 {
 			p.pool.Put(buf)
@@ -147,26 +142,9 @@ func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint Pa
 		}
 		p.tracePacket("uplink", n, dev.Name(), buf.Data[:n])
 
-		fragments := splitPacketByMTU(buf.Data[:n], p.mtu)
-		for _, fragment := range fragments {
-			icmp, writeErr := endpoint.WritePacket(ctx, fragment)
-			if len(icmp) > 0 {
-				written, err := dev.WritePacket(ctx, icmp)
-				if err != nil {
-					p.pool.Put(buf)
-					return fmt.Errorf("uplink write icmp packet: %w", err)
-				}
-				if written != len(icmp) {
-					p.pool.Put(buf)
-					return fmt.Errorf("uplink write icmp packet: %w", io.ErrShortWrite)
-				}
-				p.stats.AddRx(len(icmp))
-			}
-			if writeErr != nil {
-				p.pool.Put(buf)
-				return fmt.Errorf("uplink write packet: %w", writeErr)
-			}
-			p.stats.AddTx(len(fragment))
+		if err := p.forwardUplinkFragments(ctx, dev, endpoint, buf.Data[:n]); err != nil {
+			p.pool.Put(buf)
+			return err
 		}
 		p.pool.Put(buf)
 	}
@@ -186,17 +164,12 @@ func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndp
 			return err
 		}
 
-		buf := p.pool.Get()
-		n, err := endpoint.ReadPacket(ctx, buf.Data)
+		buf, n, err := p.readDownlinkPacket(ctx, endpoint)
 		if err != nil {
-			p.pool.Put(buf)
-			if idle, idleErr := normalizeRelayReadError(ctx, err); idle {
-				if idleErr != nil {
-					return idleErr
-				}
-				continue
-			}
-			return fmt.Errorf("downlink read packet: %w", err)
+			return err
+		}
+		if buf == nil {
+			continue
 		}
 		if n <= 0 {
 			p.pool.Put(buf)
@@ -207,16 +180,92 @@ func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndp
 		}
 		p.tracePacket("downlink", n, dev.Name(), buf.Data[:n])
 
-		written, err := dev.WritePacket(ctx, buf.Data[:n])
+		err = p.writeDownlinkPacket(ctx, dev, buf.Data[:n], n)
 		p.pool.Put(buf)
 		if err != nil {
-			return fmt.Errorf("downlink write packet: %w", err)
-		}
-		if written != n {
-			return fmt.Errorf("downlink write packet: %w", io.ErrShortWrite)
+			return err
 		}
 		p.stats.AddRx(n)
 	}
+}
+
+func (p *PacketIO) readUplinkPacket(ctx context.Context, dev TUNDevice) (*packet.Buffer, int, error) {
+	buf := p.pool.Get()
+	n, err := dev.ReadPacket(ctx, buf.Data)
+	if err == nil {
+		return buf, n, nil
+	}
+	p.pool.Put(buf)
+	if idle, idleErr := normalizeRelayReadError(ctx, err); idle {
+		if idleErr != nil {
+			return nil, 0, idleErr
+		}
+		return nil, 0, nil
+	}
+	return nil, 0, fmt.Errorf("uplink read packet: %w", err)
+}
+
+func (p *PacketIO) forwardUplinkFragments(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint, packet []byte) error {
+	for _, fragment := range splitPacketByMTU(packet, p.mtu) {
+		if err := p.forwardUplinkFragment(ctx, dev, endpoint, fragment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *PacketIO) forwardUplinkFragment(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint, fragment []byte) error {
+	icmp, writeErr := endpoint.WritePacket(ctx, fragment)
+	if err := p.writeICMPPacket(ctx, dev, icmp); err != nil {
+		return err
+	}
+	if writeErr != nil {
+		return fmt.Errorf("uplink write packet: %w", writeErr)
+	}
+	p.stats.AddTx(len(fragment))
+	return nil
+}
+
+func (p *PacketIO) writeICMPPacket(ctx context.Context, dev TUNDevice, packet []byte) error {
+	if len(packet) == 0 {
+		return nil
+	}
+	written, err := dev.WritePacket(ctx, packet)
+	if err != nil {
+		return fmt.Errorf("uplink write icmp packet: %w", err)
+	}
+	if written != len(packet) {
+		return fmt.Errorf("uplink write icmp packet: %w", io.ErrShortWrite)
+	}
+	p.stats.AddRx(len(packet))
+	return nil
+}
+
+func (p *PacketIO) readDownlinkPacket(ctx context.Context, endpoint PacketRelayEndpoint) (*packet.Buffer, int, error) {
+	buf := p.pool.Get()
+	n, err := endpoint.ReadPacket(ctx, buf.Data)
+	if err == nil {
+		return buf, n, nil
+	}
+	p.pool.Put(buf)
+	if idle, idleErr := normalizeRelayReadError(ctx, err); idle {
+		if idleErr != nil {
+			return nil, 0, idleErr
+		}
+		return nil, 0, nil
+	}
+	return nil, 0, fmt.Errorf("downlink read packet: %w", err)
+}
+
+func (p *PacketIO) writeDownlinkPacket(ctx context.Context, dev TUNDevice, packet []byte, want int) error {
+	written, err := dev.WritePacket(ctx, packet)
+	if err != nil {
+		return fmt.Errorf("downlink write packet: %w", err)
+	}
+	if written != want {
+		return fmt.Errorf("downlink write packet: %w", io.ErrShortWrite)
+	}
+	return nil
 }
 
 func (p *PacketIO) logf(format string, args ...any) {

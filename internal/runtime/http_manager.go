@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -321,49 +322,75 @@ func (h *httpHandler) handleConnectViaStream(w http.ResponseWriter, r *http.Requ
 
 func (h *httpHandler) relayHTTPConnect(w http.ResponseWriter, r *http.Request, upstream net.Conn, started time.Time, debug bool) {
 	defer upstream.Close()
-	latency := time.Since(started)
-	if latency <= 0 {
-		latency = time.Nanosecond
-	}
-	h.manager.RecordHandshakeLatency(latency)
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		h.manager.logf("http proxy hijack unsupported: target=%s", r.Host)
-		http.Error(w, "proxy hijack unsupported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, rw, err := hijacker.Hijack()
+	h.recordConnectLatency(started)
+	clientConn, rw, err := h.hijackHTTPConnect(w, r)
 	if err != nil {
-		h.manager.logf("http proxy hijack failed: target=%s err=%v", r.Host, err)
-		http.Error(w, "proxy hijack failed", http.StatusInternalServerError)
 		return
 	}
 	defer clientConn.Close()
-	if _, err := rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+	if err := writeHTTPConnectEstablished(rw); err != nil {
 		return
 	}
-	if err := rw.Flush(); err != nil {
+	if err := h.forwardBufferedConnectBytes(rw, upstream, r.Host, debug); err != nil {
 		return
-	}
-	if buffered := rw.Reader.Buffered(); buffered > 0 {
-		peek, err := rw.Reader.Peek(buffered)
-		if err == nil && len(peek) > 0 {
-			written, writeErr := upstream.Write(peek)
-			h.manager.AddTxBytes(written)
-			if debug {
-				h.manager.logf("masque debug: connect target=%s pre-relay upstream write bytes=%d err=%v", r.Host, written, writeErr)
-			}
-			if writeErr != nil {
-				return
-			}
-			_, _ = rw.Reader.Discard(buffered)
-		}
 	}
 	relayBidirectional(clientConn, upstream, h.manager.AddTxBytes, h.manager.AddRxBytes, func(format string, args ...any) {
 		if debug || !strings.HasPrefix(format, "masque debug:") {
 			h.manager.logf(format, args...)
 		}
 	}, r.Host)
+}
+
+func (h *httpHandler) recordConnectLatency(started time.Time) {
+	latency := time.Since(started)
+	if latency <= 0 {
+		latency = time.Nanosecond
+	}
+	h.manager.RecordHandshakeLatency(latency)
+}
+
+func (h *httpHandler) hijackHTTPConnect(w http.ResponseWriter, r *http.Request) (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		h.manager.logf("http proxy hijack unsupported: target=%s", r.Host)
+		http.Error(w, "proxy hijack unsupported", http.StatusInternalServerError)
+		return nil, nil, errors.New("http hijacker unsupported")
+	}
+	clientConn, rw, err := hijacker.Hijack()
+	if err != nil {
+		h.manager.logf("http proxy hijack failed: target=%s err=%v", r.Host, err)
+		http.Error(w, "proxy hijack failed", http.StatusInternalServerError)
+		return nil, nil, err
+	}
+	return clientConn, rw, nil
+}
+
+func writeHTTPConnectEstablished(rw *bufio.ReadWriter) error {
+	if _, err := rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return err
+	}
+	return rw.Flush()
+}
+
+func (h *httpHandler) forwardBufferedConnectBytes(rw *bufio.ReadWriter, upstream net.Conn, target string, debug bool) error {
+	buffered := rw.Reader.Buffered()
+	if buffered <= 0 {
+		return nil
+	}
+	peek, err := rw.Reader.Peek(buffered)
+	if err != nil || len(peek) == 0 {
+		return err
+	}
+	written, writeErr := upstream.Write(peek)
+	h.manager.AddTxBytes(written)
+	if debug {
+		h.manager.logf("masque debug: connect target=%s pre-relay upstream write bytes=%d err=%v", target, written, writeErr)
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	_, _ = rw.Reader.Discard(buffered)
+	return nil
 }
 
 func relayBidirectional(clientConn net.Conn, upstream net.Conn, onTx func(int), onRx func(int), logf func(string, ...any), target string) {

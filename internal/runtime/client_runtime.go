@@ -55,72 +55,120 @@ func (r *ClientRuntime) Start(ctx context.Context) error {
 		return err
 	}
 
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return errors.New("client runtime already closed")
+	httpRuntime, socksRuntime, tunRuntime, mux, err := r.prepareStart()
+	if err != nil {
+		return err
 	}
-	if r.running {
-		r.mu.Unlock()
+	if httpRuntime == nil && socksRuntime == nil && tunRuntime == nil {
 		return nil
 	}
-	if r.http != nil && r.socks5 != nil {
-		if r.mux == nil {
-			mux, err := ListenMux(r.listen)
-			if err != nil {
-				r.mu.Unlock()
-				return err
-			}
-			r.mux = mux
-		}
-		r.listen = r.mux.ListenAddress()
-		r.http.SetListener(r.mux.HTTPListener())
-		r.socks5.SetListener(r.mux.SOCKS5Listener())
+	if err := startClientRuntimeComponents(ctx, mux, httpRuntime, socksRuntime, tunRuntime); err != nil {
+		return err
 	}
-	httpRuntime := r.http
-	socksRuntime := r.socks5
-	tunRuntime := r.tun
-	mux := r.mux
-	r.mu.Unlock()
+	r.completeStart(mux, httpRuntime, socksRuntime)
+	return nil
+}
 
-	started := make([]func() error, 0, 3)
-	if httpRuntime != nil {
-		if err := httpRuntime.Start(ctx); err != nil {
-			if mux != nil {
-				_ = mux.Close()
-			}
-			return err
-		}
-		started = append(started, httpRuntime.Close)
-	}
-	if socksRuntime != nil {
-		if err := socksRuntime.Start(ctx); err != nil {
-			stopClosers(started)
-			if mux != nil {
-				_ = mux.Close()
-			}
-			return err
-		}
-		started = append(started, socksRuntime.Close)
-	}
-	if tunRuntime != nil {
-		if err := tunRuntime.Start(ctx); err != nil {
-			stopClosers(started)
-			if mux != nil {
-				_ = mux.Close()
-			}
-			return err
-		}
-		started = append(started, tunRuntime.Close)
-	}
-
+func (r *ClientRuntime) prepareStart() (*HTTPRuntime, *SOCKS5Runtime, *TUNRuntime, *MuxListener, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil, nil, nil, nil, errors.New("client runtime already closed")
+	}
+	if r.running {
+		return nil, nil, nil, nil, nil
+	}
+	if err := r.prepareMuxLocked(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return r.http, r.socks5, r.tun, r.mux, nil
+}
+
+func (r *ClientRuntime) prepareMuxLocked() error {
+	if r.http == nil || r.socks5 == nil {
+		return nil
+	}
+	if r.mux == nil {
+		mux, err := ListenMux(r.listen)
+		if err != nil {
+			return err
+		}
+		r.mux = mux
+	}
+	r.listen = r.mux.ListenAddress()
+	r.http.SetListener(r.mux.HTTPListener())
+	r.socks5.SetListener(r.mux.SOCKS5Listener())
+	return nil
+}
+
+func startClientRuntimeComponents(ctx context.Context, mux *MuxListener, httpRuntime *HTTPRuntime, socksRuntime *SOCKS5Runtime, tunRuntime *TUNRuntime) error {
+	started := make([]func() error, 0, 3)
+	if err := startHTTPRuntime(ctx, httpRuntime, &started, mux); err != nil {
+		return err
+	}
+	if err := startSOCKSRuntime(ctx, socksRuntime, &started, mux); err != nil {
+		return err
+	}
+	if err := startTUNRuntime(ctx, tunRuntime, &started, mux); err != nil {
+		return err
+	}
+	return nil
+}
+
+func startHTTPRuntime(ctx context.Context, runtime *HTTPRuntime, started *[]func() error, mux *MuxListener) error {
+	if runtime == nil {
+		return nil
+	}
+	if err := runtime.Start(ctx); err != nil {
+		stopClosers(*started)
+		if mux != nil {
+			_ = mux.Close()
+		}
+		return err
+	}
+	*started = append(*started, runtime.Close)
+	return nil
+}
+
+func startSOCKSRuntime(ctx context.Context, runtime *SOCKS5Runtime, started *[]func() error, mux *MuxListener) error {
+	if runtime == nil {
+		return nil
+	}
+	if err := runtime.Start(ctx); err != nil {
+		stopClosers(*started)
+		if mux != nil {
+			_ = mux.Close()
+		}
+		return err
+	}
+	*started = append(*started, runtime.Close)
+	return nil
+}
+
+func startTUNRuntime(ctx context.Context, runtime *TUNRuntime, started *[]func() error, mux *MuxListener) error {
+	if runtime == nil {
+		return nil
+	}
+	if err := runtime.Start(ctx); err != nil {
+		stopClosers(*started)
+		if mux != nil {
+			_ = mux.Close()
+		}
+		return err
+	}
+	*started = append(*started, runtime.Close)
+	return nil
+}
+
+func (r *ClientRuntime) completeStart(mux *MuxListener, httpRuntime *HTTPRuntime, socksRuntime *SOCKS5Runtime) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.running = true
 	if mux == nil {
 		r.listen = resolvedRuntimeListenAddress(httpRuntime, socksRuntime)
 	}
-	r.mu.Unlock()
-	return nil
 }
 
 func (r *ClientRuntime) ReuseProxyListenersFrom(prev *ClientRuntime) {

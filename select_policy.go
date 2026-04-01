@@ -56,44 +56,58 @@ func filterCandidatesByIPv6Support(candidates []discovery.Candidate, ipv6Support
 }
 
 func defaultDetectIPv6Support() bool {
-	hasGlobalIPv6 := false
+	return hasGlobalIPv6Interface() && canDialIPv6Probe()
+}
+
+func hasGlobalIPv6Interface() bool {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return false
 	}
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch value := addr.(type) {
-			case *net.IPNet:
-				ip = value.IP
-			case *net.IPAddr:
-				ip = value.IP
-			}
-			if ip == nil || ip.To4() != nil {
-				continue
-			}
-			if !ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-				continue
-			}
-			hasGlobalIPv6 = true
-			break
-		}
-		if hasGlobalIPv6 {
-			break
+		if interfaceHasGlobalIPv6(iface) {
+			return true
 		}
 	}
-	if !hasGlobalIPv6 {
+	return false
+}
+
+func interfaceHasGlobalIPv6(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 		return false
 	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if isRoutableGlobalIPv6(addrIP(addr)) {
+			return true
+		}
+	}
+	return false
+}
 
+func addrIP(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
+}
+
+func isRoutableGlobalIPv6(ip net.IP) bool {
+	return ip != nil &&
+		ip.To4() == nil &&
+		ip.IsGlobalUnicast() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast()
+}
+
+func canDialIPv6Probe() bool {
 	conn, err := net.DialTimeout("udp6", ipv6ConnectivityProbeTarget, 300*time.Millisecond)
 	if err != nil {
 		return false

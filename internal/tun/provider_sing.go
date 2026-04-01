@@ -182,29 +182,8 @@ func (d *singDevice) StartDevice() error {
 	if d.started {
 		return nil
 	}
-	if d.creator != nil {
-		if d.networkMonitor != nil {
-			if err := d.networkMonitor.Start(); err != nil {
-				return fmt.Errorf("start network monitor: %w", err)
-			}
-		}
-		monitor := d.interfaceMonitor
-		if monitor == nil {
-			monitor = d.options.InterfaceMonitor
-		}
-		if monitor != nil {
-			if err := monitor.Start(); err != nil {
-				return fmt.Errorf("start interface monitor: %w", err)
-			}
-		}
-		nativeTun, err := d.creator(d.options)
-		if err != nil {
-			return fmt.Errorf("open sing-tun device: %w", err)
-		}
-		d.tun = nativeTun
-		if deviceName, err := nativeTun.Name(); err == nil && strings.TrimSpace(deviceName) != "" {
-			d.name = deviceName
-		}
+	if err := d.ensureNativeDevice(); err != nil {
+		return err
 	}
 	if d.tun == nil {
 		return fmt.Errorf("open sing-tun device: %w", io.ErrClosedPipe)
@@ -215,6 +194,43 @@ func (d *singDevice) StartDevice() error {
 		}
 	}
 	d.started = true
+	return nil
+}
+
+func (d *singDevice) ensureNativeDevice() error {
+	if d.creator == nil {
+		return nil
+	}
+	if err := d.startMonitors(); err != nil {
+		return err
+	}
+	nativeTun, err := d.creator(d.options)
+	if err != nil {
+		return fmt.Errorf("open sing-tun device: %w", err)
+	}
+	d.tun = nativeTun
+	if deviceName, err := nativeTun.Name(); err == nil && strings.TrimSpace(deviceName) != "" {
+		d.name = deviceName
+	}
+	return nil
+}
+
+func (d *singDevice) startMonitors() error {
+	if d.networkMonitor != nil {
+		if err := d.networkMonitor.Start(); err != nil {
+			return fmt.Errorf("start network monitor: %w", err)
+		}
+	}
+	monitor := d.interfaceMonitor
+	if monitor == nil {
+		monitor = d.options.InterfaceMonitor
+	}
+	if monitor == nil {
+		return nil
+	}
+	if err := monitor.Start(); err != nil {
+		return fmt.Errorf("start interface monitor: %w", err)
+	}
 	return nil
 }
 
@@ -255,27 +271,14 @@ func (d *singDevice) ApplyTUNRoutes(plan RoutePlan) error {
 	next.Inet4RouteExcludeAddress = nil
 	next.Inet6RouteExcludeAddress = nil
 
-	for _, route := range plan.Routes {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
-		if err != nil {
-			return fmt.Errorf("parse tun route %q: %w", route, err)
-		}
-		if prefix.Addr().Is4() {
-			next.Inet4RouteAddress = append(next.Inet4RouteAddress, prefix)
-		} else if prefix.Addr().Is6() {
-			next.Inet6RouteAddress = append(next.Inet6RouteAddress, prefix)
-		}
+	var err error
+	next.Inet4RouteAddress, next.Inet6RouteAddress, err = splitRoutePrefixes(plan.Routes, "parse tun route %q: %w")
+	if err != nil {
+		return err
 	}
-	for _, route := range plan.EndpointRoutes {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
-		if err != nil {
-			return fmt.Errorf("parse tun endpoint route %q: %w", route, err)
-		}
-		if prefix.Addr().Is4() {
-			next.Inet4RouteExcludeAddress = append(next.Inet4RouteExcludeAddress, prefix)
-		} else if prefix.Addr().Is6() {
-			next.Inet6RouteExcludeAddress = append(next.Inet6RouteExcludeAddress, prefix)
-		}
+	next.Inet4RouteExcludeAddress, next.Inet6RouteExcludeAddress, err = splitRoutePrefixes(plan.EndpointRoutes, "parse tun endpoint route %q: %w")
+	if err != nil {
+		return err
 	}
 
 	if d.started {
@@ -292,6 +295,25 @@ func (d *singDevice) ApplyTUNRoutes(plan RoutePlan) error {
 	}
 	d.options = next
 	return nil
+}
+
+func splitRoutePrefixes(routes []string, format string) ([]netip.Prefix, []netip.Prefix, error) {
+	var ipv4 []netip.Prefix
+	var ipv6 []netip.Prefix
+	for _, route := range routes {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
+		if err != nil {
+			return nil, nil, fmt.Errorf(format, route, err)
+		}
+		if prefix.Addr().Is4() {
+			ipv4 = append(ipv4, prefix)
+			continue
+		}
+		if prefix.Addr().Is6() {
+			ipv6 = append(ipv6, prefix)
+		}
+	}
+	return ipv4, ipv6, nil
 }
 
 func (d *singDevice) ResetTUNRoutes() error {
