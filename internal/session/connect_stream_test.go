@@ -34,6 +34,11 @@ const (
 	connectStreamTestHTTPURL         = "http://" + connectStreamTestTargetHost
 	connectStreamTestPrivateEndpoint = testkit.TestIPv4Private + ":" + connectStreamTestPrivateHTTPPort
 	connectStreamTestMasqueAuthority = "masque.example:443"
+	connectStreamTestSNI             = "warp.cloudflare.com"
+	connectStreamServerBytes         = "server-bytes"
+	connectStreamClientBytes         = "client-bytes"
+	errConnectStreamManagerCreate    = "failed to create manager: %v"
+	errConnectStreamState            = "expected state %q, got %q"
 )
 
 type fakeRequestStream struct {
@@ -136,18 +141,19 @@ func (s *fakeRequestStream) ReceiveDatagram(context.Context) ([]byte, error) {
 	return nil, io.EOF
 }
 
-func (s *fakeRequestStream) CancelRead(quic.StreamErrorCode) {}
+func (s *fakeRequestStream) CancelRead(quic.StreamErrorCode) {
+	// No-op: the test double does not simulate cancel side effects.
+}
 
 type fakeRequestConn struct {
-	stream    h3RequestStream
-	openErr   error
-	openedCtx context.Context
-	opened    bool
+	stream  h3RequestStream
+	openErr error
+	opened  bool
 }
 
 func (c *fakeRequestConn) OpenRequestStream(ctx context.Context) (h3RequestStream, error) {
+	_ = ctx
 	c.opened = true
-	c.openedCtx = ctx
 	if c.openErr != nil {
 		return nil, c.openErr
 	}
@@ -155,7 +161,7 @@ func (c *fakeRequestConn) OpenRequestStream(ctx context.Context) (h3RequestStrea
 }
 
 type fakeBoundH3Client struct {
-	requestConn h3RequestConn
+	requestConn h3RequestStreamOpener
 	closeErr    error
 	awaitErr    error
 }
@@ -180,7 +186,7 @@ func (c *fakeBoundH3Client) AwaitSettings(ctx context.Context, requireDatagrams,
 
 func (c *fakeBoundH3Client) Raw() *http3.ClientConn { return nil }
 
-func (c *fakeBoundH3Client) RequestConn() h3RequestConn { return c.requestConn }
+func (c *fakeBoundH3Client) RequestConn() h3RequestStreamOpener { return c.requestConn }
 
 func TestBuildConnectStreamOptions(t *testing.T) {
 	h3 := HTTP3Options{
@@ -204,28 +210,28 @@ func TestBuildConnectStreamOptions(t *testing.T) {
 	}
 }
 
-func TestConnectStreamManager_StateTransitions(t *testing.T) {
+func TestConnectStreamManagerStateTransitions(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
 		Endpoint: testkit.WarpIPv4Legacy443,
-		SNI:      "warp.cloudflare.com",
+		SNI:      connectStreamTestSNI,
 	}
 	cfg.FillDefaults()
 
 	mgr, err := NewConnectStreamManager(cfg)
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		t.Fatalf(errConnectStreamManagerCreate, err)
 	}
 
 	snapshot := mgr.Snapshot()
 	if snapshot.State != StreamStateIdle {
-		t.Errorf("expected state %q, got %q", StreamStateIdle, snapshot.State)
+		t.Errorf(errConnectStreamState, StreamStateIdle, snapshot.State)
 	}
 
 	mgr.SetReady()
 	snapshot = mgr.Snapshot()
 	if snapshot.State != StreamStateReady {
-		t.Errorf("expected state %q, got %q", StreamStateReady, snapshot.State)
+		t.Errorf(errConnectStreamState, StreamStateReady, snapshot.State)
 	}
 
 	if err := mgr.Close(); err != nil {
@@ -233,21 +239,21 @@ func TestConnectStreamManager_StateTransitions(t *testing.T) {
 	}
 	snapshot = mgr.Snapshot()
 	if snapshot.State != StreamStateIdle {
-		t.Errorf("expected state %q, got %q", StreamStateIdle, snapshot.State)
+		t.Errorf(errConnectStreamState, StreamStateIdle, snapshot.State)
 	}
 }
 
-func TestConnectStreamManager_Stats(t *testing.T) {
+func TestConnectStreamManagerStats(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
 		Endpoint: testkit.WarpIPv4Legacy443,
-		SNI:      "warp.cloudflare.com",
+		SNI:      connectStreamTestSNI,
 	}
 	cfg.FillDefaults()
 
 	mgr, err := NewConnectStreamManager(cfg)
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		t.Fatalf(errConnectStreamManagerCreate, err)
 	}
 
 	mgr.RecordHandshakeLatency(100 * time.Millisecond)
@@ -294,7 +300,7 @@ func TestParseConnectTarget(t *testing.T) {
 	}
 }
 
-func TestActiveStream_ReadWrite(t *testing.T) {
+func TestActiveStreamReadWrite(t *testing.T) {
 	stream := &activeStream{
 		info: StreamInfo{
 			RemoteAddr: connectStreamTestTargetEndpoint,
@@ -319,17 +325,17 @@ func TestActiveStream_ReadWrite(t *testing.T) {
 	}
 }
 
-func TestConnectStreamManager_OpenStream_NotReady(t *testing.T) {
+func TestConnectStreamManagerOpenStreamNotReady(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
 		Endpoint: testkit.WarpIPv4Legacy443,
-		SNI:      "warp.cloudflare.com",
+		SNI:      connectStreamTestSNI,
 	}
 	cfg.FillDefaults()
 
 	mgr, err := NewConnectStreamManager(cfg)
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		t.Fatalf(errConnectStreamManagerCreate, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -341,17 +347,17 @@ func TestConnectStreamManager_OpenStream_NotReady(t *testing.T) {
 	}
 }
 
-func TestConnectStreamManager_StreamEndpoint_NotFound(t *testing.T) {
+func TestConnectStreamManagerStreamEndpointNotFound(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
 		Endpoint: testkit.WarpIPv4Legacy443,
-		SNI:      "warp.cloudflare.com",
+		SNI:      connectStreamTestSNI,
 	}
 	cfg.FillDefaults()
 
 	mgr, err := NewConnectStreamManager(cfg)
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		t.Fatalf(errConnectStreamManagerCreate, err)
 	}
 
 	mgr.SetReady()
@@ -362,17 +368,17 @@ func TestConnectStreamManager_StreamEndpoint_NotFound(t *testing.T) {
 	}
 }
 
-func TestConnectStreamManager_CloseStream_NotFound(t *testing.T) {
+func TestConnectStreamManagerCloseStreamNotFound(t *testing.T) {
 	cfg := config.KernelConfig{
 		Mode:     config.ModeSOCKS,
 		Endpoint: testkit.WarpIPv4Legacy443,
-		SNI:      "warp.cloudflare.com",
+		SNI:      connectStreamTestSNI,
 	}
 	cfg.FillDefaults()
 
 	mgr, err := NewConnectStreamManager(cfg)
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		t.Fatalf(errConnectStreamManagerCreate, err)
 	}
 
 	err = mgr.CloseStream(connectStreamTestMissingHost, connectStreamTestHTTPSPort)
@@ -383,7 +389,7 @@ func TestConnectStreamManager_CloseStream_NotFound(t *testing.T) {
 
 func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	stream := &fakeRequestStream{
-		readData:   []byte("server-bytes"),
+		readData:   []byte(connectStreamServerBytes),
 		response:   &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))},
 		localAddr:  stubAddr(testkit.LocalAddrHTTPDiag),
 		remoteAddr: stubAddr(connectStreamTestTargetEndpoint),
@@ -418,7 +424,7 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 	if got := stream.request.Proto; got != ProtocolConnectStream {
 		t.Fatalf("expected connect protocol %q, got %q", ProtocolConnectStream, got)
 	}
-	if got := stream.request.Header.Get("CF-Client-Version"); got == "" {
+	if stream.request.Header.Get("CF-Client-Version") == "" {
 		t.Fatal("expected CF-Client-Version header for extended CONNECT")
 	}
 	if got := stream.request.Header.Get("pq-enabled"); got != "true" {
@@ -431,20 +437,20 @@ func TestConnectStreamDialerUsesSingleRequestStream(t *testing.T) {
 		t.Fatalf("expected CONNECT proto version unset, got %d.%d", stream.request.ProtoMajor, stream.request.ProtoMinor)
 	}
 
-	buf := make([]byte, len("server-bytes"))
+	buf := make([]byte, len(connectStreamServerBytes))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("Read returned error: %v", err)
 	}
-	if got := string(buf[:n]); got != "server-bytes" {
-		t.Fatalf("expected read bytes %q, got %q", "server-bytes", got)
+	if got := string(buf[:n]); got != connectStreamServerBytes {
+		t.Fatalf("expected read bytes %q, got %q", connectStreamServerBytes, got)
 	}
 
-	if _, err := conn.Write([]byte("client-bytes")); err != nil {
+	if _, err := conn.Write([]byte(connectStreamClientBytes)); err != nil {
 		t.Fatalf("Write returned error: %v", err)
 	}
-	if got := string(stream.writeData); got != "client-bytes" {
-		t.Fatalf("expected written bytes %q, got %q", "client-bytes", got)
+	if got := string(stream.writeData); got != connectStreamClientBytes {
+		t.Fatalf("expected written bytes %q, got %q", connectStreamClientBytes, got)
 	}
 	if stream.bodyClosed {
 		t.Fatal("expected successful CONNECT response body to remain open for stream relay")

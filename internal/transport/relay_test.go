@@ -11,6 +11,8 @@ import (
 	"github.com/skye-z/amz/internal/transport"
 )
 
+const errExpectedContextCanceled = "expected context canceled, got %v"
+
 func TestNewPacketIO(t *testing.T) {
 	io := transport.NewPacketIO(1600)
 	if io.MTU() != 1600 {
@@ -39,7 +41,7 @@ func TestPacketIOForwardUplinkFragmentsAndForwardsICMP(t *testing.T) {
 	cancel()
 	err := <-done
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled, got %v", err)
+		t.Fatalf(errExpectedContextCanceled, err)
 	}
 	writes := endpoint.Writes()
 	if len(writes) != 3 {
@@ -78,7 +80,7 @@ func TestPacketIOForwardDownlinkWritesBackToDevice(t *testing.T) {
 	cancel()
 	err := <-done
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled, got %v", err)
+		t.Fatalf(errExpectedContextCanceled, err)
 	}
 	writes := dev.Writes()
 	if len(writes) != 1 {
@@ -103,7 +105,7 @@ func TestPacketIORelayClosesEndpointOnCancel(t *testing.T) {
 	cancel()
 	err := <-done
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled, got %v", err)
+		t.Fatalf(errExpectedContextCanceled, err)
 	}
 	if !endpoint.Closed() {
 		t.Fatal("expected endpoint to be closed on relay cancellation")

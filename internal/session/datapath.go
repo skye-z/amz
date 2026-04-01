@@ -15,8 +15,12 @@ import (
 	"github.com/skye-z/amz/internal/packet"
 )
 
-const packetIdleBackoff = 5 * time.Millisecond
-const maxPacketBufferSize = 65535
+const (
+	packetIdleBackoff           = 5 * time.Millisecond
+	maxPacketBufferSize         = 65535
+	errPacketIOTUNRequired      = "%w: tun device is required"
+	errPacketIOEndpointRequired = "%w: packet relay endpoint is required"
+)
 
 // 约定隧道远端最小数据面收发接口。
 type PacketRelayEndpoint interface {
@@ -67,10 +71,10 @@ func (p *PacketIO) SetLogger(logger config.Logger) {
 // Relay 启动双向收发循环，并在上下文结束时关闭远端数据面。
 func (p *PacketIO) Relay(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOTUNRequired, config.ErrInvalidConfig)
 	}
 	if endpoint == nil {
-		return fmt.Errorf("%w: packet relay endpoint is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOEndpointRequired, config.ErrInvalidConfig)
 	}
 
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -111,10 +115,10 @@ func (p *PacketIO) Relay(ctx context.Context, dev TUNDevice, endpoint PacketRela
 // ForwardUplink 将本地设备读到的 IP 包转发到远端，并处理远端返回的 ICMP 响应。
 func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint PacketRelayEndpoint) error {
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOTUNRequired, config.ErrInvalidConfig)
 	}
 	if endpoint == nil {
-		return fmt.Errorf("%w: packet relay endpoint is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOEndpointRequired, config.ErrInvalidConfig)
 	}
 
 	for {
@@ -171,10 +175,10 @@ func (p *PacketIO) ForwardUplink(ctx context.Context, dev TUNDevice, endpoint Pa
 // ForwardDownlink 将远端返回的 IP 包写回本地设备。
 func (p *PacketIO) ForwardDownlink(ctx context.Context, endpoint PacketRelayEndpoint, dev TUNDevice) error {
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOTUNRequired, config.ErrInvalidConfig)
 	}
 	if endpoint == nil {
-		return fmt.Errorf("%w: packet relay endpoint is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errPacketIOEndpointRequired, config.ErrInvalidConfig)
 	}
 
 	for {

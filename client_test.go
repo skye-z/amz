@@ -26,6 +26,7 @@ const (
 	testCertClientCert        = "client-cert-123"
 	testCertPeerPublicKey     = "peer-public-key-123"
 	testCertClientID          = "client-id-123"
+	testClientNodePrimary     = "node-1"
 	testCurrentEndpoint       = "endpoint-1"
 	testNextEndpoint          = "next-endpoint"
 	testCandidateAddress      = "candidate"
@@ -101,8 +102,7 @@ func TestClientStartCloseAndStatus(t *testing.T) {
 	if client.ListenAddress() != testkit.LocalListenSDK {
 		t.Fatalf("expected listen address from runtime, got %q", client.ListenAddress())
 	}
-	status := client.Status()
-	if !status.Running || !status.Registered || status.Endpoint != testkit.WarpIPv4Alt443 {
+	if status := client.Status(); !status.Running || !status.Registered || status.Endpoint != testkit.WarpIPv4Alt443 {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 
@@ -148,15 +148,14 @@ func TestManagedRuntimePersistsSelectedNodeAndStatus(t *testing.T) {
 	mr.selectFn = func(context.Context, storage.State) (endpointSelection, []storage.Node, error) {
 		candidate := discovery.Candidate{Address: testkit.WarpIPv4Alt443, Source: discovery.SourceFixed, Available: true, WarpEnabled: true}
 		return endpointSelection{Primary: candidate, Candidates: []discovery.Candidate{candidate}}, []storage.Node{
-			{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443},
+			{ID: testClientNodePrimary, EndpointV4: testkit.WarpIPv4Alt443},
 		}, nil
 	}
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		return &stubClientRuntimeAdapter{status: runtimeStatus(testkit.LocalListenSDK, endpoint, true, true, false)}, nil
 	}
 
-	err := mr.Start(context.Background())
-	if err != nil {
+	if err := mr.Start(context.Background()); err != nil {
 		t.Fatalf("expected managed runtime start success, got %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -165,8 +164,7 @@ func TestManagedRuntimePersistsSelectedNodeAndStatus(t *testing.T) {
 	if store.saved[0].SelectedNode != testkit.WarpIPv4Alt443 {
 		t.Fatalf("expected selected node persisted, got %+v", store.saved[0])
 	}
-	status := mr.Status()
-	if !status.Running || status.ListenAddress != testkit.LocalListenSDK || status.Endpoint != testkit.WarpIPv4Alt443 || !status.Registered {
+	if status := mr.Status(); !status.Running || status.ListenAddress != testkit.LocalListenSDK || status.Endpoint != testkit.WarpIPv4Alt443 || !status.Registered {
 		t.Fatalf("unexpected managed runtime status: %+v", status)
 	}
 }
@@ -195,7 +193,7 @@ func TestManagedRuntimeFailsOverToNextEndpointOnStartFailure(t *testing.T) {
 
 	var built []string
 	mr := newTestManagedRuntime(store, authState, true)
-	mr.selectFn = fixedEndpointSelector([]storage.Node{{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443}})
+	mr.selectFn = fixedEndpointSelector([]storage.Node{{ID: testClientNodePrimary, EndpointV4: testkit.WarpIPv4Alt443}})
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
 		built = append(built, endpoint)
 		switch endpoint {
@@ -221,8 +219,7 @@ func TestManagedRuntimeFailsOverToNextEndpointOnStartFailure(t *testing.T) {
 	if len(store.saved) != 1 || store.saved[0].SelectedNode != testkit.WarpIPv4Alt443 {
 		t.Fatalf("expected only successful endpoint to be persisted, got %+v", store.saved)
 	}
-	status := mr.Status()
-	if status.Endpoint != testkit.WarpIPv4Alt443 || !status.Running {
+	if status := mr.Status(); status.Endpoint != testkit.WarpIPv4Alt443 || !status.Running {
 		t.Fatalf("unexpected failover status: %+v", status)
 	}
 }
@@ -241,13 +238,13 @@ func TestManagedRuntimeReturnsAggregateErrorWhenAllEndpointsFail(t *testing.T) {
 		}, nil
 	}
 
-	err := mr.Start(context.Background())
-	if err == nil {
+	if err := mr.Start(context.Background()); err == nil {
 		t.Fatal("expected aggregate failure when all endpoints fail")
-	}
-	for _, want := range []string{testkit.WarpIPv4Primary443, testkit.WarpIPv4Alt443} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected aggregate error to mention %q, got %v", want, err)
+	} else {
+		for _, want := range []string{testkit.WarpIPv4Primary443, testkit.WarpIPv4Alt443} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("expected aggregate error to mention %q, got %v", want, err)
+			}
 		}
 	}
 	if len(store.saved) != 0 {
@@ -278,7 +275,7 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 
 	mr := newTestManagedRuntime(store, authState, true)
 	mr.selectFn = fixedEndpointSelector([]storage.Node{
-		{ID: "node-1", EndpointV4: testkit.WarpIPv4Primary443},
+		{ID: testClientNodePrimary, EndpointV4: testkit.WarpIPv4Primary443},
 		{ID: "node-2", EndpointV4: testkit.WarpIPv4Alt443},
 	})
 	mr.buildFn = func(endpoint string, state storage.State) (sdkRuntime, error) {
@@ -311,8 +308,7 @@ func TestManagedRuntimeFailsOverOnReportedEndpointFailure(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	status := mr.Status()
-	if status.Endpoint != testkit.WarpIPv4Alt443 || !status.Running {
+	if status := mr.Status(); status.Endpoint != testkit.WarpIPv4Alt443 || !status.Running {
 		t.Fatalf("expected runtime to fail over to second endpoint, got %+v", status)
 	}
 	if firstRuntime.closeCalls == 0 {
@@ -429,7 +425,7 @@ func mustNewRuntimeAdapter(t *testing.T, endpoint string) *runtimeAdapter {
 		SOCKS5: internalruntime.NewSOCKS5Runtime(socksManager),
 	})
 	if err != nil {
-		t.Fatalf("expected client runtime success, got %v", err)
+		t.Fatalf(testExpectedClientRuntime, err)
 	}
 	return &runtimeAdapter{runtime: clientRuntime}
 }
@@ -525,7 +521,7 @@ func TestOptionsNormalizedAndClientLifecycle(t *testing.T) {
 	stub := &extraSDKRuntime{status: Status{Running: true, ListenAddress: testClientListenAddress}, listen: testClientListenAddress}
 	buildSDKRuntime = func(Options) (sdkRuntime, error) { return stub, nil }
 
-	if got := (Options{HTTP: HTTPOptions{Enabled: true}}).normalized().Listen.Address; got == "" {
+	if (Options{HTTP: HTTPOptions{Enabled: true}}).normalized().Listen.Address == "" {
 		t.Fatal("expected default listen address when proxy mode enabled")
 	}
 	client, err := NewClient(Options{HTTP: HTTPOptions{Enabled: true}})
@@ -599,7 +595,7 @@ func TestSDKHelpersAndManagedRuntimeUtilities(t *testing.T) {
 	if tunCandidatePriority(testkit.WarpIPv4Alt4500, discovery.SourceFixed) >= tunCandidatePriority(net.JoinHostPort(primaryHost, "4500"), discovery.SourceFixed) {
 		t.Fatal("expected preferred tun candidate priority")
 	}
-	state := storage.State{Certificate: storage.Certificate{PrivateKey: "pk", ClientCertificate: "cert", PeerPublicKey: "peer", ClientID: "cid"}, Account: storage.AccountStatus{State: "registered", AccountType: "plus"}, Interface: storage.InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc}, Services: storage.Services{HTTPProxy: "http://proxy"}, SelectedNode: "node-1", NodeCache: []storage.Node{{ID: "node-1", Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}}}
+	state := storage.State{Certificate: storage.Certificate{PrivateKey: "pk", ClientCertificate: "cert", PeerPublicKey: "peer", ClientID: "cid"}, Account: storage.AccountStatus{State: "registered", AccountType: "plus"}, Interface: storage.InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc}, Services: storage.Services{HTTPProxy: "http://proxy"}, SelectedNode: testClientNodePrimary, NodeCache: []storage.Node{{ID: testClientNodePrimary, Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}}}
 	if info := sessionInfoFromState(state); info.IPv4 == "" || info.IPv6 == "" {
 		t.Fatalf("unexpected session info: %+v", info)
 	}
@@ -734,8 +730,7 @@ func TestManagedRuntimeTryHotSwapRuntime(t *testing.T) {
 		endpoint:  "current-endpoint",
 		selection: endpointSelection{Candidates: []discovery.Candidate{{Address: "current-endpoint"}, {Address: testNextEndpoint}}},
 	}
-	ok := mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom"))
-	if !ok {
+	if ok := mr.tryHotSwapRuntime(currentRT, nextRT, testNextEndpoint, storage.DefaultState(), mr.selection, 1, errors.New("boom")); !ok {
 		t.Fatal("expected hot swap runtime success")
 	}
 	if mr.endpoint != testNextEndpoint {
@@ -850,13 +845,11 @@ func TestLoggingHelperBranchesAndSelectionDiagnostics(t *testing.T) {
 		t.Fatalf("unexpected fallback event description: %q %q", action, msg)
 	}
 
-	if got := newLoggingProber(nil, discovery.NewStaticProber(nil)); got == nil {
+	if newLoggingProber(nil, discovery.NewStaticProber(nil)) == nil {
 		t.Fatal("expected base prober passthrough")
 	}
 	logger := &capturingLogger{}
-	base := discovery.NewStaticProber(map[string]discovery.ProbeResult{})
-	prober := newLoggingProber(logger, base)
-	if results := prober.Probe([]discovery.Candidate{{Address: "missing", Source: discovery.SourceFixed}}); len(results) != 0 {
+	if results := newLoggingProber(logger, discovery.NewStaticProber(map[string]discovery.ProbeResult{})).Probe([]discovery.Candidate{{Address: "missing", Source: discovery.SourceFixed}}); len(results) != 0 {
 		t.Fatalf("expected no results, got %+v", results)
 	}
 
@@ -1090,7 +1083,7 @@ func TestManagedRuntimeEmitsStructuredLifecycleLogs(t *testing.T) {
 			ClientID:          testCertClientID,
 		},
 		NodeCache: []storage.Node{
-			{ID: "node-1", EndpointV4: testkit.WarpIPv4Alt443},
+			{ID: testClientNodePrimary, EndpointV4: testkit.WarpIPv4Alt443},
 		},
 	}
 	runtime := &stubClientRuntimeAdapter{
@@ -1252,7 +1245,7 @@ func TestLoggingProberEmitsPerCandidateDiagnostics(t *testing.T) {
 		"source=\"fixed\"",
 	} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got:\n%s", want, output)
+			t.Fatalf(testExpectedOutputContain, want, output)
 		}
 	}
 }
@@ -1285,7 +1278,7 @@ func TestLoggingWarpStatusCheckerEmitsDiagnostics(t *testing.T) {
 		"candidate=\"" + testkit.WarpIPv4Alt443 + "\"",
 	} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got:\n%s", want, output)
+			t.Fatalf(testExpectedOutputContain, want, output)
 		}
 	}
 }
@@ -1475,7 +1468,7 @@ func TestSelectEndpointUsesTUNTimingProfile(t *testing.T) {
 		"concurrency=4",
 	} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got:\n%s", want, output)
+			t.Fatalf(testExpectedOutputContain, want, output)
 		}
 	}
 }

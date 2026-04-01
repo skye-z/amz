@@ -49,7 +49,7 @@ type UDPAssociateResponse struct {
 	Payload       []byte
 }
 
-type UDPAssociateRelay interface {
+type UDPAssociateExchanger interface {
 	Exchange(ctx context.Context, req UDPAssociateRequest) (UDPAssociateResponse, error)
 }
 
@@ -68,7 +68,7 @@ type SOCKS5Manager struct {
 	udpPacketConn net.PacketConn
 	runCancel     context.CancelFunc
 	runWG         sync.WaitGroup
-	udpRelay      UDPAssociateRelay
+	udpRelay      UDPAssociateExchanger
 	associations  map[string]*udpAssociation
 	activeTCP     map[net.Conn]struct{}
 	streamManager SOCKS5ConnectStreamOpener
@@ -131,7 +131,7 @@ func (m *SOCKS5Manager) AddRxBytes(n int) {
 
 func (m *SOCKS5Manager) AddReconnect() { m.mu.Lock(); defer m.mu.Unlock(); m.stats.ReconnectCount++ }
 
-func (m *SOCKS5Manager) SetUDPAssociateRelay(relay UDPAssociateRelay) {
+func (m *SOCKS5Manager) SetUDPAssociateRelay(relay UDPAssociateExchanger) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.udpRelay = relay
@@ -203,7 +203,7 @@ func (m *SOCKS5Manager) start(ctx context.Context, provided net.Listener) error 
 			return fmt.Errorf("listen socks udp: %w", err)
 		}
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(ctx)
 	m.listener = ln
 	m.listenerOwned = provided == nil
 	m.udpPacketConn = packetConn

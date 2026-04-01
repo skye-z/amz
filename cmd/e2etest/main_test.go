@@ -247,7 +247,9 @@ func TestRunE2EReturnsFailureWhenDirectFetchFails(t *testing.T) {
 			return "", nil, errors.New("direct failed")
 		},
 		newClient: (&fakeFactory{}).NewClient,
-		sleep:     func(time.Duration) {},
+		sleep: func(time.Duration) {
+			// No-op: skip sleeping in tests.
+		},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
 		t.Fatalf(testExpectedExitCodeOne, code)
@@ -261,7 +263,9 @@ func TestRunE2EReturnsFailureWhenClientCreationFails(t *testing.T) {
 			return testkit.PublicDNSV4, map[string]any{testIPField: testkit.PublicDNSV4}, nil
 		},
 		newClient: (&fakeFactory{err: errors.New("create failed")}).NewClient,
-		sleep:     func(time.Duration) {},
+		sleep: func(time.Duration) {
+			// No-op: skip sleeping in tests.
+		},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
 		t.Fatalf(testExpectedExitCodeOne, code)
@@ -282,7 +286,9 @@ func TestRunE2EReturnsSuccessWhenAllModesPass(t *testing.T) {
 			return ip, map[string]any{testIPField: ip}, nil
 		},
 		newClient: factory.NewClient,
-		sleep:     func(time.Duration) {},
+		sleep: func(time.Duration) {
+			// No-op: skip sleeping in tests.
+		},
 	}
 	if code := runE2E(cfg, deps); code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
@@ -306,7 +312,9 @@ func TestRunE2EReturnsFailureWhenHTTPCheckFails(t *testing.T) {
 			}
 		},
 		newClient: factory.NewClient,
-		sleep:     func(time.Duration) {},
+		sleep: func(time.Duration) {
+			// No-op: skip sleeping in tests.
+		},
 	}
 	if code := runE2E(cfg, deps); code != 1 {
 		t.Fatalf(testExpectedExitCodeOne, code)

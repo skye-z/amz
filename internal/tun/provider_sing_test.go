@@ -14,6 +14,8 @@ import (
 	"github.com/skye-z/amz/internal/testkit"
 )
 
+const errSingDeviceStart = "expected start success, got %v"
+
 type fakeNativeTun struct {
 	options      []singtun.Options
 	failUpdateAt int
@@ -203,7 +205,7 @@ func TestSingDeviceStartDeviceStartsInterfaceMonitor(t *testing.T) {
 	}
 
 	if err := device.StartDevice(); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errSingDeviceStart, err)
 	}
 	if monitor.startCalls.Load() != 1 {
 		t.Fatalf("expected interface monitor Start once, got %d", monitor.startCalls.Load())
@@ -217,7 +219,9 @@ func (s *stubNetworkMonitor) Close() error { return nil }
 func (s *stubNetworkMonitor) RegisterCallback(singtun.NetworkUpdateCallback) *list.Element[singtun.NetworkUpdateCallback] {
 	return nil
 }
-func (s *stubNetworkMonitor) UnregisterCallback(*list.Element[singtun.NetworkUpdateCallback]) {}
+func (s *stubNetworkMonitor) UnregisterCallback(*list.Element[singtun.NetworkUpdateCallback]) {
+	// No-op: the test double does not track callbacks.
+}
 
 type stubInterfaceMonitor struct {
 	startCalls atomic.Int32
@@ -236,9 +240,13 @@ func (s *stubInterfaceMonitor) AndroidVPNEnabled() bool  { return false }
 func (s *stubInterfaceMonitor) RegisterCallback(func(*control.Interface, int)) *list.Element[func(*control.Interface, int)] {
 	return nil
 }
-func (s *stubInterfaceMonitor) UnregisterCallback(*list.Element[func(*control.Interface, int)]) {}
-func (s *stubInterfaceMonitor) RegisterMyInterface(string)                                      {}
-func (s *stubInterfaceMonitor) MyInterface() string                                             { return "" }
+func (s *stubInterfaceMonitor) UnregisterCallback(*list.Element[func(*control.Interface, int)]) {
+	// No-op: the test double does not track callbacks.
+}
+func (s *stubInterfaceMonitor) RegisterMyInterface(string) {
+	// No-op: the test double does not track interface names.
+}
+func (s *stubInterfaceMonitor) MyInterface() string { return "" }
 
 func TestAssembleStartsSingTunAfterConfigAndRoutes(t *testing.T) {
 	t.Parallel()

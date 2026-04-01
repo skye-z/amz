@@ -8,6 +8,8 @@ import (
 	internalcloudflare "github.com/skye-z/amz/internal/cloudflare"
 )
 
+const failureConnectIPOperation = "connect-ip"
+
 func TestClassifyMapsCloudflareQuirksToSwitchEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -23,12 +25,12 @@ func TestClassifyMapsCloudflareQuirksToSwitchEndpoint(t *testing.T) {
 		},
 		{
 			name:  "protocol mismatch",
-			event: Event{Component: ComponentSession, Err: internalcloudflare.WrapError("connect-ip", internalcloudflare.CloudflareQuirkProtocolMismatch, errors.New("bad request"))},
+			event: Event{Component: ComponentSession, Err: internalcloudflare.WrapError(failureConnectIPOperation, internalcloudflare.CloudflareQuirkProtocolMismatch, errors.New("bad request"))},
 			class: ClassProtocol,
 		},
 		{
 			name:  "rate limited",
-			event: Event{Component: ComponentSession, Err: internalcloudflare.WrapError("connect-ip", internalcloudflare.CloudflareQuirkRateLimited, errors.New("429"))},
+			event: Event{Component: ComponentSession, Err: internalcloudflare.WrapError(failureConnectIPOperation, internalcloudflare.CloudflareQuirkRateLimited, errors.New("429"))},
 			class: ClassRateLimited,
 		},
 	}
@@ -76,11 +78,10 @@ func TestBusDeliversPublishedEvents(t *testing.T) {
 	})
 	defer bus.Close()
 
-	if ok := bus.Publish(Event{Component: ComponentHTTP, Endpoint: "a:443", Err: errors.New("boom")}); !ok {
+	if !bus.Publish(Event{Component: ComponentHTTP, Endpoint: "a:443", Err: errors.New("boom")}) {
 		t.Fatal("expected publish success")
 	}
-	event := <-done
-	if event.Endpoint != "a:443" {
+	if event := <-done; event.Endpoint != "a:443" {
 		t.Fatalf("expected endpoint a:443, got %+v", event)
 	}
 }
@@ -97,7 +98,6 @@ func TestClassifyTreatsTransportTimeoutAsRetryCurrent(t *testing.T) {
 	}
 }
 
-
 func TestFailureBusNilClosedAndAsyncBranches(t *testing.T) {
 	t.Parallel()
 
@@ -111,19 +111,18 @@ func TestFailureBusNilClosedAndAsyncBranches(t *testing.T) {
 	bus := NewBus(1, func(event Event) {
 		handled <- event
 	})
-	if ok := bus.Publish(Event{Endpoint: "first"}); !ok {
+	if !bus.Publish(Event{Endpoint: "first"}) {
 		t.Fatal("expected first publish success")
 	}
-	if ok := bus.Publish(Event{Endpoint: "second"}); !ok {
+	if !bus.Publish(Event{Endpoint: "second"}) {
 		t.Fatal("expected second publish success even when buffer is full")
 	}
-	gotFirst := <-handled
-	gotSecond := <-handled
-	if gotFirst.Endpoint == "" || gotSecond.Endpoint == "" {
-		t.Fatalf("expected handled events, got %+v %+v", gotFirst, gotSecond)
+	events := []Event{<-handled, <-handled}
+	if events[0].Endpoint == "" || events[1].Endpoint == "" {
+		t.Fatalf("expected handled events, got %+v %+v", events[0], events[1])
 	}
 	bus.Close()
-	if ok := bus.Publish(Event{Endpoint: "third"}); ok {
+	if bus.Publish(Event{Endpoint: "third"}) {
 		t.Fatal("expected publish to fail after close")
 	}
 	bus.Close()
@@ -144,7 +143,7 @@ func TestClassifyAdditionalBranches(t *testing.T) {
 	if decision := Classify(Event{Err: errors.New("eof")}); decision.Class != ClassTransport || decision.Action != ActionRetryCurrent {
 		t.Fatalf("expected transport retry decision, got %+v", decision)
 	}
-	if decision := Classify(Event{Err: internalcloudflare.WrapError("connect-ip", "mystery", errors.New("boom"))}); decision.Class != ClassTransport || decision.Action != ActionSwitchEndpoint {
+	if decision := Classify(Event{Err: internalcloudflare.WrapError(failureConnectIPOperation, "mystery", errors.New("boom"))}); decision.Class != ClassTransport || decision.Action != ActionSwitchEndpoint {
 		t.Fatalf("expected default cloudflare transport decision, got %+v", decision)
 	}
 }

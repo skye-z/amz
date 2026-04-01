@@ -32,6 +32,8 @@ const (
 	httpConnectErrBoom         = "boom"
 	httpConnectTUNName         = "igara0"
 	httpConnectBootstrapName   = "igara-test0"
+	httpConnectExampleURL      = "http://example.com/path"
+	httpConnectExampleName     = "example.com"
 	httpConnectRespEstablished = "HTTP/1.1 200 Connection Established\r\n\r\n"
 
 	errHTTPManagerCreate   = "expected http manager creation success, got %v"
@@ -45,6 +47,8 @@ const (
 	errGreetingWrite       = "expected greeting write success, got %v"
 	errManagerClose        = "expected close success, got %v"
 	errTunManagerStart     = "expected start success, got %v"
+	errExpected200Connect  = "expected 200 connect response, got %d"
+	httpConnectExampleHost = "example.com:443"
 )
 
 func mustDialHTTPConnect(t *testing.T, listenAddress string) (net.Conn, *http.Response) {
@@ -134,7 +138,7 @@ func TestHTTPManagerConnectFallsBackToDialerWhenStreamOpenFails(t *testing.T) {
 
 	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
+	assertHTTPConnectStatus(t, resp, http.StatusOK, errExpected200Connect)
 	assertEchoPayload(t, conn, echoPayload)
 }
 
@@ -167,7 +171,7 @@ func TestHTTPManagerReportsFailureWhenStreamOpenFails(t *testing.T) {
 
 	conn, resp := mustDialHTTPConnect(t, manager.ListenAddress())
 	defer conn.Close()
-	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
+	assertHTTPConnectStatus(t, resp, http.StatusOK, errExpected200Connect)
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) && !reported.Load() {
 		time.Sleep(10 * time.Millisecond)
@@ -382,7 +386,7 @@ func TestMuxListenerDispatchesProtocolsAndCloses(t *testing.T) {
 		t.Fatalf("expected socks version byte, got %v", buf)
 	}
 
-	if got := mux.Addr().String(); got == "" {
+	if mux.Addr().String() == "" {
 		t.Fatal("expected mux addr")
 	}
 	if err := mux.Close(); err != nil {
@@ -562,7 +566,9 @@ func TestRuntimeFactoriesAndHealthWrappers(t *testing.T) {
 	}
 
 	httpRT := NewHTTPRuntime(localHTTPStarter{listenAddress: testkit.LocalListenSDK, state: config.StateIdle})
-	httpRT.SetFailureReporter(func(failure.Event) {})
+	httpRT.SetFailureReporter(func(failure.Event) {
+		// No-op: only verify the setter accepts a callback.
+	})
 	if err := httpRT.Start(context.Background()); err != nil {
 		t.Fatalf("expected http runtime start success, got %v", err)
 	}
@@ -574,7 +580,9 @@ func TestRuntimeFactoriesAndHealthWrappers(t *testing.T) {
 	}
 
 	socksRT := NewSOCKS5Runtime(localSOCKSStarter{listenAddress: testkit.LocalListenSOCKS, state: config.StateIdle})
-	socksRT.SetFailureReporter(func(failure.Event) {})
+	socksRT.SetFailureReporter(func(failure.Event) {
+		// No-op: only verify the setter accepts a callback.
+	})
 	if err := socksRT.Start(context.Background()); err != nil {
 		t.Fatalf("expected socks runtime start success, got %v", err)
 	}
@@ -618,13 +626,12 @@ func TestHTTPManagerUtilityHelpers(t *testing.T) {
 		t.Fatalf("expected reconnect count 1, got %+v", stats)
 	}
 
-	customRT := localRoundTripper(func(*http.Request) (*http.Response, error) { return nil, nil })
-	manager.SetHTTPRoundTripper(customRT)
-	if got := manager.currentRoundTripper(); got == nil {
+	manager.SetHTTPRoundTripper(localRoundTripper(func(*http.Request) (*http.Response, error) { return nil, nil }))
+	if manager.currentRoundTripper() == nil {
 		t.Fatal("expected configured round tripper")
 	}
 	manager.SetHTTPRoundTripper(nil)
-	if got := manager.currentRoundTripper(); got == nil {
+	if manager.currentRoundTripper() == nil {
 		t.Fatal("expected fallback round tripper")
 	}
 
@@ -690,7 +697,7 @@ func TestHTTPManagerHandleForwardAndRetryBranches(t *testing.T) {
 	manager.SetHTTPDialer(failingHTTPDialer{err: errors.New("dial unavailable")})
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/path", nil)
+	req := httptest.NewRequest(http.MethodGet, httpConnectExampleURL, nil)
 	handler.handleForward(recorder, req)
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("expected bad gateway with failing default transport, got %d", recorder.Code)
@@ -988,9 +995,13 @@ func TestHTTPAndSOCKSRuntimeStatsAccessors(t *testing.T) {
 		t.Fatalf("unexpected socks health spec: %+v", spec)
 	}
 	var nilHTTP *HTTPRuntime
-	nilHTTP.SetFailureReporter(func(failure.Event) {})
+	nilHTTP.SetFailureReporter(func(failure.Event) {
+		// No-op: verify a nil receiver does not panic.
+	})
 	var nilSOCKS *SOCKS5Runtime
-	nilSOCKS.SetFailureReporter(func(failure.Event) {})
+	nilSOCKS.SetFailureReporter(func(failure.Event) {
+		// No-op: verify a nil receiver does not panic.
+	})
 }
 
 func TestHTTPHandleConnectViaStreamAndHelpers(t *testing.T) {
@@ -1007,8 +1018,8 @@ func TestHTTPHandleConnectViaStreamAndHelpers(t *testing.T) {
 		t.Fatalf(errHTTPManagerCreate, err)
 	}
 	manager.SetStreamManager(localStreamOpener{})
-	host, port, err := parseHTTPConnectTarget("example.com")
-	if err != nil || host != "example.com" || port != "443" {
+	host, port, err := parseHTTPConnectTarget(httpConnectExampleName)
+	if err != nil || host != httpConnectExampleName || port != "443" {
 		t.Fatalf("unexpected parsed target host=%q port=%q err=%v", host, port, err)
 	}
 
@@ -1105,7 +1116,7 @@ func TestUpstreamConnectDialerFailureBranches(t *testing.T) {
 		_ = server.Close()
 		return client
 	}}
-	if _, err := newUpstreamConnectDialer(writeFailDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := newUpstreamConnectDialer(writeFailDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", httpConnectExampleHost); err == nil {
 		t.Fatal("expected write/read failure from upstream dialer")
 	}
 
@@ -1118,7 +1129,7 @@ func TestUpstreamConnectDialerFailureBranches(t *testing.T) {
 		}()
 		return client
 	}}
-	if _, err := newUpstreamConnectDialer(rejectDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := newUpstreamConnectDialer(rejectDialer, httpConnectProxyAddress).DialContext(context.Background(), "tcp", httpConnectExampleHost); err == nil {
 		t.Fatal("expected upstream rejection error")
 	}
 
@@ -1129,7 +1140,7 @@ func TestUpstreamConnectDialerFailureBranches(t *testing.T) {
 }
 
 func TestUpstreamAndDNSDialers(t *testing.T) {
-	if _, err := newUpstreamConnectDialer(nil, "proxy").DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+	if _, err := newUpstreamConnectDialer(nil, "proxy").DialContext(context.Background(), "tcp", httpConnectExampleHost); err == nil {
 		t.Fatal("expected unavailable upstream dialer error")
 	}
 	base := &recordingDialer{connFactory: func() net.Conn {
@@ -1144,7 +1155,7 @@ func TestUpstreamAndDNSDialers(t *testing.T) {
 		return client
 	}}
 	upstream := newUpstreamConnectDialer(base, httpConnectProxyAddress)
-	conn, err := upstream.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := upstream.DialContext(context.Background(), "tcp", httpConnectExampleHost)
 	if err != nil {
 		t.Fatalf("expected upstream connect success, got %v", err)
 	}
@@ -1347,7 +1358,7 @@ func TestNewHTTPRuntimeFromSharedDialerUsesStreamManagerForConnect(t *testing.T)
 
 	conn, resp := mustDialHTTPConnect(t, runtime.ListenAddress())
 	defer conn.Close()
-	assertHTTPConnectStatus(t, resp, http.StatusOK, "expected 200 connect response, got %d")
+	assertHTTPConnectStatus(t, resp, http.StatusOK, errExpected200Connect)
 	assertEchoPayload(t, conn, echoPayload)
 }
 

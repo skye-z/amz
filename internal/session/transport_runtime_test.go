@@ -32,6 +32,9 @@ const (
 	transportRuntimeIPv4Broadcast   = "255.255.255.255"
 	transportRuntimeMasqueLocalhost = testkit.LocalhostName
 	transportRuntimeTargetEndpoint  = testkit.TestDomain + ":443"
+	errTransportRuntimeMgrCreate    = "expected manager creation success, got %v"
+	errTransportRuntimeClose        = "expected close success, got %v"
+	errTransportRuntimeReadyState   = "expected ready state, got %q"
 )
 
 type fakeQUICConn struct {
@@ -51,20 +54,20 @@ func (c *fakeH3Client) Close() error { return nil }
 func (c *fakeH3Client) AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error {
 	return c.awaitErr
 }
-func (c *fakeH3Client) Raw() *http3.ClientConn     { return nil }
-func (c *fakeH3Client) RequestConn() h3RequestConn { return nil }
+func (c *fakeH3Client) Raw() *http3.ClientConn             { return nil }
+func (c *fakeH3Client) RequestConn() h3RequestStreamOpener { return nil }
 
 type fakeTransportDialer struct {
 	err      error
 	called   bool
 	lastQUIC QUICOptions
 	lastH3   HTTP3Options
-	conn     quicConn
+	conn     quicErrorCloser
 	h3       h3ClientConn
 	latency  time.Duration
 }
 
-func (d *fakeTransportDialer) Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+func (d *fakeTransportDialer) Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicErrorCloser, h3ClientConn, time.Duration, error) {
 	d.called = true
 	d.lastQUIC = quic
 	d.lastH3 = h3
@@ -140,7 +143,7 @@ func TestConnectionManagerConnect(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	dialer := &fakeTransportDialer{conn: &fakeQUICConn{}, h3: &fakeH3Client{}, latency: 25 * time.Millisecond}
 	mgr.dialer = dialer
@@ -152,13 +155,13 @@ func TestConnectionManagerConnect(t *testing.T) {
 		t.Fatal("expected dialer to be called")
 	}
 	if mgr.Snapshot().State != ConnStateReady {
-		t.Fatalf("expected ready state, got %q", mgr.Snapshot().State)
+		t.Fatalf(errTransportRuntimeReadyState, mgr.Snapshot().State)
 	}
 	if mgr.Stats().HandshakeLatency != 25*time.Millisecond {
 		t.Fatalf("expected latency 25ms, got %s", mgr.Stats().HandshakeLatency)
 	}
 	if err := mgr.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errTransportRuntimeClose, err)
 	}
 	if mgr.Snapshot().State != ConnStateIdle {
 		t.Fatalf("expected idle after close, got %q", mgr.Snapshot().State)
@@ -177,7 +180,7 @@ func TestConnectionManagerConnectFailure(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	mgr.dialer = &fakeTransportDialer{err: errors.New("dial failed")}
 
@@ -202,7 +205,7 @@ func TestConnectionManagerConnectWrapsCloudflareSettingsError(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	mgr.dialer = &fakeTransportDialer{
 		conn:    &fakeQUICConn{},
@@ -238,7 +241,7 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	dialer := &fakeConnectIPDialer{latency: 15 * time.Millisecond, session: &fakeConnectIPSession{info: SessionInfo{
 		IPv4:   testkit.TunIPv4CIDR,
@@ -255,7 +258,7 @@ func TestConnectIPSessionManagerOpen(t *testing.T) {
 	}
 	snapshot := mgr.Snapshot()
 	if snapshot.State != SessionStateReady {
-		t.Fatalf("expected ready state, got %q", snapshot.State)
+		t.Fatalf(errTransportRuntimeReadyState, snapshot.State)
 	}
 	if mgr.PacketEndpoint() == nil {
 		t.Fatal("expected packet endpoint after session open")
@@ -289,7 +292,7 @@ func TestConnectIPSessionManagerOpenWrapsCloudflareResponse(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	mgr.dialer = &fakeConnectIPDialer{
 		err:      errors.New("connect-ip: server responded with 429"),
@@ -440,7 +443,7 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 		SOCKS:          config.SOCKSConfig{ListenAddress: config.DefaultSOCKSListenAddress},
 	})
 	if err != nil {
-		t.Fatalf("expected manager creation success, got %v", err)
+		t.Fatalf(errTransportRuntimeMgrCreate, err)
 	}
 	manager.dialer = realTransportDialerWithTLS{tlsConfig: &tls.Config{ServerName: transportRuntimeMasqueLocalhost, RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -472,7 +475,7 @@ func TestConnectIPSessionManagerOpenIntegration(t *testing.T) {
 	}
 	snapshot := sessionManager.Snapshot()
 	if snapshot.State != SessionStateReady {
-		t.Fatalf("expected ready state, got %q", snapshot.State)
+		t.Fatalf(errTransportRuntimeReadyState, snapshot.State)
 	}
 	if snapshot.IPv4 != testkit.TunIPv4CIDR {
 		t.Fatalf("expected ipv4 assignment, got %q", snapshot.IPv4)
@@ -508,7 +511,7 @@ func TestBuildHTTP3TransportUsesCloudflareCompatSettings(t *testing.T) {
 
 type realTransportDialerWithTLS struct{ tlsConfig *tls.Config }
 
-func (d realTransportDialerWithTLS) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+func (d realTransportDialerWithTLS) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicErrorCloser, h3ClientConn, time.Duration, error) {
 	started := time.Now()
 	addr, err := net.ResolveUDPAddr("udp", quicOpts.Endpoint)
 	if err != nil {

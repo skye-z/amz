@@ -18,6 +18,7 @@ import (
 const (
 	testAuthDeviceID             = "device-123"
 	testAuthAccountID            = "account-123"
+	testAuthLicense              = "license-123"
 	testAuthTokenRegister        = "token-register"
 	testAuthTokenEnrolled        = "token-enrolled"
 	testAuthAccountTypePlus      = "plus"
@@ -27,11 +28,16 @@ const (
 	testAuthRegisterDeviceID     = "dev-1"
 	testAuthRegisterToken        = "tok-1"
 	testAuthEnrollToken          = "tok-2"
+	testAuthSelectedNode         = "node-keep"
+	testAuthReplacementDeviceID  = "device-new"
 	testAuthIPv4Addr             = testkit.PublicDNSV4
 	testAuthIPv4AltAddr          = testkit.TestIPv4Echo
 	testAuthIPv6Addr             = testkit.TestIPv6Doc
 	testAuthHost                 = "host"
+	testAuthTransportBaseURL     = "https://example.com/"
+	testAuthTransportRequestURL  = "https://example.com/v0a4471/reg/dev-1"
 	testDevicePrivateKeyBase64   = "MHcCAQEEIP2wC9ZwTe74MkRUYw35vj0IadB1iKsFcfoTmyaKOAqvoAoGCCqGSM49AwEHoUQDQgAEiKxuxMxDPZWS9Vyuk3F7S3w7Dnk3a1JpN96CB2A+qsSVqS+8CA0nVddOZXS6jttuPAHyBs+K6TfGsDz3jACzmw=="
+	errUnexpectedAPIErrorString  = "unexpected api error string: %q"
 )
 
 func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
@@ -51,7 +57,7 @@ func TestServiceEnsureRegistersWhenStateMissing(t *testing.T) {
 			Account: ResponseAccount{
 				ID:      testAuthAccountID,
 				Type:    testAuthAccountTypePlus,
-				License: "license-123",
+				License: testAuthLicense,
 			},
 			Config: ResponseConfig{
 				ClientID: testAuthClientID,
@@ -144,10 +150,10 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 				State:       testAuthAccountStateRegister,
 				AccountType: "free",
 			},
-			SelectedNode: "node-keep",
+			SelectedNode: testAuthSelectedNode,
 			NodeCache: []storage.Node{
 				{
-					ID:         "node-keep",
+					ID:         testAuthSelectedNode,
 					Host:       testkit.WarpHostPrimary,
 					EndpointV4: testkit.WarpIPv4Primary443,
 					PublicKey:  "peer-old",
@@ -162,7 +168,7 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 			Account: ResponseAccount{
 				ID:      testAuthAccountID,
 				Type:    testAuthAccountTypePlus,
-				License: "license-123",
+				License: testAuthLicense,
 			},
 			Config: ResponseConfig{
 				ClientID: testAuthClientID,
@@ -214,7 +220,7 @@ func TestServiceEnsureReusesStoredCredentials(t *testing.T) {
 	if result.State.Token != "token-refreshed" {
 		t.Fatalf("expected refreshed token, got %q", result.State.Token)
 	}
-	if result.State.SelectedNode != "node-keep" {
+	if result.State.SelectedNode != testAuthSelectedNode {
 		t.Fatalf("expected selected node preserved, got %q", result.State.SelectedNode)
 	}
 	if len(result.State.NodeCache) != 1 || result.State.NodeCache[0].PublicKey != "peer-new" {
@@ -235,7 +241,7 @@ func TestServiceEnsureFallsBackToRegisterWhenReuseUnauthorized(t *testing.T) {
 	client := &stubAuthClient{
 		enrollErr: &APIError{StatusCode: 401, Message: "unauthorized"},
 		registerResponse: Response{
-			ID:    "device-new",
+			ID:    testAuthReplacementDeviceID,
 			Token: testAuthTokenRegister,
 			Account: ResponseAccount{
 				ID:   testAuthAccountID,
@@ -244,12 +250,12 @@ func TestServiceEnsureFallsBackToRegisterWhenReuseUnauthorized(t *testing.T) {
 		},
 		enrollResponses: []Response{
 			{
-				ID:    "device-new",
+				ID:    testAuthReplacementDeviceID,
 				Token: testAuthTokenEnrolled,
 				Account: ResponseAccount{
 					ID:      testAuthAccountID,
 					Type:    testAuthAccountTypePlus,
-					License: "license-123",
+					License: testAuthLicense,
 				},
 			},
 		},
@@ -286,7 +292,7 @@ func TestServiceEnsureFallsBackToRegisterWhenReuseUnauthorized(t *testing.T) {
 	if client.enrollCalls != 2 {
 		t.Fatalf("expected one failed reuse and one enroll after register, got %d", client.enrollCalls)
 	}
-	if result.State.DeviceID != "device-new" {
+	if result.State.DeviceID != testAuthReplacementDeviceID {
 		t.Fatalf("expected new device id, got %q", result.State.DeviceID)
 	}
 }
@@ -378,8 +384,7 @@ func (s *stubAuthClient) Enroll(_ context.Context, deviceID, token string, _ Enr
 		return Response{}, s.enrollErr
 	}
 	if len(s.enrollResponses) > 0 {
-		idx := s.enrollCalls - 1
-		if idx < len(s.enrollResponses) {
+		if idx := s.enrollCalls - 1; idx < len(s.enrollResponses) {
 			return s.enrollResponses[idx], nil
 		}
 	}
@@ -490,21 +495,20 @@ func TestDeviceKeyPairValidationErrors(t *testing.T) {
 	if _, err := LoadDeviceKeyPair(DefaultDeviceKeyType, "%%%invalid-base64"); err == nil || !strings.Contains(err.Error(), "decode device private key") {
 		t.Fatalf("expected decode error, got %v", err)
 	}
-	bad := base64.StdEncoding.EncodeToString([]byte("not-a-key"))
-	if _, err := LoadDeviceKeyPair(DefaultDeviceKeyType, bad); err == nil || !strings.Contains(err.Error(), "parse device private key") {
+	if _, err := LoadDeviceKeyPair(DefaultDeviceKeyType, base64.StdEncoding.EncodeToString([]byte("not-a-key"))); err == nil || !strings.Contains(err.Error(), "parse device private key") {
 		t.Fatalf("expected parse error, got %v", err)
 	}
 }
 
 func TestHTTPTransportBuildsRequestsAndParsesErrors(t *testing.T) {
-	transport, err := NewHTTPTransport("https://example.com/", roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://example.com/v0a4471/reg/dev-1" {
+	transport, err := NewHTTPTransport(testAuthTransportBaseURL, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != testAuthTransportRequestURL {
 			t.Fatalf("unexpected request url: %s", req.URL.String())
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer tok" {
 			t.Fatalf("expected authorization header, got %q", got)
 		}
-		if got := req.Header.Get("CF-Client-Version"); got == "" {
+		if req.Header.Get("CF-Client-Version") == "" {
 			t.Fatal("expected default headers to be applied")
 		}
 		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: ioNopCloser(`{"errors":[{"code":1015,"message":"rate limit"}]}`)}, nil
@@ -603,7 +607,7 @@ func TestModelHelpersAndBuildState(t *testing.T) {
 		t.Fatal("expected invalid private key error")
 	}
 
-	previous := storage.State{SelectedNode: "node-keep", NodeCache: []storage.Node{{ID: "node-keep", PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: testAuthIPv4Addr}, Services: storage.Services{HTTPProxy: "http://old"}}
+	previous := storage.State{SelectedNode: testAuthSelectedNode, NodeCache: []storage.Node{{ID: testAuthSelectedNode, PublicKey: "old"}}, Interface: storage.InterfaceAddresses{V4: testAuthIPv4Addr}, Services: storage.Services{HTTPProxy: "http://old"}}
 	final := Response{ID: testAuthRegisterDeviceID, Token: testAuthEnrollToken, Account: ResponseAccount{Type: testAuthAccountTypePlus, License: "lic"}, Config: ResponseConfig{ClientID: "cid", Interface: ResponseConfigInterface{Addresses: storage.InterfaceAddresses{V6: testkit.WarpIPv6Primary443}}, Services: ResponseConfigServices{HTTPProxy: "http://new"}, Peers: []ResponsePeer{{PublicKey: "pk2", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testkit.WarpHostPrimary, V4: testkit.TestIPv4Echo, Ports: []uint16{500}}}}, {PublicKey: "pk1", Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.WarpIPv6Primary443}}}}}}
 	state, err := buildState(previous, pair.PrivateKey, "fallback-token", final)
 	if err != nil {
@@ -612,7 +616,7 @@ func TestModelHelpersAndBuildState(t *testing.T) {
 	if state.Token != testAuthEnrollToken || state.Certificate.PeerPublicKey == "" || len(state.NodeCache) != 2 {
 		t.Fatalf("unexpected built state: %+v", state)
 	}
-	if state.SelectedNode != "node-keep" {
+	if state.SelectedNode != testAuthSelectedNode {
 		t.Fatalf("expected selected node preserved, got %q", state.SelectedNode)
 	}
 	if got := normalizePeerEndpoint(testkit.TestIPv6Doc, 443); !strings.HasPrefix(got, "[") {
@@ -681,16 +685,15 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	}
 
 	if got := (&APIError{StatusCode: 400, Code: 7, Message: "bad"}).Error(); !strings.Contains(got, "code=7") {
-		t.Fatalf("unexpected api error string: %q", got)
+		t.Fatalf(errUnexpectedAPIErrorString, got)
 	}
 	if got := (&APIError{StatusCode: 400, Message: "bad"}).Error(); !strings.Contains(got, "message=bad") {
-		t.Fatalf("unexpected api error string: %q", got)
+		t.Fatalf(errUnexpectedAPIErrorString, got)
 	}
 	if got := (&APIError{StatusCode: 400}).Error(); !strings.Contains(got, "status=400") {
-		t.Fatalf("unexpected api error string: %q", got)
+		t.Fatalf(errUnexpectedAPIErrorString, got)
 	}
-	var nilAPI *APIError
-	if got := nilAPI.Error(); got == "" {
+	if ((*APIError)(nil)).Error() == "" {
 		t.Fatal("expected nil api error string")
 	}
 
@@ -713,7 +716,7 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if apiErr := extractAPIError(500, []byte(`{"reason":"plain-reason"}`)); apiErr == nil || apiErr.Message != "plain-reason" {
 		t.Fatalf("expected reason api error, got %+v", apiErr)
 	}
-	if apiErr := extractAPIError(500, []byte(`{}`)); apiErr == nil {
+	if extractAPIError(500, []byte(`{}`)) == nil {
 		t.Fatal("expected fallback api error on empty error envelope")
 	}
 
@@ -733,7 +736,7 @@ func TestAuthHelperBranchesAndFormatting(t *testing.T) {
 	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{Host: testAuthHost}}}); got != testAuthHost {
 		t.Fatalf("unexpected node id from host: %q", got)
 	}
-	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr, Ports: []uint16{443}}}}); got == "" {
+	if buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V4: testAuthIPv4Addr, Ports: []uint16{443}}}}) == "" {
 		t.Fatal("expected node id from ipv4 endpoint")
 	}
 	if got := comparePeer(
@@ -754,7 +757,7 @@ func TestAdditionalAuthModelBranches(t *testing.T) {
 	if got := buildNodeCache([]ResponsePeer{{}}); len(got) != 0 {
 		t.Fatalf("expected empty node cache for empty peer id, got %+v", got)
 	}
-	if got := buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.TestIPv6Doc}}}); got == "" {
+	if buildNodeID(ResponsePeer{Endpoint: ResponseEndpoint{ResponseEndpointObject: ResponseEndpointObject{V6: testkit.TestIPv6Doc}}}) == "" {
 		t.Fatal("expected node id from ipv6 endpoint")
 	}
 	if got := selectPeer([]ResponsePeer{

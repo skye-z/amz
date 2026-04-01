@@ -8,6 +8,16 @@ import (
 	"github.com/skye-z/amz/internal/discovery"
 )
 
+const (
+	eventEndpointProbeBegin       = "endpoint.probe.begin"
+	eventEndpointProbeSuccess     = "endpoint.probe.success"
+	eventEndpointWarpCheckBegin   = "endpoint.warp_check.begin"
+	eventEndpointWarpCheckSuccess = "endpoint.warp_check.success"
+
+	eventEndpointProbeFailed     = "endpoint.probe.failed"
+	eventEndpointWarpCheckFailed = "endpoint.warp_check.failed"
+)
+
 type loggingProber struct {
 	logger Logger
 	base   discovery.Prober
@@ -30,7 +40,7 @@ func (p *loggingProber) Probe(candidates []discovery.Candidate) []discovery.Prob
 
 	results := make([]discovery.ProbeResult, 0, len(candidates))
 	for idx, candidate := range candidates {
-		logEvent(p.logger, "managed_runtime", "endpoint.probe.begin",
+		logEvent(p.logger, "managed_runtime", eventEndpointProbeBegin,
 			field("candidate", candidate.Address),
 			field("source", candidate.Source),
 			field("index", idx+1),
@@ -40,7 +50,7 @@ func (p *loggingProber) Probe(candidates []discovery.Candidate) []discovery.Prob
 		started := time.Now()
 		probed := p.base.Probe([]discovery.Candidate{candidate})
 		if len(probed) == 0 {
-			logEvent(p.logger, "managed_runtime", "endpoint.probe.failed",
+			logEvent(p.logger, "managed_runtime", eventEndpointProbeFailed,
 				field("candidate", candidate.Address),
 				field("source", candidate.Source),
 				field("reason", "no_probe_result"),
@@ -51,9 +61,9 @@ func (p *loggingProber) Probe(candidates []discovery.Candidate) []discovery.Prob
 
 		result := probed[0]
 		results = append(results, result)
-		event := "endpoint.probe.success"
+		event := eventEndpointProbeSuccess
 		if !result.Available {
-			event = "endpoint.probe.failed"
+			event = eventEndpointProbeFailed
 		}
 		logEvent(p.logger, "managed_runtime", event,
 			field("candidate", candidate.Address),
@@ -80,7 +90,7 @@ func newLoggingProbeObserver(logger Logger) discovery.ProbeObserver {
 }
 
 func (o *loggingProbeObserver) OnProbeStart(candidate discovery.Candidate, index, total int) {
-	logEvent(o.logger, "managed_runtime", "endpoint.probe.begin",
+	logEvent(o.logger, "managed_runtime", eventEndpointProbeBegin,
 		field("candidate", candidate.Address),
 		field("source", candidate.Source),
 		field("index", index),
@@ -89,9 +99,9 @@ func (o *loggingProbeObserver) OnProbeStart(candidate discovery.Candidate, index
 }
 
 func (o *loggingProbeObserver) OnProbeDone(candidate discovery.Candidate, result discovery.ProbeResult, duration time.Duration, index, total int) {
-	event := "endpoint.probe.success"
+	event := eventEndpointProbeSuccess
 	if !result.Available {
-		event = "endpoint.probe.failed"
+		event = eventEndpointProbeFailed
 	}
 	logEvent(o.logger, "managed_runtime", event,
 		field("candidate", candidate.Address),
@@ -107,16 +117,16 @@ func (o *loggingProbeObserver) OnProbeDone(candidate discovery.Candidate, result
 }
 
 func (o *loggingProbeObserver) OnWarpCheckStart(candidate discovery.Candidate) {
-	logEvent(o.logger, "managed_runtime", "endpoint.warp_check.begin",
+	logEvent(o.logger, "managed_runtime", eventEndpointWarpCheckBegin,
 		field("candidate", candidate.Address),
 		field("source", candidate.Source),
 	)
 }
 
 func (o *loggingProbeObserver) OnWarpCheckDone(candidate discovery.Candidate, ok bool, err error, duration time.Duration) {
-	event := "endpoint.warp_check.success"
+	event := eventEndpointWarpCheckSuccess
 	if err != nil || !ok {
-		event = "endpoint.warp_check.failed"
+		event = eventEndpointWarpCheckFailed
 	}
 	fields := []logField{
 		field("candidate", candidate.Address),
@@ -152,13 +162,13 @@ func (c *loggingWarpStatusChecker) CheckWarp(ctx context.Context, candidate disc
 	}
 
 	started := time.Now()
-	logEvent(c.logger, "managed_runtime", "endpoint.warp_check.begin",
+	logEvent(c.logger, "managed_runtime", eventEndpointWarpCheckBegin,
 		field("candidate", candidate.Address),
 		field("source", candidate.Source),
 	)
 	ok, err := c.base.CheckWarp(ctx, candidate)
 	if err != nil {
-		logEvent(c.logger, "managed_runtime", "endpoint.warp_check.failed",
+		logEvent(c.logger, "managed_runtime", eventEndpointWarpCheckFailed,
 			field("candidate", candidate.Address),
 			field("source", candidate.Source),
 			field("error", err),
@@ -167,7 +177,7 @@ func (c *loggingWarpStatusChecker) CheckWarp(ctx context.Context, candidate disc
 		return false, err
 	}
 	if !ok {
-		logEvent(c.logger, "managed_runtime", "endpoint.warp_check.failed",
+		logEvent(c.logger, "managed_runtime", eventEndpointWarpCheckFailed,
 			field("candidate", candidate.Address),
 			field("source", candidate.Source),
 			field("reason", "unavailable"),
@@ -175,7 +185,7 @@ func (c *loggingWarpStatusChecker) CheckWarp(ctx context.Context, candidate disc
 		)
 		return false, nil
 	}
-	logEvent(c.logger, "managed_runtime", "endpoint.warp_check.success",
+	logEvent(c.logger, "managed_runtime", eventEndpointWarpCheckSuccess,
 		field("candidate", candidate.Address),
 		field("source", candidate.Source),
 		durationField("duration", time.Since(started)),

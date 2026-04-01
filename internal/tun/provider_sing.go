@@ -17,6 +17,8 @@ import (
 
 type nativeTunFactory func(singtun.Options) (singtun.Tun, error)
 
+const errUpdateSingTUNRouteOptions = "update sing-tun route options: %w"
+
 type singProvider struct {
 	platform          string
 	factory           nativeTunFactory
@@ -235,7 +237,7 @@ func (d *singDevice) ApplyTUNConfig(cfg Config) error {
 	}
 	if d.started {
 		if err := d.tun.UpdateRouteOptions(options); err != nil {
-			return fmt.Errorf("update sing-tun route options: %w", err)
+			return fmt.Errorf(errUpdateSingTUNRouteOptions, err)
 		}
 	}
 	d.options = options
@@ -281,11 +283,11 @@ func (d *singDevice) ApplyTUNRoutes(plan RoutePlan) error {
 			rollbackErr := d.tun.UpdateRouteOptions(previous)
 			if rollbackErr != nil {
 				return errors.Join(
-					fmt.Errorf("update sing-tun route options: %w", err),
+					fmt.Errorf(errUpdateSingTUNRouteOptions, err),
 					fmt.Errorf("rollback sing-tun route options: %w", rollbackErr),
 				)
 			}
-			return fmt.Errorf("update sing-tun route options: %w", err)
+			return fmt.Errorf(errUpdateSingTUNRouteOptions, err)
 		}
 	}
 	d.options = next
@@ -320,6 +322,10 @@ func (noOpDefaultInterfaceMonitor) AndroidVPNEnabled() bool  { return false }
 func (noOpDefaultInterfaceMonitor) RegisterCallback(func(*control.Interface, int)) *list.Element[func(*control.Interface, int)] {
 	return nil
 }
-func (noOpDefaultInterfaceMonitor) UnregisterCallback(*list.Element[func(*control.Interface, int)]) {}
-func (noOpDefaultInterfaceMonitor) RegisterMyInterface(string)                                      {}
-func (noOpDefaultInterfaceMonitor) MyInterface() string                                             { return "" }
+func (noOpDefaultInterfaceMonitor) UnregisterCallback(*list.Element[func(*control.Interface, int)]) {
+	// No-op: the default monitor does not track callbacks.
+}
+func (noOpDefaultInterfaceMonitor) RegisterMyInterface(string) {
+	// No-op: the default monitor does not track interface names.
+}
+func (noOpDefaultInterfaceMonitor) MyInterface() string { return "" }

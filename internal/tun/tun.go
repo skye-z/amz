@@ -12,6 +12,8 @@ import (
 	"github.com/skye-z/amz/internal/config"
 )
 
+const errTUNDeviceRequired = "%w: tun device is required"
+
 // 描述平台无关的最小设备参数。
 type DeviceConfig struct {
 	Name string
@@ -526,7 +528,7 @@ func (a *SystemAdapter) ApplyConfig(_ context.Context, dev Device, cfg Config) e
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errTUNDeviceRequired, config.ErrInvalidConfig)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -549,7 +551,7 @@ func (a *SystemAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePla
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errTUNDeviceRequired, config.ErrInvalidConfig)
 	}
 	if err := plan.Validate(); err != nil {
 		return err
@@ -617,7 +619,7 @@ func (a *FakeAdapter) ApplyConfig(_ context.Context, dev Device, cfg Config) err
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errTUNDeviceRequired, config.ErrInvalidConfig)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -633,7 +635,7 @@ func (a *FakeAdapter) ApplyRoutes(_ context.Context, dev Device, plan RoutePlan)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if dev == nil {
-		return fmt.Errorf("%w: tun device is required", config.ErrInvalidConfig)
+		return fmt.Errorf(errTUNDeviceRequired, config.ErrInvalidConfig)
 	}
 	if err := plan.Validate(); err != nil {
 		return err

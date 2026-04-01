@@ -26,6 +26,7 @@ const (
 	errHTTPManagerCreate  = "expected http manager creation success, got %v"
 	errSOCKSManagerCreate = "expected socks manager creation success, got %v"
 	errClientRuntimeNew   = "expected client runtime creation success, got %v"
+	errRuntimeStart       = "expected start success, got %v"
 	errSOCKSGreetingWrite = "expected socks greeting write success, got %v"
 	errGreetingReply      = "expected greeting reply %v, got %v"
 )
@@ -78,7 +79,7 @@ func TestClientRuntimeMuxesHTTPAndSOCKS5OnSinglePort(t *testing.T) {
 	defer runtime.Close()
 
 	if err := runtime.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errRuntimeStart, err)
 	}
 
 	listenAddress := runtime.ListenAddress()
@@ -189,7 +190,7 @@ func TestClientRuntimeStartsTUNInParallel(t *testing.T) {
 	}
 
 	if err := runtime.Start(context.Background()); err != nil {
-		t.Fatalf("expected start success, got %v", err)
+		t.Fatalf(errRuntimeStart, err)
 	}
 
 	status := runtime.Status()

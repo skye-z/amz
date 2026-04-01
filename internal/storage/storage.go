@@ -7,7 +7,12 @@ import (
 	"path/filepath"
 )
 
-const CurrentVersion = "1"
+const (
+	CurrentVersion    = "1"
+	stateDirName      = "amz"
+	stateFileName     = "state.json"
+	fallbackConfigDir = ".config"
+)
 
 type State struct {
 	Version      string             `json:"version"`
@@ -77,12 +82,12 @@ func DefaultPath() (string, error) {
 			if homeErr != nil {
 				return "", fmt.Errorf("resolve home dir: %w", err)
 			}
-			configHome = filepath.Join(home, ".config")
+			configHome = filepath.Join(home, fallbackConfigDir)
 		} else {
 			configHome = userConfigDir
 		}
 	}
-	return filepath.Join(configHome, "amz", "state.json"), nil
+	return filepath.Join(configHome, stateDirName, stateFileName), nil
 }
 
 func Write(path string, state State) error {

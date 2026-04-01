@@ -36,6 +36,7 @@ const (
 	quicMutatedValue            = "mutated"
 	quicExampleTCPAddress       = testkit.TestDomain + ":443"
 	quicBootstrapTCPAddress     = testkit.PublicDNSV4 + ":443"
+	quicMasqueServerName        = "masque.cloudflareclient.com"
 	quicDisconnectReasonTimeout = "timeout"
 	quicTracePacketsEnv         = "AMZ_TUN_TRACE_PACKETS"
 	quicTraceSourceAddress      = testkit.PacketSrcV4
@@ -52,6 +53,7 @@ const (
 	errCompatLayerCreate       = "expected compat layer creation success, got %v"
 	errServerNameMismatch      = "expected server name %q, got %q"
 	errAuthorityMismatch       = "expected authority %q, got %q"
+	errExpectedQUICOptions     = "expected quic options, got %v"
 )
 
 // 验证 QUIC 连接参数会从内核配置中生成�?
@@ -68,7 +70,7 @@ func TestBuildQUICOptions(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected quic options, got %v", err)
+		t.Fatalf(errExpectedQUICOptions, err)
 	}
 	if options.Endpoint != config.DefaultEndpoint {
 		t.Fatalf(errEndpointMismatch, config.DefaultEndpoint, options.Endpoint)
@@ -136,7 +138,7 @@ func TestBuildQUICOptionsWithExtensions(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("expected quic options, got %v", err)
+		t.Fatalf(errExpectedQUICOptions, err)
 	}
 	if options.CongestionControl != "bbr" {
 		t.Fatalf("expected congestion control %q, got %q", "bbr", options.CongestionControl)
@@ -167,7 +169,7 @@ func TestBuildQUICOptionsCopiesConfigConnectionParameters(t *testing.T) {
 
 	options, err := BuildQUICOptions(cfg)
 	if err != nil {
-		t.Fatalf("expected quic options, got %v", err)
+		t.Fatalf(errExpectedQUICOptions, err)
 	}
 
 	cfg.QUIC.ConnectionParameters[quicParamMasqueVersion] = quicMutatedValue
@@ -333,7 +335,15 @@ func TestPacketStackLinkEndpointBasicMethods(t *testing.T) {
 
 func TestPacketStackLinkEndpointReadLoopAndWritePackets(t *testing.T) {
 	relay := newFakeSessionPacketEndpoint()
-	endpoint := &packetStackLinkEndpoint{ctx: context.Background(), endpoint: relay, mtu: 1280}
+	endpoint := &packetStackLinkEndpoint{
+		endpoint:   relay,
+		readPacket: func(buf []byte) (int, error) { return relay.ReadPacket(context.Background(), buf) },
+		writePacket: func(packet []byte) error {
+			_, err := relay.WritePacket(context.Background(), packet)
+			return err
+		},
+		mtu: 1280,
+	}
 	dispatcher := &fakeNetworkDispatcher{delivered: make(chan tcpip.NetworkProtocolNumber, 1)}
 	endpoint.Attach(dispatcher)
 	relay.enqueueRead([]byte{0x45, 0x00, 0x00, 0x00})
@@ -428,7 +438,7 @@ func TestConnectStreamHelpersAndActiveStreamBranches(t *testing.T) {
 		remote: "remote",
 	}
 	manager.UpdateStreamInfo(quicExampleTCPAddress, StreamInfo{RemoteAddr: "new", Protocol: ProtocolConnectStream})
-	if endpoint := manager.StreamEndpoint(testkit.TestDomain, "443"); endpoint == nil {
+	if manager.StreamEndpoint(testkit.TestDomain, "443") == nil {
 		t.Fatal("expected stream endpoint after update")
 	}
 	stream := manager.streams[quicExampleTCPAddress]
@@ -502,7 +512,7 @@ func TestCoreTunnelDialerAdditionalHelpers(t *testing.T) {
 	if info := dialer.SessionInfo(); info.IPv4 == "" {
 		t.Fatalf("expected session info from core dialer, got %+v", info)
 	}
-	if endpoint := dialer.PacketEndpoint(); endpoint == nil {
+	if dialer.PacketEndpoint() == nil {
 		t.Fatal("expected packet endpoint from core dialer")
 	}
 	dialer.reportFailure(errors.New("boom"))
@@ -592,7 +602,9 @@ func (d *fakeNetworkDispatcher) DeliverNetworkPacket(protocol tcpip.NetworkProto
 	}
 }
 
-func (d *fakeNetworkDispatcher) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {}
+func (d *fakeNetworkDispatcher) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {
+	// No-op: these tests only assert network-layer delivery.
+}
 
 type datagramTestStream struct {
 	fakeRequestStream
@@ -1315,12 +1327,12 @@ func TestConnectIPSessionManagerSnapshotCopiesRoutes(t *testing.T) {
 
 type countingTransportDialer struct {
 	calls int
-	conn  quicConn
+	conn  quicErrorCloser
 	h3    h3ClientConn
 	err   error
 }
 
-func (d *countingTransportDialer) Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+func (d *countingTransportDialer) Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicErrorCloser, h3ClientConn, time.Duration, error) {
 	d.calls++
 	if d.err != nil {
 		return nil, nil, 0, d.err
@@ -1918,7 +1930,7 @@ func TestBuildTLSConfigUsesPinnedMASQUEVerificationForAltPorts(t *testing.T) {
 		ClientPrivateKey:  testClientPrivateKeyBase64,
 		ClientCertificate: testClientCertificateBase64,
 	})
-	if tlsCfg.ServerName != "masque.cloudflareclient.com" {
+	if tlsCfg.ServerName != quicMasqueServerName {
 		t.Fatalf("expected MASQUE server name, got %q", tlsCfg.ServerName)
 	}
 	if !tlsCfg.InsecureSkipVerify {
@@ -1930,7 +1942,7 @@ func TestBuildTLSConfigUsesPinnedMASQUEVerificationForAltPorts(t *testing.T) {
 }
 
 func TestPinnedMASQUEVerifierAcceptsMatchingLeaf(t *testing.T) {
-	verifier := buildPinnedMASQUEVerifier("masque.cloudflareclient.com", testMASQUEPeerPublicKeyPEM)
+	verifier := buildPinnedMASQUEVerifier(quicMasqueServerName, testMASQUEPeerPublicKeyPEM)
 	raw, err := base64.StdEncoding.DecodeString(testMASQUELeafCertBase64)
 	if err != nil {
 		t.Fatalf("decode cert: %v", err)
@@ -1941,7 +1953,7 @@ func TestPinnedMASQUEVerifierAcceptsMatchingLeaf(t *testing.T) {
 }
 
 func TestPinnedMASQUEVerifierRejectsWrongPinnedKey(t *testing.T) {
-	verifier := buildPinnedMASQUEVerifier("masque.cloudflareclient.com", testOtherPublicKeyPEM)
+	verifier := buildPinnedMASQUEVerifier(quicMasqueServerName, testOtherPublicKeyPEM)
 	raw, err := base64.StdEncoding.DecodeString(testMASQUELeafCertBase64)
 	if err != nil {
 		t.Fatalf("decode cert: %v", err)

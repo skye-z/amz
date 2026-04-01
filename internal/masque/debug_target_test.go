@@ -2,6 +2,8 @@ package masque
 
 import "testing"
 
+const masqueDebugAuthority = "ipwho.is:443"
+
 func TestIsDebugTarget(t *testing.T) {
 	t.Parallel()
 
@@ -10,8 +12,8 @@ func TestIsDebugTarget(t *testing.T) {
 		target string
 		want   bool
 	}{
-		{name: "matches ipwhois authority", target: "ipwho.is:443", want: true},
-		{name: "trims surrounding spaces", target: "  ipwho.is:443  ", want: true},
+		{name: "matches ipwhois authority", target: masqueDebugAuthority, want: true},
+		{name: "trims surrounding spaces", target: "  " + masqueDebugAuthority + "  ", want: true},
 		{name: "rejects other host", target: "betax.dev:443", want: false},
 		{name: "rejects missing port", target: "ipwho.is", want: false},
 	}
@@ -30,10 +32,10 @@ func TestIsDebugTarget(t *testing.T) {
 func TestShouldDebugTarget(t *testing.T) {
 	t.Parallel()
 
-	if !ShouldDebugTarget(true, "ipwho.is:443") {
+	if !ShouldDebugTarget(true, masqueDebugAuthority) {
 		t.Fatal("expected debug target to be enabled when switch is on")
 	}
-	if ShouldDebugTarget(false, "ipwho.is:443") {
+	if ShouldDebugTarget(false, masqueDebugAuthority) {
 		t.Fatal("expected disabled switch to suppress debug target")
 	}
 	if ShouldDebugTarget(true, "betax.dev:443") {

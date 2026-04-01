@@ -109,16 +109,14 @@ func (l *CloudflareCompatLayer) WrapResponseError(operation string, statusCode i
 }
 
 func (l *CloudflareCompatLayer) WrapConnectIPError(operation string, rsp *http.Response, cause error) error {
-	if l == nil || isCloudflareContextError(cause) {
-		return cause
-	}
-	if rsp != nil {
-		return l.WrapResponseError(operation, rsp.StatusCode, cause)
-	}
-	return l.WrapProtocolError(operation, cause)
+	return l.wrapConnectError(operation, rsp, cause)
 }
 
 func (l *CloudflareCompatLayer) WrapConnectStreamError(operation string, rsp *http.Response, cause error) error {
+	return l.wrapConnectError(operation, rsp, cause)
+}
+
+func (l *CloudflareCompatLayer) wrapConnectError(operation string, rsp *http.Response, cause error) error {
 	if l == nil || isCloudflareContextError(cause) {
 		return cause
 	}

@@ -66,11 +66,11 @@ type ConnectionManager struct {
 	stats  connectionStats
 	compat *CloudflareCompatLayer
 	dialer transportDialer
-	conn   quicConn
+	conn   quicErrorCloser
 	h3conn h3ClientConn
 }
 
-type quicConn interface {
+type quicErrorCloser interface {
 	CloseWithError(code uint64, msg string) error
 }
 
@@ -78,10 +78,10 @@ type h3ClientConn interface {
 	Close() error
 	AwaitSettings(ctx context.Context, requireDatagrams, requireExtendedConnect bool) error
 	Raw() *http3.ClientConn
-	RequestConn() h3RequestConn
+	RequestConn() h3RequestStreamOpener
 }
 
-type h3RequestConn interface {
+type h3RequestStreamOpener interface {
 	OpenRequestStream(ctx context.Context) (h3RequestStream, error)
 }
 
@@ -162,12 +162,12 @@ func (a *http3RequestStreamAdapter) CancelRead(code quic.StreamErrorCode) {
 }
 
 type transportDialer interface {
-	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicConn, h3ClientConn, time.Duration, error)
+	Dial(ctx context.Context, quic QUICOptions, h3 HTTP3Options) (quicErrorCloser, h3ClientConn, time.Duration, error)
 }
 
 type realTransportDialer struct{}
 
-func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicConn, h3ClientConn, time.Duration, error) {
+func (d realTransportDialer) Dial(ctx context.Context, quicOpts QUICOptions, h3Opts HTTP3Options) (quicErrorCloser, h3ClientConn, time.Duration, error) {
 	started := time.Now()
 
 	addr, err := net.ResolveUDPAddr("udp", quicOpts.Endpoint)
@@ -311,7 +311,7 @@ func (a *http3ClientConnAdapter) Raw() *http3.ClientConn {
 	return a.conn
 }
 
-func (a *http3ClientConnAdapter) RequestConn() h3RequestConn {
+func (a *http3ClientConnAdapter) RequestConn() h3RequestStreamOpener {
 	if a.conn == nil {
 		return nil
 	}

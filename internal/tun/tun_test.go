@@ -24,6 +24,10 @@ const (
 	testTUNApplyRoutesStage       = "apply-routes"
 	testTUNRestoreRoutesSnapshot  = "restore previous routes snapshot"
 	testTUNClosePlaceholderDevice = "close placeholder device handle"
+	errTestTUNBoundDevice         = "expected bound device amz0, got %q"
+	errTestTUNCloseSuccess        = "expected close success, got %v"
+	testTUNRouteChangeCode        = "route-change"
+	testTUNAdminNeededCode        = "admin-needed"
 )
 
 type fakePlatformProvider struct {
@@ -295,7 +299,7 @@ func TestSystemAdapterApplyConfigSnapshot(t *testing.T) {
 		t.Fatalf("expected both apply flags true, got %+v", snapshot)
 	}
 	if snapshot.BoundDevice != testTUNDeviceName {
-		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
+		t.Fatalf(errTestTUNBoundDevice, snapshot.BoundDevice)
 	}
 	if len(dev.config.Addresses) != 2 {
 		t.Fatalf("expected addresses to be applied to device, got %+v", dev.config)
@@ -351,7 +355,7 @@ func TestFakeAdapterApplySnapshot(t *testing.T) {
 		t.Fatalf("expected both apply flags true, got %+v", snapshot)
 	}
 	if snapshot.BoundDevice != testTUNDeviceName {
-		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
+		t.Fatalf(errTestTUNBoundDevice, snapshot.BoundDevice)
 	}
 	if len(snapshot.Config.Addresses) != 2 {
 		t.Fatalf("expected two addresses, got %d", len(snapshot.Config.Addresses))
@@ -423,7 +427,7 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 
 	snapshot := assembled.Adapter.Snapshot()
 	if snapshot.BoundDevice != testTUNDeviceName {
-		t.Fatalf("expected bound device amz0, got %q", snapshot.BoundDevice)
+		t.Fatalf(errTestTUNBoundDevice, snapshot.BoundDevice)
 	}
 	if !snapshot.ConfigApplied {
 		t.Fatalf("expected config applied snapshot, got %+v", snapshot)
@@ -433,7 +437,7 @@ func TestAssemblePlaceholderBinding(t *testing.T) {
 	}
 
 	if err := assembled.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errTestTUNCloseSuccess, err)
 	}
 	if _, err := assembled.Device.WritePacket(context.Background(), []byte{0x45}); err == nil {
 		t.Fatal("expected closed device write error")
@@ -470,7 +474,7 @@ func TestAssembleValidation(t *testing.T) {
 		t.Fatalf("expected runtime platform %q, got %q", runtime.GOOS, assembled.Platform)
 	}
 	if err := assembled.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errTestTUNCloseSuccess, err)
 	}
 }
 
@@ -534,7 +538,7 @@ func TestPlaceholderSignalsNotImplemented(t *testing.T) {
 		t.Fatalf("unexpected assembly placeholder error: %+v", typedErr)
 	}
 	if err := assembled.Close(); err != nil {
-		t.Fatalf("expected close success, got %v", err)
+		t.Fatalf(errTestTUNCloseSuccess, err)
 	}
 }
 
@@ -588,7 +592,7 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 		},
 		Warnings: []tun.SecurityWarning{
 			{
-				Code:       "route-change",
+				Code:       testTUNRouteChangeCode,
 				Summary:    "default route will change",
 				Mitigation: "confirm physical uplink remains reachable",
 			},
@@ -612,7 +616,7 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 	if len(snapshot.Requirement.Operations) != 2 {
 		t.Fatalf("expected two operations, got %d", len(snapshot.Requirement.Operations))
 	}
-	if len(snapshot.Warnings) != 1 || snapshot.Warnings[0].Code != "route-change" {
+	if len(snapshot.Warnings) != 1 || snapshot.Warnings[0].Code != testTUNRouteChangeCode {
 		t.Fatalf("unexpected warning snapshot: %+v", snapshot.Warnings)
 	}
 	if len(snapshot.Rollback) != 1 || snapshot.Rollback[0].Action != testTUNRestoreRoutesSnapshot {
@@ -626,7 +630,7 @@ func TestProtectionPlanSnapshotIsolation(t *testing.T) {
 	if cloned.Requirement.Operations[0] != testTUNCreateDeviceOperation {
 		t.Fatalf("expected requirement isolation, got %+v", cloned.Requirement.Operations)
 	}
-	if cloned.Warnings[0].Code != "route-change" {
+	if cloned.Warnings[0].Code != testTUNRouteChangeCode {
 		t.Fatalf("expected warning isolation, got %+v", cloned.Warnings)
 	}
 	if cloned.Rollback[0].Action != testTUNRestoreRoutesSnapshot {
@@ -646,7 +650,7 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 		},
 		Warnings: []tun.SecurityWarning{
 			{
-				Code:       "admin-needed",
+				Code:       testTUNAdminNeededCode,
 				Summary:    "privileged operations may fail without elevation",
 				Mitigation: "rerun with appropriate privileges after confirmation",
 			},
@@ -682,7 +686,7 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	if len(result.Rollback) != 2 {
 		t.Fatalf("expected two rollback steps, got %d", len(result.Rollback))
 	}
-	if len(result.Warnings) != 1 || result.Warnings[0].Code != "admin-needed" {
+	if len(result.Warnings) != 1 || result.Warnings[0].Code != testTUNAdminNeededCode {
 		t.Fatalf("unexpected warnings: %+v", result.Warnings)
 	}
 	if result.UserHint == "" {
@@ -698,7 +702,7 @@ func TestRecoverFailureReturnsGuidance(t *testing.T) {
 	if second.Rollback[0].Action != testTUNClosePlaceholderDevice {
 		t.Fatalf("expected rollback isolation, got %+v", second.Rollback)
 	}
-	if second.Warnings[0].Code != "admin-needed" {
+	if second.Warnings[0].Code != testTUNAdminNeededCode {
 		t.Fatalf("expected warning isolation, got %+v", second.Warnings)
 	}
 

@@ -10,6 +10,12 @@ import (
 	"github.com/skye-z/amz/internal/testkit"
 )
 
+const (
+	storageStateFileName = "state.json"
+	storageNodePrimary   = "node-1"
+	storageNodeSecondary = "node-2"
+)
+
 func TestDefaultPathUsesAMZStateJSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
 
@@ -17,14 +23,14 @@ func TestDefaultPathUsesAMZStateJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected default path, got %v", err)
 	}
-	if !strings.HasSuffix(path, filepath.Join("amz", "state.json")) {
+	if !strings.HasSuffix(path, filepath.Join("amz", storageStateFileName)) {
 		t.Fatalf("expected amz state path, got %q", path)
 	}
 }
 
 func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
+	path := filepath.Join(dir, storageStateFileName)
 	input := State{
 		DeviceID: "device-123",
 		Token:    "token-123",
@@ -38,10 +44,10 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 			State:       "registered",
 			AccountType: "plus",
 		},
-		SelectedNode: "node-2",
+		SelectedNode: storageNodeSecondary,
 		NodeCache: []Node{
 			{
-				ID:         "node-1",
+				ID:         storageNodePrimary,
 				Host:       testkit.WarpHostPrimary,
 				EndpointV4: testkit.WarpIPv4Primary443,
 				EndpointV6: testkit.WarpIPv6Primary443,
@@ -49,7 +55,7 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 				Ports:      []uint16{443, 500},
 			},
 			{
-				ID:         "node-2",
+				ID:         storageNodeSecondary,
 				Host:       testkit.WarpHostProxy500,
 				EndpointV4: testkit.WarpIPv4Alt500,
 				EndpointV6: testkit.WarpIPv6Alt500,
@@ -112,13 +118,13 @@ func TestReadWritePreservesAMZStateOnly(t *testing.T) {
 	if len(output.NodeCache) != len(input.NodeCache) {
 		t.Fatalf("expected node cache length %d, got %d", len(input.NodeCache), len(output.NodeCache))
 	}
-	if output.NodeCache[1].ID != "node-2" {
+	if output.NodeCache[1].ID != storageNodeSecondary {
 		t.Fatalf("expected node cache to preserve second node, got %+v", output.NodeCache[1])
 	}
 }
 
 func TestFileStoreLoadAndSave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "state.json")
+	path := filepath.Join(t.TempDir(), "nested", storageStateFileName)
 	store := NewFileStore(path)
 	want := State{
 		DeviceID: "device-123",
@@ -195,8 +201,8 @@ func TestStateJSONRoundTripIncludesOptionalSections(t *testing.T) {
 		Account:      AccountStatus{State: "registered", AccountType: "plus"},
 		Interface:    InterfaceAddresses{V4: testkit.PublicDNSV4, V6: testkit.TestIPv6Doc},
 		Services:     Services{HTTPProxy: "http://proxy"},
-		SelectedNode: "node-1",
-		NodeCache:    []Node{{ID: "node-1", Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}},
+		SelectedNode: storageNodePrimary,
+		NodeCache:    []Node{{ID: storageNodePrimary, Host: "host", EndpointV4: testkit.PublicDNSV4 + ":443", EndpointV6: "[" + testkit.TestIPv6Doc + "]:443", PublicKey: "peer", Ports: []uint16{443}}},
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -206,7 +212,7 @@ func TestStateJSONRoundTripIncludesOptionalSections(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("expected unmarshal success, got %v", err)
 	}
-	if decoded.Services.HTTPProxy != "http://proxy" || decoded.NodeCache[0].ID != "node-1" {
+	if decoded.Services.HTTPProxy != "http://proxy" || decoded.NodeCache[0].ID != storageNodePrimary {
 		t.Fatalf("unexpected decoded state: %+v", decoded)
 	}
 }
@@ -217,7 +223,7 @@ func TestDefaultPathFallbackToUserConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected default path success, got %v", err)
 	}
-	if !strings.HasSuffix(path, filepath.Join("amz", "state.json")) {
+	if !strings.HasSuffix(path, filepath.Join("amz", storageStateFileName)) {
 		t.Fatalf("unexpected default path suffix: %q", path)
 	}
 }

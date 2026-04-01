@@ -11,7 +11,11 @@ import (
 	"github.com/skye-z/amz/internal/testkit"
 )
 
-const localProbeAddress443 = testkit.LocalhostIPv4 + ":443"
+const (
+	localProbeAddress443      = testkit.LocalhostIPv4 + ":443"
+	probePolicyFastEndpoint   = "fast:443"
+	probePolicySelectedTarget = "selected:443"
+)
 
 func TestRealProberUsesConfiguredConcurrencyAndPerCandidateTimeout(t *testing.T) {
 	t.Parallel()
@@ -100,19 +104,19 @@ func TestBatchProbeSelectsBestFromPartialResults(t *testing.T) {
 	t.Parallel()
 
 	prober := partialProber{results: []ProbeResult{
-		{Address: "fast:443", Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
+		{Address: probePolicyFastEndpoint, Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
 	}}
 
 	result := BatchProbe(prober, []Candidate{
 		{Address: "slow:443"},
-		{Address: "fast:443"},
+		{Address: probePolicyFastEndpoint},
 		{Address: "later:443"},
 	})
 
 	if !result.OK {
 		t.Fatalf("expected partial results to still yield a best candidate, got %+v", result)
 	}
-	if result.Best.Address != "fast:443" {
+	if result.Best.Address != probePolicyFastEndpoint {
 		t.Fatalf("expected best partial result candidate, got %+v", result.Best)
 	}
 }
@@ -121,9 +125,9 @@ func TestDiscoveryInternalHelpers(t *testing.T) {
 	t.Parallel()
 
 	if got := buildCacheCandidates(Cache{
-		Selected:   Candidate{Address: "selected:443"},
-		Candidates: []Candidate{{Address: "selected:443"}, {Address: "other:443"}},
-	}); len(got) != 2 || got[0].Address != "selected:443" {
+		Selected:   Candidate{Address: probePolicySelectedTarget},
+		Candidates: []Candidate{{Address: probePolicySelectedTarget}, {Address: "other:443"}},
+	}); len(got) != 2 || got[0].Address != probePolicySelectedTarget {
 		t.Fatalf("unexpected cache candidates: %+v", got)
 	}
 

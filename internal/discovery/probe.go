@@ -176,7 +176,9 @@ func (p *RealProber) Probe(candidates []Candidate) []ProbeResult {
 	}
 
 	batchCtx := context.Background()
-	cancel := func() {}
+	cancel := func() {
+		// No-op when no timeout context was created.
+	}
 	if p.batchTimeout > 0 {
 		batchCtx, cancel = context.WithTimeout(batchCtx, p.batchTimeout)
 	}
@@ -248,7 +250,9 @@ func (p *RealProber) probeCandidate(batchCtx context.Context, candidate Candidat
 	started := time.Now()
 
 	ctx := batchCtx
-	cancel := func() {}
+	cancel := func() {
+		// No-op when no timeout context was created.
+	}
 	if p.timeout > 0 {
 		ctx, cancel = context.WithTimeout(batchCtx, p.timeout)
 	}

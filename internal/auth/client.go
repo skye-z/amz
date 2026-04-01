@@ -17,15 +17,15 @@ type TransportRequest struct {
 	BearerToken string
 }
 
-type Transport interface {
+type Doer interface {
 	Do(ctx context.Context, req TransportRequest) ([]byte, error)
 }
 
 type Client struct {
-	transport Transport
+	transport Doer
 }
 
-func NewClient(transport Transport) (*Client, error) {
+func NewClient(transport Doer) (*Client, error) {
 	if transport == nil {
 		return nil, ErrTransportRequired
 	}

@@ -119,11 +119,15 @@ func (d *PacketStackDialer) ensureStack(ctx context.Context) (*stack.Stack, neti
 		return nil, netip.Addr{}, netip.Addr{}, err
 	}
 	linkEndpoint := &packetStackLinkEndpoint{
-		ctx:      context.Background(),
-		endpoint: packetEndpoint,
-		mtu:      1280,
-		local4:   local4,
-		local6:   local6,
+		endpoint:   packetEndpoint,
+		readPacket: func(buf []byte) (int, error) { return packetEndpoint.ReadPacket(ctx, buf) },
+		writePacket: func(packet []byte) error {
+			_, err := packetEndpoint.WritePacket(ctx, packet)
+			return err
+		},
+		mtu:    1280,
+		local4: local4,
+		local6: local6,
 	}
 	stackValue := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
@@ -194,19 +198,24 @@ func parsePacketLocalAddrs(info SessionInfo) (netip.Addr, netip.Addr, error) {
 }
 
 type packetStackLinkEndpoint struct {
-	ctx        context.Context
-	endpoint   PacketRelayEndpoint
-	dispatcher stack.NetworkDispatcher
-	mtu        uint32
-	local4     netip.Addr
-	local6     netip.Addr
+	endpoint    PacketRelayEndpoint
+	readPacket  func([]byte) (int, error)
+	writePacket func([]byte) error
+	dispatcher  stack.NetworkDispatcher
+	mtu         uint32
+	local4      netip.Addr
+	local6      netip.Addr
 }
 
-func (e *packetStackLinkEndpoint) MTU() uint32                           { return e.mtu }
-func (e *packetStackLinkEndpoint) SetMTU(mtu uint32)                     {}
-func (e *packetStackLinkEndpoint) MaxHeaderLength() uint16               { return 0 }
-func (e *packetStackLinkEndpoint) LinkAddress() tcpip.LinkAddress        { return "" }
-func (e *packetStackLinkEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {}
+func (e *packetStackLinkEndpoint) MTU() uint32 { return e.mtu }
+func (e *packetStackLinkEndpoint) SetMTU(mtu uint32) {
+	// No-op: tests keep the initial MTU fixed.
+}
+func (e *packetStackLinkEndpoint) MaxHeaderLength() uint16        { return 0 }
+func (e *packetStackLinkEndpoint) LinkAddress() tcpip.LinkAddress { return "" }
+func (e *packetStackLinkEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
+	// No-op: tests do not expose a link-layer address.
+}
 func (e *packetStackLinkEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 	return stack.CapabilityRXChecksumOffload
 }
@@ -217,21 +226,29 @@ func (e *packetStackLinkEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 	}
 }
 func (e *packetStackLinkEndpoint) IsAttached() bool { return e.dispatcher != nil }
-func (e *packetStackLinkEndpoint) Wait()            {}
+func (e *packetStackLinkEndpoint) Wait() {
+	// No-op: the test endpoint has no background resources to wait for.
+}
 func (e *packetStackLinkEndpoint) ARPHardwareType() header.ARPHardwareType {
 	return header.ARPHardwareNone
 }
-func (e *packetStackLinkEndpoint) AddHeader(pkt *stack.PacketBuffer) {}
+func (e *packetStackLinkEndpoint) AddHeader(pkt *stack.PacketBuffer) {
+	// No-op: packets are already prepared by upper layers in tests.
+}
 func (e *packetStackLinkEndpoint) ParseHeader(pkt *stack.PacketBuffer) bool {
 	return true
 }
-func (e *packetStackLinkEndpoint) Close()                  {}
-func (e *packetStackLinkEndpoint) SetOnCloseAction(func()) {}
+func (e *packetStackLinkEndpoint) Close() {
+	// No-op: the test endpoint holds no extra closeable resources.
+}
+func (e *packetStackLinkEndpoint) SetOnCloseAction(func()) {
+	// No-op: the test endpoint does not need a close hook.
+}
 
 func (e *packetStackLinkEndpoint) readLoop() {
 	for {
 		buf := make([]byte, maxPacketBufferSize)
-		n, err := e.endpoint.ReadPacket(e.ctx, buf)
+		n, err := e.readPacket(buf)
 		if err != nil {
 			return
 		}
@@ -264,7 +281,7 @@ func (e *packetStackLinkEndpoint) WritePackets(list stack.PacketBufferList) (int
 		for _, chunk := range pkt.AsSlices() {
 			packet = append(packet, chunk...)
 		}
-		if _, err := e.endpoint.WritePacket(e.ctx, packet); err != nil {
+		if err := e.writePacket(packet); err != nil {
 			return written, &tcpip.ErrAborted{}
 		}
 		written++

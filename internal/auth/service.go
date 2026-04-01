@@ -17,8 +17,9 @@ var (
 )
 
 const (
-	ActionRegister = "register"
-	ActionReuse    = "reuse"
+	ActionRegister           = "register"
+	ActionReuse              = "reuse"
+	errReuseDeviceCredential = "reuse device credentials: %w"
 )
 
 type AuthClient interface {
@@ -124,15 +125,15 @@ func (s *Service) reuse(ctx context.Context, current storage.State, device Devic
 	}
 	pair, err := s.loadKeyPair(device.KeyType, current.Certificate.PrivateKey)
 	if err != nil {
-		return Result{}, fmt.Errorf("reuse device credentials: %w", err)
+		return Result{}, fmt.Errorf(errReuseDeviceCredential, err)
 	}
 	final, err := s.client.Enroll(ctx, current.DeviceID, current.Token, BuildEnrollRequest(pair, device))
 	if err != nil {
-		return Result{}, fmt.Errorf("reuse device credentials: %w", err)
+		return Result{}, fmt.Errorf(errReuseDeviceCredential, err)
 	}
 	state, err := buildState(current, pair.PrivateKey, current.Token, final)
 	if err != nil {
-		return Result{}, fmt.Errorf("reuse device credentials: %w", err)
+		return Result{}, fmt.Errorf(errReuseDeviceCredential, err)
 	}
 	if err := s.store.Save(state); err != nil {
 		return Result{}, fmt.Errorf("save auth state: %w", err)

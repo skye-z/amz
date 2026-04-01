@@ -17,6 +17,11 @@ const (
 	localProbeEndpoint1701 = testkit.LocalhostIPv4 + ":1701"
 	localProbeEndpoint4500 = testkit.LocalhostIPv4 + ":4500"
 	testWarpIPv6Range126   = "2606:4700:103::/126"
+	discoveryFastEndpoint  = "fast.example:443"
+	discoverySlowEndpoint  = "slow.example:443"
+	discoveryCachedFast    = "cached-fast.example:443"
+	discoveryCachedSlow    = "cached-slow.example:443"
+	discoveryScanNode      = "scan.example:443"
 )
 
 func TestParseSource(t *testing.T) {
@@ -134,16 +139,16 @@ func TestBatchProbe(t *testing.T) {
 
 func TestAvailableCandidatesPreservesRankedAvailableOrder(t *testing.T) {
 	ranked := []discovery.Candidate{
-		{Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+		{Address: discoveryFastEndpoint, Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
 		{Address: "down.example:443", Available: false, WarpEnabled: false, Reason: "timeout"},
-		{Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
+		{Address: discoverySlowEndpoint, Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
 	}
 
 	available := discovery.AvailableCandidates(ranked)
 	if len(available) != 2 {
 		t.Fatalf("expected 2 available candidates, got %+v", available)
 	}
-	if available[0].Address != "fast.example:443" || available[1].Address != "slow.example:443" {
+	if available[0].Address != discoveryFastEndpoint || available[1].Address != discoverySlowEndpoint {
 		t.Fatalf("expected available candidates to preserve ranked order, got %+v", available)
 	}
 }
@@ -170,15 +175,15 @@ func TestBuildVerificationCandidatesPrefersCacheReuse(t *testing.T) {
 	preferred, fallback := discovery.BuildVerificationCandidates(discovery.Input{
 		Cache: discovery.Cache{
 			Selected: discovery.Candidate{
-				Address:     "cached-fast.example:443",
+				Address:     discoveryCachedFast,
 				Source:      discovery.SourceFixed,
 				Available:   true,
 				WarpEnabled: true,
 				Latency:     3 * time.Millisecond,
 			},
 			Candidates: []discovery.Candidate{
-				{Address: "cached-slow.example:443", Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 30 * time.Millisecond},
-				{Address: "cached-fast.example:443", Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 3 * time.Millisecond},
+				{Address: discoveryCachedSlow, Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 30 * time.Millisecond},
+				{Address: discoveryCachedFast, Source: discovery.SourceFixed, Available: true, WarpEnabled: true, Latency: 3 * time.Millisecond},
 			},
 		},
 		Registration: discovery.Registration{
@@ -186,14 +191,14 @@ func TestBuildVerificationCandidatesPrefersCacheReuse(t *testing.T) {
 			EndpointPorts: []uint16{443},
 		},
 		Scan: discovery.Scan{
-			Fixed: []string{"scan.example:443"},
+			Fixed: []string{discoveryScanNode},
 		},
 	}, 443, 4)
 
-	if len(preferred) == 0 || preferred[0].Address != "cached-fast.example:443" {
+	if len(preferred) == 0 || preferred[0].Address != discoveryCachedFast {
 		t.Fatalf("expected cached selected candidate first, got %+v", preferred)
 	}
-	if len(fallback) == 0 || fallback[0].Address != "scan.example:443" {
+	if len(fallback) == 0 || fallback[0].Address != discoveryScanNode {
 		t.Fatalf("expected scan candidate in fallback list, got %+v", fallback)
 	}
 }
@@ -224,37 +229,37 @@ func TestSelectFallsBackToScannedCandidate(t *testing.T) {
 			EndpointPorts: []uint16{443},
 		},
 		Scan: discovery.Scan{
-			Fixed: []string{"slow.example:443", "fast.example:443"},
+			Fixed: []string{discoverySlowEndpoint, discoveryFastEndpoint},
 		},
 	}, discovery.NewStaticProber(map[string]discovery.ProbeResult{
 		testkit.WarpIPv4Primary443: {Address: testkit.WarpIPv4Primary443, Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
 		testkit.WarpIPv4Alt443:     {Address: testkit.WarpIPv4Alt443, Available: false, WarpEnabled: false, Reason: "dial_failed: timeout"},
-		"slow.example:443":         {Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 40 * time.Millisecond},
-		"fast.example:443":         {Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+		discoverySlowEndpoint:      {Address: discoverySlowEndpoint, Available: true, WarpEnabled: true, Latency: 40 * time.Millisecond},
+		discoveryFastEndpoint:      {Address: discoveryFastEndpoint, Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
 	}), 443, 4)
 
 	if !result.OK {
 		t.Fatalf("expected fallback selection success, got %+v", result)
 	}
-	if result.Best.Address != "fast.example:443" {
-		t.Fatalf("expected best scanned candidate fast.example:443, got %+v", result.Best)
+	if result.Best.Address != discoveryFastEndpoint {
+		t.Fatalf("expected best scanned candidate %s, got %+v", discoveryFastEndpoint, result.Best)
 	}
 }
 
 func TestRememberStoresBestAndRankedCandidates(t *testing.T) {
 	cache := discovery.Remember(discovery.Cache{}, discovery.BatchResult{
 		Ranked: []discovery.Candidate{
-			{Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
-			{Address: "slow.example:443", Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
+			{Address: discoveryFastEndpoint, Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+			{Address: discoverySlowEndpoint, Available: true, WarpEnabled: true, Latency: 20 * time.Millisecond},
 		},
-		Best: discovery.Candidate{Address: "fast.example:443", Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
+		Best: discovery.Candidate{Address: discoveryFastEndpoint, Available: true, WarpEnabled: true, Latency: 5 * time.Millisecond},
 		OK:   true,
 	})
 
-	if cache.Selected.Address != "fast.example:443" {
+	if cache.Selected.Address != discoveryFastEndpoint {
 		t.Fatalf("expected cached selected candidate, got %+v", cache.Selected)
 	}
-	if len(cache.Candidates) != 2 || cache.Candidates[0].Address != "fast.example:443" {
+	if len(cache.Candidates) != 2 || cache.Candidates[0].Address != discoveryFastEndpoint {
 		t.Fatalf("expected ranked candidates cached, got %+v", cache.Candidates)
 	}
 }

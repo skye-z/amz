@@ -7,6 +7,12 @@ import (
 	"github.com/skye-z/amz/internal/config"
 )
 
+const (
+	testConfigExampleSNI      = "example.com"
+	testConfigExampleEndpoint = "example.com:443"
+	testConfigWarpSNI         = "warp.cloudflare.com"
+)
+
 func TestKernelConfigFillDefaults(t *testing.T) {
 	cfg := config.KernelConfig{}
 	cfg.FillDefaults()
@@ -31,8 +37,8 @@ func TestKernelConfigFillDefaults(t *testing.T) {
 }
 
 func TestDefaultSNIUsesWarpCloudflareCom(t *testing.T) {
-	if config.DefaultSNI != "warp.cloudflare.com" {
-		t.Fatalf("expected default sni %q, got %q", "warp.cloudflare.com", config.DefaultSNI)
+	if config.DefaultSNI != testConfigWarpSNI {
+		t.Fatalf("expected default sni %q, got %q", testConfigWarpSNI, config.DefaultSNI)
 	}
 }
 
@@ -41,10 +47,10 @@ func TestKernelConfigValidate(t *testing.T) {
 		name string
 		cfg  config.KernelConfig
 	}{
-		{name: "missing endpoint", cfg: config.KernelConfig{Endpoint: "", SNI: "example.com", MTU: config.DefaultMTU, Mode: config.ModeTUN}},
-		{name: "invalid mtu", cfg: config.KernelConfig{Endpoint: "example.com:443", SNI: "example.com", MTU: 100, Mode: config.ModeTUN}},
-		{name: "invalid mode", cfg: config.KernelConfig{Endpoint: "example.com:443", SNI: "example.com", MTU: config.DefaultMTU, Mode: "invalid"}},
-		{name: "invalid keepalive", cfg: config.KernelConfig{Endpoint: "example.com:443", SNI: "example.com", MTU: config.DefaultMTU, Mode: config.ModeTUN, Keepalive: -1 * time.Second}},
+		{name: "missing endpoint", cfg: config.KernelConfig{Endpoint: "", SNI: testConfigExampleSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN}},
+		{name: "invalid mtu", cfg: config.KernelConfig{Endpoint: testConfigExampleEndpoint, SNI: testConfigExampleSNI, MTU: 100, Mode: config.ModeTUN}},
+		{name: "invalid mode", cfg: config.KernelConfig{Endpoint: testConfigExampleEndpoint, SNI: testConfigExampleSNI, MTU: config.DefaultMTU, Mode: "invalid"}},
+		{name: "invalid keepalive", cfg: config.KernelConfig{Endpoint: testConfigExampleEndpoint, SNI: testConfigExampleSNI, MTU: config.DefaultMTU, Mode: config.ModeTUN, Keepalive: -1 * time.Second}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

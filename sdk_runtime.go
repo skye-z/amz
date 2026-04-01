@@ -54,6 +54,19 @@ type probeProfile struct {
 	concurrency         int
 }
 
+const (
+	eventRuntimeBuildFailed = "runtime.build.failed"
+	eventRuntimeStartLog    = "runtime.start.failed"
+	eventRuntimeHealthFail  = "runtime.health.failed"
+	eventStateSaveBegin     = "state.save.begin"
+	eventStateSaveSuccess   = "state.save.success"
+	eventCloseFailed        = "close.failed"
+
+	eventRuntimeStartFailed = "start.failed"
+	eventRuntimeCloseFailed = "runtime.close.failed"
+	eventStateSaveFailed    = "state.save.failed"
+)
+
 var defaultProbeProfile = probeProfile{
 	name:                "default",
 	perCandidateTimeout: time.Second,
@@ -156,7 +169,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		m.mu.Unlock()
 		logEvent(logger, "managed_runtime", "start.reuse_runtime")
 		if err := runtime.Start(ctx); err != nil {
-			logEvent(logger, "managed_runtime", "start.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 				field("error", err),
 				durationField("duration", time.Since(started)),
 			)
@@ -185,7 +198,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			field("error", err),
 			durationField("duration", time.Since(authStarted)),
 		)
-		logEvent(logger, "managed_runtime", "start.failed",
+		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 			field("error", err),
 			durationField("duration", time.Since(started)),
 		)
@@ -209,7 +222,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			field("cache_nodes", len(state.NodeCache)),
 			durationField("duration", time.Since(selectStarted)),
 		)
-		logEvent(logger, "managed_runtime", "start.failed",
+		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 			field("error", err),
 			durationField("duration", time.Since(started)),
 		)
@@ -222,7 +235,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			field("cache_nodes", len(state.NodeCache)),
 			durationField("duration", time.Since(selectStarted)),
 		)
-		logEvent(logger, "managed_runtime", "start.failed",
+		logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 			field("error", err),
 			durationField("duration", time.Since(started)),
 		)
@@ -255,7 +268,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		)
 		runtime, buildErr := m.buildFn(candidate.Address, state)
 		if buildErr != nil {
-			logEvent(logger, "managed_runtime", "runtime.build.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
 				field("endpoint", candidate.Address),
 				field("error", buildErr),
 				durationField("duration", time.Since(buildStarted)),
@@ -273,14 +286,14 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			field("endpoint", candidate.Address),
 		)
 		if startErr := runtime.Start(ctx); startErr != nil {
-			logEvent(logger, "managed_runtime", "runtime.start.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeStartLog,
 				field("endpoint", candidate.Address),
 				field("error", startErr),
 				durationField("duration", time.Since(runtimeStartStarted)),
 			)
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
 			if closeErr := runtime.Close(); closeErr != nil {
-				logEvent(logger, "managed_runtime", "runtime.close.failed",
+				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
 					field("endpoint", candidate.Address),
 					field("error", closeErr),
 				)
@@ -292,13 +305,13 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 			durationField("duration", time.Since(runtimeStartStarted)),
 		)
 		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
-			logEvent(logger, "managed_runtime", "runtime.health.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeHealthFail,
 				field("endpoint", candidate.Address),
 				field("error", healthErr),
 			)
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
 			if closeErr := runtime.Close(); closeErr != nil {
-				logEvent(logger, "managed_runtime", "runtime.close.failed",
+				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
 					field("endpoint", candidate.Address),
 					field("error", closeErr),
 				)
@@ -310,24 +323,24 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 		persistedState.SelectedNode = candidate.Address
 		persistedState.NodeCache = cache
 		saveStarted := time.Now()
-		logEvent(logger, "managed_runtime", "state.save.begin",
+		logEvent(logger, "managed_runtime", eventStateSaveBegin,
 			field("selected_node", persistedState.SelectedNode),
 			field("cache_nodes", len(persistedState.NodeCache)),
 		)
 		if saveErr := m.store.Save(persistedState); saveErr != nil {
-			logEvent(logger, "managed_runtime", "state.save.failed",
+			logEvent(logger, "managed_runtime", eventStateSaveFailed,
 				field("selected_node", persistedState.SelectedNode),
 				field("error", saveErr),
 				durationField("duration", time.Since(saveStarted)),
 			)
 			_ = runtime.Close()
-			logEvent(logger, "managed_runtime", "start.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 				field("error", saveErr),
 				durationField("duration", time.Since(started)),
 			)
 			return saveErr
 		}
-		logEvent(logger, "managed_runtime", "state.save.success",
+		logEvent(logger, "managed_runtime", eventStateSaveSuccess,
 			field("selected_node", persistedState.SelectedNode),
 			field("cache_nodes", len(persistedState.NodeCache)),
 			durationField("duration", time.Since(saveStarted)),
@@ -355,7 +368,7 @@ func (m *managedRuntime) Start(ctx context.Context) error {
 	}
 
 	err = fmt.Errorf("all candidate endpoints failed: %w", errors.Join(endpointErrors...))
-	logEvent(logger, "managed_runtime", "start.failed",
+	logEvent(logger, "managed_runtime", eventRuntimeStartFailed,
 		field("error", err),
 		durationField("duration", time.Since(started)),
 	)
@@ -413,7 +426,7 @@ func (m *managedRuntime) Close() error {
 	status := m.status
 	m.mu.Unlock()
 	if err != nil {
-		logEvent(logger, "managed_runtime", "close.failed",
+		logEvent(logger, "managed_runtime", eventCloseFailed,
 			field("error", err),
 			field("endpoint", status.Endpoint),
 			durationField("duration", time.Since(started)),
@@ -508,7 +521,7 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 		runtime, err := m.buildFn(candidate.Address, state)
 		if err != nil {
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s build failed: %w", candidate.Address, err))
-			logEvent(logger, "managed_runtime", "runtime.build.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeBuildFailed,
 				field("endpoint", candidate.Address),
 				field("error", err),
 			)
@@ -522,7 +535,7 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 		cancel()
 		if startErr != nil {
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s start failed: %w", candidate.Address, startErr))
-			logEvent(logger, "managed_runtime", "runtime.start.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeStartLog,
 				field("endpoint", candidate.Address),
 				field("error", startErr),
 			)
@@ -531,7 +544,7 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 		}
 		if current != nil {
 			if err := current.Close(); err != nil {
-				logEvent(logger, "managed_runtime", "runtime.close.failed",
+				logEvent(logger, "managed_runtime", eventRuntimeCloseFailed,
 					field("endpoint", failedEndpoint),
 					field("error", err),
 				)
@@ -540,7 +553,7 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 		}
 		if healthErr := m.runRuntimeHealthCheck(candidate.Address, runtime); healthErr != nil {
 			endpointErrors = append(endpointErrors, fmt.Errorf("%s health check failed: %w", candidate.Address, healthErr))
-			logEvent(logger, "managed_runtime", "runtime.health.failed",
+			logEvent(logger, "managed_runtime", eventRuntimeHealthFail,
 				field("endpoint", candidate.Address),
 				field("error", healthErr),
 			)
@@ -551,7 +564,7 @@ func (m *managedRuntime) failoverRuntime(failedEndpoint string, triggerErr error
 		persistedState := state
 		persistedState.SelectedNode = candidate.Address
 		if saveErr := m.store.Save(persistedState); saveErr != nil {
-			logEvent(logger, "managed_runtime", "state.save.failed",
+			logEvent(logger, "managed_runtime", eventStateSaveFailed,
 				field("selected_node", persistedState.SelectedNode),
 				field("error", saveErr),
 			)
@@ -608,7 +621,7 @@ func (m *managedRuntime) tryHotSwapRuntime(current sdkRuntime, next sdkRuntime, 
 	persistedState := state
 	persistedState.SelectedNode = endpoint
 	if saveErr := m.store.Save(persistedState); saveErr != nil {
-		logEvent(m.opts.Logger, "managed_runtime", "state.save.failed",
+		logEvent(m.opts.Logger, "managed_runtime", eventStateSaveFailed,
 			field("selected_node", persistedState.SelectedNode),
 			field("error", saveErr),
 		)

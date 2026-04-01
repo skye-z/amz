@@ -40,7 +40,7 @@ type Assembly struct {
 	Adapter  Adapter
 }
 
-type startableDevice interface {
+type deviceStarter interface {
 	StartDevice() error
 }
 
@@ -122,7 +122,7 @@ func Assemble(opts AssembleOptions) (*Assembly, error) {
 			return nil, fmt.Errorf("apply placeholder tun routes: %w", err)
 		}
 	}
-	if startable, ok := device.(startableDevice); ok {
+	if startable, ok := device.(deviceStarter); ok {
 		if err := startable.StartDevice(); err != nil {
 			_ = provider.Close()
 			return nil, err

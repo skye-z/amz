@@ -22,6 +22,7 @@ const (
 	ProtocolConnectStream = "connect-stream"
 	StreamStateIdle       = "idle"
 	StreamStateReady      = "ready"
+	errStreamNotConnected = "stream not connected"
 )
 
 type ConnectStreamOptions struct {
@@ -442,14 +443,14 @@ type StreamRelayEndpoint interface {
 
 func (s *activeStream) Read(b []byte) (int, error) {
 	if s.conn == nil {
-		return 0, fmt.Errorf("stream not connected")
+		return 0, fmt.Errorf(errStreamNotConnected)
 	}
 	return s.conn.Read(b)
 }
 
 func (s *activeStream) Write(b []byte) (int, error) {
 	if s.conn == nil {
-		return 0, fmt.Errorf("stream not connected")
+		return 0, fmt.Errorf(errStreamNotConnected)
 	}
 	return s.conn.Write(b)
 }
@@ -477,7 +478,7 @@ func (s *activeStream) RemoteAddr() net.Addr {
 
 func (s *activeStream) SetDeadline(t time.Time) error {
 	if s.conn == nil {
-		return fmt.Errorf("stream not connected")
+		return fmt.Errorf(errStreamNotConnected)
 	}
 	s.deadline = t
 	return s.conn.SetDeadline(t)
@@ -485,14 +486,14 @@ func (s *activeStream) SetDeadline(t time.Time) error {
 
 func (s *activeStream) SetReadDeadline(t time.Time) error {
 	if s.conn == nil {
-		return fmt.Errorf("stream not connected")
+		return fmt.Errorf(errStreamNotConnected)
 	}
 	return s.conn.SetReadDeadline(t)
 }
 
 func (s *activeStream) SetWriteDeadline(t time.Time) error {
 	if s.conn == nil {
-		return fmt.Errorf("stream not connected")
+		return fmt.Errorf(errStreamNotConnected)
 	}
 	return s.conn.SetWriteDeadline(t)
 }
