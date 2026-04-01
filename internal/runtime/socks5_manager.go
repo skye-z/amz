@@ -333,77 +333,94 @@ func (m *SOCKS5Manager) handleConnection(ctx context.Context, conn net.Conn) {
 }
 
 func (m *SOCKS5Manager) handleConnect(ctx context.Context, clientConn net.Conn, targetAddr string) error {
+	remoteConn, err := m.openConnectRemote(ctx, clientConn, targetAddr)
+	if err != nil {
+		return err
+	}
+	defer remoteConn.Close()
+	if err := writeSOCKSReply(clientConn, socksReplySucceeded, remoteConn.LocalAddr().String()); err != nil {
+		return err
+	}
+	relaySOCKSConnect(clientConn, remoteConn, m.AddTxBytes, m.AddRxBytes)
+	return nil
+}
+
+func (m *SOCKS5Manager) openConnectRemote(ctx context.Context, clientConn net.Conn, targetAddr string) (net.Conn, error) {
 	m.mu.Lock()
 	streamMgr := m.streamManager
 	dialer := m.dialer
 	m.mu.Unlock()
 
-	var remoteConn net.Conn
-	var err error
-
 	if dialer != nil {
-		// Use direct packet-stack dialer (resolves hostname first)
-		host, port, parseErr := parseSOCKSTargetAddress(targetAddr)
-		if parseErr != nil {
-			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-			return parseErr
-		}
-		address := net.JoinHostPort(host, port)
-		remoteConn, err = dialer.DialContext(ctx, "tcp", address)
-		if err != nil {
-			m.reportFailure("connect-upstream", err)
-			if retriedConn, retriedErr, retried := m.retryConnectOnce(ctx, "connect-upstream", targetAddr, err); retried {
-				if retriedErr == nil {
-					remoteConn = retriedConn
-					goto relay
-				}
-			}
-			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-			return err
-		}
-	} else if streamMgr != nil {
-		host, port, parseErr := parseSOCKSTargetAddress(targetAddr)
-		if parseErr != nil {
-			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-			return parseErr
-		}
-		remoteConn, err = streamMgr.OpenStream(ctx, host, port)
-		if err != nil {
-			m.reportFailure("connect-stream", err)
-			if retriedConn, retriedErr, retried := m.retryConnectOnce(ctx, "connect-stream", targetAddr, err); retried {
-				if retriedErr == nil {
-					remoteConn = retriedConn
-					goto relay
-				}
-			}
-			_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-			return err
-		}
-	} else {
-		_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
-		return fmt.Errorf("no dialer or stream manager configured")
+		return m.openConnectViaDialer(ctx, clientConn, targetAddr, dialer)
 	}
-relay:
-	defer remoteConn.Close()
-	if err := writeSOCKSReply(clientConn, socksReplySucceeded, remoteConn.LocalAddr().String()); err != nil {
-		return err
+	if streamMgr != nil {
+		return m.openConnectViaStream(ctx, clientConn, targetAddr, streamMgr)
 	}
+	_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+	return nil, fmt.Errorf("no dialer or stream manager configured")
+}
+
+func (m *SOCKS5Manager) openConnectViaDialer(ctx context.Context, clientConn net.Conn, targetAddr string, dialer contextDialer) (net.Conn, error) {
+	host, port, err := m.parseConnectTarget(clientConn, targetAddr)
+	if err != nil {
+		return nil, err
+	}
+	remoteConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	if err == nil {
+		return remoteConn, nil
+	}
+	return m.retryConnectFailure(ctx, clientConn, "connect-upstream", targetAddr, err)
+}
+
+func (m *SOCKS5Manager) openConnectViaStream(ctx context.Context, clientConn net.Conn, targetAddr string, streamMgr SOCKS5ConnectStreamOpener) (net.Conn, error) {
+	host, port, err := m.parseConnectTarget(clientConn, targetAddr)
+	if err != nil {
+		return nil, err
+	}
+	remoteConn, err := streamMgr.OpenStream(ctx, host, port)
+	if err == nil {
+		return remoteConn, nil
+	}
+	return m.retryConnectFailure(ctx, clientConn, "connect-stream", targetAddr, err)
+}
+
+func (m *SOCKS5Manager) parseConnectTarget(clientConn net.Conn, targetAddr string) (string, string, error) {
+	host, port, err := parseSOCKSTargetAddress(targetAddr)
+	if err == nil {
+		return host, port, nil
+	}
+	_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+	return "", "", err
+}
+
+func (m *SOCKS5Manager) retryConnectFailure(ctx context.Context, clientConn net.Conn, operation string, targetAddr string, err error) (net.Conn, error) {
+	m.reportFailure(operation, err)
+	if retriedConn, retriedErr, retried := m.retryConnectOnce(ctx, operation, targetAddr, err); retried {
+		if retriedErr == nil {
+			return retriedConn, nil
+		}
+	}
+	_ = writeSOCKSReply(clientConn, socksReplyGeneralFailure, clientConn.LocalAddr().String())
+	return nil, err
+}
+
+func relaySOCKSConnect(clientConn net.Conn, remoteConn net.Conn, onTx func(int), onRx func(int)) {
 	errCh := make(chan error, 2)
 	var closeOnce sync.Once
 	closeBoth := func() { closeOnce.Do(func() { _ = remoteConn.Close(); _ = clientConn.Close() }) }
 	go func() {
-		_, err := io.Copy(&countingWriter{writer: remoteConn, onWrite: m.AddTxBytes}, clientConn)
+		_, err := io.Copy(&countingWriter{writer: remoteConn, onWrite: onTx}, clientConn)
 		closeBoth()
 		errCh <- err
 	}()
 	go func() {
-		_, err := io.Copy(&countingWriter{writer: clientConn, onWrite: m.AddRxBytes}, remoteConn)
+		_, err := io.Copy(&countingWriter{writer: clientConn, onWrite: onRx}, remoteConn)
 		closeBoth()
 		errCh <- err
 	}()
 	<-errCh
 	closeBoth()
-	return nil
 }
 
 func parseSOCKSTargetAddress(addr string) (host, port string, err error) {
@@ -658,45 +675,71 @@ func (m *SOCKS5Manager) udpLoop(ctx context.Context) {
 	defer m.runWG.Done()
 	buf := make([]byte, 65535)
 	for {
-		m.mu.Lock()
-		packetConn := m.udpPacketConn
-		relay := m.udpRelay
-		m.mu.Unlock()
+		packetConn, relay := m.udpResources()
 		if packetConn == nil || relay == nil {
 			return
 		}
-		_ = packetConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, addr, err := packetConn.ReadFrom(buf)
-		if err != nil {
-			if context.Cause(ctx) != nil || isClosedNetworkError(err) {
-				return
-			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
-			}
+		target, payload, addr, ok, stop := m.readUDPPacket(ctx, packetConn, buf)
+		if stop {
+			return
+		}
+		if !ok {
 			continue
 		}
-		target, payload, err := parseSOCKSUDPDatagram(buf[:n])
-		if err != nil {
+		response, ok := m.exchangeUDPAssociate(ctx, relay, target, payload)
+		if !ok {
 			continue
 		}
-		exchangeCtx, cancel := context.WithTimeout(ctx, m.cfg.ConnectTimeout)
-		response, err := relay.Exchange(exchangeCtx, UDPAssociateRequest{TargetAddress: target, Payload: payload})
-		cancel()
-		if err != nil {
-			continue
+		m.writeUDPAssociateResponse(packetConn, addr, payload, response)
+	}
+}
+
+func (m *SOCKS5Manager) udpResources() (net.PacketConn, UDPAssociateExchanger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.udpPacketConn, m.udpRelay
+}
+
+func (m *SOCKS5Manager) readUDPPacket(ctx context.Context, packetConn net.PacketConn, buf []byte) (string, []byte, net.Addr, bool, bool) {
+	_ = packetConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, addr, err := packetConn.ReadFrom(buf)
+	if err != nil {
+		if context.Cause(ctx) != nil || isClosedNetworkError(err) {
+			return "", nil, nil, false, true
 		}
-		m.AddTxBytes(len(payload))
-		if len(response.Payload) == 0 {
-			continue
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return "", nil, nil, false, false
 		}
-		packet, err := buildSOCKSUDPDatagram(response.SourceAddress, response.Payload)
-		if err != nil {
-			continue
-		}
-		if _, err := packetConn.WriteTo(packet, addr); err == nil {
-			m.AddRxBytes(len(response.Payload))
-		}
+		return "", nil, nil, false, false
+	}
+	target, payload, err := parseSOCKSUDPDatagram(buf[:n])
+	if err != nil {
+		return "", nil, nil, false, false
+	}
+	return target, payload, addr, true, false
+}
+
+func (m *SOCKS5Manager) exchangeUDPAssociate(ctx context.Context, relay UDPAssociateExchanger, target string, payload []byte) (UDPAssociateResponse, bool) {
+	exchangeCtx, cancel := context.WithTimeout(ctx, m.cfg.ConnectTimeout)
+	defer cancel()
+	response, err := relay.Exchange(exchangeCtx, UDPAssociateRequest{TargetAddress: target, Payload: payload})
+	if err != nil {
+		return UDPAssociateResponse{}, false
+	}
+	return response, true
+}
+
+func (m *SOCKS5Manager) writeUDPAssociateResponse(packetConn net.PacketConn, addr net.Addr, payload []byte, response UDPAssociateResponse) {
+	m.AddTxBytes(len(payload))
+	if len(response.Payload) == 0 {
+		return
+	}
+	packet, err := buildSOCKSUDPDatagram(response.SourceAddress, response.Payload)
+	if err != nil {
+		return
+	}
+	if _, err := packetConn.WriteTo(packet, addr); err == nil {
+		m.AddRxBytes(len(response.Payload))
 	}
 }
 

@@ -267,7 +267,9 @@ func (p *RealProber) probeCandidate(batchCtx context.Context, candidate Candidat
 
 func (p *RealProber) probeContext(batchCtx context.Context) (context.Context, context.CancelFunc) {
 	if p.timeout <= 0 {
-		return batchCtx, func() {}
+		return batchCtx, func() {
+			// No timeout context was created, so there is nothing to cancel here.
+		}
 	}
 	return context.WithTimeout(batchCtx, p.timeout)
 }

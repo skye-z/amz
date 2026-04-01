@@ -121,7 +121,9 @@ func runE2E(cfg runConfig, deps runDeps) int {
 		step++
 	}
 	if cfg.runTUN {
-		summary.tunIP, summary.passed = runTUNCheck(ctx, cfg, deps, logger, client, directIP, summary.passed, step)
+		var ok bool
+		summary.tunIP, ok = runTUNCheck(ctx, cfg, deps, logger, client, directIP, step)
+		summary.passed = summary.passed && ok
 	}
 
 	printE2ESummary(directIP, summary)
@@ -138,6 +140,12 @@ type e2eSummary struct {
 	httpProxyIP  string
 	socksProxyIP string
 	tunIP        string
+}
+
+type proxyCheckMessages struct {
+	requestErr string
+	sameIP     string
+	diffIP     string
 }
 
 func normalizeRunDeps(deps runDeps) runDeps {
@@ -218,7 +226,11 @@ func resolveProxyAddress(status amz.Status, fallback string) string {
 
 func runHTTPCheck(ctx context.Context, deps runDeps, proxyAddr, directIP string, passed bool, step int) (string, bool) {
 	printStep(step, "Fetching exit IP via HTTP proxy")
-	ip, ok := runProxyCheck(ctx, deps, tagHTTP, directIP, httpProxyTransport(proxyAddr), "HTTP proxy request failed: %v", "HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!", "HTTP proxy IP (%s) differs from direct IP (%s)")
+	ip, ok := runProxyCheck(ctx, deps, tagHTTP, directIP, httpProxyTransport(proxyAddr), proxyCheckMessages{
+		requestErr: "HTTP proxy request failed: %v",
+		sameIP:     "HTTP proxy IP is the same as direct IP (%s) -- tunnel not working!",
+		diffIP:     "HTTP proxy IP (%s) differs from direct IP (%s)",
+	})
 	return ip, passed && ok
 }
 
@@ -229,26 +241,30 @@ func runSOCKS5Check(ctx context.Context, deps runDeps, proxyAddr, directIP strin
 		printFail("Failed to create SOCKS5 transport: %v", err)
 		return "", false
 	}
-	ip, ok := runProxyCheck(ctx, deps, tagSOCKS5, directIP, transport, "SOCKS5 proxy request failed: %v", "SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!", "SOCKS5 proxy IP (%s) differs from direct IP (%s)")
+	ip, ok := runProxyCheck(ctx, deps, tagSOCKS5, directIP, transport, proxyCheckMessages{
+		requestErr: "SOCKS5 proxy request failed: %v",
+		sameIP:     "SOCKS5 proxy IP is the same as direct IP (%s) -- tunnel not working!",
+		diffIP:     "SOCKS5 proxy IP (%s) differs from direct IP (%s)",
+	})
 	return ip, passed && ok
 }
 
-func runProxyCheck(ctx context.Context, deps runDeps, tag, directIP string, transport transportRoundTripper, requestErrFmt, sameIPFmt, diffIPFmt string) (string, bool) {
+func runProxyCheck(ctx context.Context, deps runDeps, tag, directIP string, transport transportRoundTripper, messages proxyCheckMessages) (string, bool) {
 	ip, raw, err := deps.fetchIP(ctx, transport)
 	if err != nil {
-		printFail(requestErrFmt, err)
+		printFail(messages.requestErr, err)
 		return "", false
 	}
 	printIPInfo(tag, ip, raw)
 	if ip == directIP {
-		printFail(sameIPFmt, ip)
+		printFail(messages.sameIP, ip)
 		return ip, false
 	}
-	printPass(diffIPFmt, ip, directIP)
+	printPass(messages.diffIP, ip, directIP)
 	return ip, true
 }
 
-func runTUNCheck(ctx context.Context, cfg runConfig, deps runDeps, logger amz.Logger, client clientRuntime, directIP string, passed bool, step int) (string, bool) {
+func runTUNCheck(ctx context.Context, cfg runConfig, deps runDeps, logger amz.Logger, client clientRuntime, directIP string, step int) (string, bool) {
 	printStep(step, "Fetching exit IP via TUN")
 	_ = client.Close()
 
@@ -274,7 +290,7 @@ func runTUNCheck(ctx context.Context, cfg runConfig, deps runDeps, logger amz.Lo
 		return ip, false
 	}
 	printPass("TUN IP (%s) differs from direct IP (%s)", ip, directIP)
-	return ip, passed
+	return ip, true
 }
 
 func printE2ESummary(directIP string, summary e2eSummary) {

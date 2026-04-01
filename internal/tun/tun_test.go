@@ -124,24 +124,29 @@ func TestAddressValidateTableDriven(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			err := tt.addr.Validate()
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected validation error")
-				}
-				if !errors.Is(err, config.ErrInvalidConfig) {
-					t.Fatalf("expected ErrInvalidConfig, got %v", err)
-				}
-				if !strings.Contains(err.Error(), tt.wantMessage) {
-					t.Fatalf("expected error to contain %q, got %q", tt.wantMessage, err.Error())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
+			assertAddressValidateCase(t, tt.addr, tt.wantErr, tt.wantMessage)
 		})
+	}
+}
+
+func assertAddressValidateCase(t *testing.T, addr tun.Address, wantErr bool, wantMessage string) {
+	t.Helper()
+
+	err := addr.Validate()
+	if !wantErr {
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
+	}
+	if !strings.Contains(err.Error(), wantMessage) {
+		t.Fatalf("expected error to contain %q, got %q", wantMessage, err.Error())
 	}
 }
 

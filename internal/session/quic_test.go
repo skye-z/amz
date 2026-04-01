@@ -1451,36 +1451,12 @@ func TestCoreTunnelDialerEnsuresCoreSessionOnce(t *testing.T) {
 	if conn == nil {
 		t.Fatal("expected non-nil connection")
 	}
-
-	if transportDialer.calls != 1 {
-		t.Fatalf("expected one transport dial, got %d", transportDialer.calls)
-	}
-	if connectDialer.calls != 1 {
-		t.Fatalf("expected one connect-ip dial, got %d", connectDialer.calls)
-	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && relayCalls == 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if relayCalls != 1 {
-		t.Fatalf("expected relay to start once, got %d", relayCalls)
-	}
-	if streamDialer.calls != 1 {
-		t.Fatalf("expected one downstream dial, got %d", streamDialer.calls)
-	}
+	assertCoreTunnelDialerFirstSession(t, transportDialer, connectDialer, streamDialer, &relayCalls)
 
 	if _, err := dialer.DialContext(context.Background(), "tcp", quicExampleTCPAddress); err != nil {
 		t.Fatalf("expected second dial success, got %v", err)
 	}
-	if transportDialer.calls != 1 {
-		t.Fatalf("expected transport session reuse, got %d calls", transportDialer.calls)
-	}
-	if connectDialer.calls != 1 {
-		t.Fatalf("expected connect-ip session reuse, got %d calls", connectDialer.calls)
-	}
-	if streamDialer.calls != 2 {
-		t.Fatalf("expected underlying stream dialer to be called twice, got %d", streamDialer.calls)
-	}
+	assertCoreTunnelDialerReuse(t, transportDialer, connectDialer, streamDialer)
 	if err := dialer.Close(); err != nil {
 		t.Fatalf("expected core dialer close success, got %v", err)
 	}
@@ -1712,6 +1688,50 @@ func TestPacketIOHelpersAndUtilityBranches(t *testing.T) {
 }
 
 func TestDatapathFormattingHelpers(t *testing.T) {
+	assertPacketTraceLimitParsing(t)
+	assertProtocolNameFormatting(t)
+	assertPacketSummaryFormatting(t)
+	assertPacketFragmentSplitting(t)
+}
+
+func assertCoreTunnelDialerFirstSession(t *testing.T, transportDialer *countingTransportDialer, connectDialer *countingConnectIPDialer, streamDialer *stubHTTPStreamDialer, relayCalls *int) {
+	t.Helper()
+
+	if transportDialer.calls != 1 {
+		t.Fatalf("expected one transport dial, got %d", transportDialer.calls)
+	}
+	if connectDialer.calls != 1 {
+		t.Fatalf("expected one connect-ip dial, got %d", connectDialer.calls)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && *relayCalls == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if *relayCalls != 1 {
+		t.Fatalf("expected relay to start once, got %d", *relayCalls)
+	}
+	if streamDialer.calls != 1 {
+		t.Fatalf("expected one downstream dial, got %d", streamDialer.calls)
+	}
+}
+
+func assertCoreTunnelDialerReuse(t *testing.T, transportDialer *countingTransportDialer, connectDialer *countingConnectIPDialer, streamDialer *stubHTTPStreamDialer) {
+	t.Helper()
+
+	if transportDialer.calls != 1 {
+		t.Fatalf("expected transport session reuse, got %d calls", transportDialer.calls)
+	}
+	if connectDialer.calls != 1 {
+		t.Fatalf("expected connect-ip session reuse, got %d calls", connectDialer.calls)
+	}
+	if streamDialer.calls != 2 {
+		t.Fatalf("expected underlying stream dialer to be called twice, got %d", streamDialer.calls)
+	}
+}
+
+func assertPacketTraceLimitParsing(t *testing.T) {
+	t.Helper()
+
 	t.Setenv(quicTracePacketsEnv, "")
 	if got := packetTraceLimitFromEnv(); got != 1 {
 		t.Fatalf("expected default trace limit 1, got %d", got)
@@ -1728,6 +1748,10 @@ func TestDatapathFormattingHelpers(t *testing.T) {
 	if got := packetTraceLimitFromEnv(); got != 1 {
 		t.Fatalf("expected negative fallback trace limit 1, got %d", got)
 	}
+}
+
+func assertProtocolNameFormatting(t *testing.T) {
+	t.Helper()
 
 	if got := ipProtocolName(1); got != "icmp" {
 		t.Fatalf("unexpected icmp protocol name: %q", got)
@@ -1738,6 +1762,10 @@ func TestDatapathFormattingHelpers(t *testing.T) {
 	if got := ipProtocolName(250); got != "250" {
 		t.Fatalf("unexpected unknown protocol name: %q", got)
 	}
+}
+
+func assertPacketSummaryFormatting(t *testing.T) {
+	t.Helper()
 
 	if got := packetSummary(nil); got != "packet=empty" {
 		t.Fatalf("unexpected empty packet summary: %q", got)
@@ -1756,6 +1784,10 @@ func TestDatapathFormattingHelpers(t *testing.T) {
 	if got := packetSummary([]byte{0x10}); !strings.Contains(got, "unknown_version") {
 		t.Fatalf("unexpected unknown version summary: %q", got)
 	}
+}
+
+func assertPacketFragmentSplitting(t *testing.T) {
+	t.Helper()
 
 	fragments := splitPacketByMTU([]byte{1, 2, 3, 4, 5}, 2)
 	if len(fragments) != 3 || len(fragments[2]) != 1 {
